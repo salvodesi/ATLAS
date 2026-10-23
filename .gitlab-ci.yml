@@ -1,0 +1,44 @@
+# ATLAS — test and Linux build. The Windows installer is built on a Windows PC (scripts/build.ps1).
+# Debian 12 (glibc 2.36): the executable runs also on distributions that are not the latest ones.
+image: python:3.14-slim-bookworm
+
+variables:
+  PIP_CACHE_DIR: "$CI_PROJECT_DIR/.cache/pip"
+  QT_QPA_PLATFORM: offscreen
+
+cache:
+  paths:
+    - .cache/pip
+
+before_script:
+  # Qt libraries (PySide6 and the PyInstaller bundle) and objdump (binutils), needed by PyInstaller on Linux.
+  - apt-get update -qq
+  - apt-get install -y -qq --no-install-recommends binutils libgl1 libegl1 libxkbcommon0 libfontconfig1
+      libdbus-1-3 libglib2.0-0 > /dev/null
+  - pip install -q -e ".[dev]"
+
+test:
+  stage: test
+  script:
+    - python -m pytest tests -q
+
+linux:
+  stage: deploy
+  script:
+    - PYTHON=python sh scripts/build.sh
+    - VERSION=$(python -c "import arcadia_tool; print(arcadia_tool.__version__)")
+    - ARCHIVE="ATLAS-$VERSION-linux-x86_64.tar.gz"
+    # On a tag the archive goes to the package registry, next to the Windows installer of the release.
+    - |
+      if [ -n "$CI_COMMIT_TAG" ]; then
+        apt-get install -y -qq --no-install-recommends curl > /dev/null
+        curl --fail --header "JOB-TOKEN: $CI_JOB_TOKEN" --upload-file "dist/$ARCHIVE" \
+          "$CI_API_V4_URL/projects/$CI_PROJECT_ID/packages/generic/atlas/$VERSION/$ARCHIVE"
+      fi
+  artifacts:
+    paths:
+      - dist/*.tar.gz
+    expire_in: 30 days
+  rules:
+    - if: $CI_COMMIT_TAG
+    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH

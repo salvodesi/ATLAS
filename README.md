@@ -81,21 +81,72 @@ Un progetto ATLAS è una cartella:
 | `model/<tipo>/<uuid>.yaml` | un file per ogni elemento del modello | sì |
 | `.arcadia/` | cache, file di ripristino, stato locale del ramo | no |
 
-I dati degli utenti (account, chiavi SSH, impostazioni) sono in `%APPDATA%\RFI\ARCADIA Tool`. Il nome della
-cartella è quello delle prime versioni ed è rimasto invariato per compatibilità.
+I dati degli utenti (account, chiavi SSH, impostazioni) sono nella cartella `RFI/ARCADIA Tool`:
 
-## Installazione
+- su Windows in `%APPDATA%\RFI\ARCADIA Tool`;
+- su Linux in `~/.config/RFI/ARCADIA Tool`.
 
-Eseguire `ATLAS-Setup-<versione>.exe` (in `dist\installer\` dopo la build). Installato sopra una versione
-precedente («ARCADIA Tool»), la sostituisce e mantiene i dati degli utenti.
+Il nome della cartella è quello delle prime versioni ed è rimasto invariato per compatibilità.
+
+## Installazione e avvio
+
+Le versioni compilate sono nelle [Release](https://gitlab.com/salvatoredesi/atlas/-/releases) del progetto.
+
+### Windows (10/11, 64 bit)
+
+1. Scaricare ed eseguire `ATLAS-Setup-<versione>.exe`. L'installazione per il solo utente non richiede
+   privilegi di amministratore.
+2. Avviare **ATLAS** dal menu Start, oppure dall'icona sul desktop se scelta durante l'installazione.
+
+Installato sopra una versione precedente («ARCADIA Tool»), la sostituisce e mantiene i dati degli utenti. Si
+disinstalla da *Impostazioni → App*.
+
+### Linux (x86_64)
+
+Serve una distribuzione con glibc 2.36 o successiva, ad esempio Ubuntu 24.04, Debian 12 o Fedora 37 e
+successive.
+
+```sh
+tar -xzf ATLAS-<versione>-linux-x86_64.tar.gz      # crea la cartella ATLAS/
+./ATLAS/ATLAS
+```
+
+Note:
+
+- **Librerie grafiche**: l'eseguibile contiene Qt. Se il sistema non le ha già, servono le librerie X11/xcb, ad
+  esempio su Ubuntu e Debian:
+  ```sh
+  sudo apt install libxcb-cursor0 libxkbcommon-x11-0 libegl1
+  ```
+- **Credenziali Git**: sono salvate nel portachiavi del desktop (GNOME Keyring o KWallet, tramite Secret
+  Service).
+- **Collegamento nel menu delle applicazioni**: è facoltativo. L'icona `atlas.png` è nella cartella `ATLAS/`:
+  ```sh
+  cat > ~/.local/share/applications/atlas.desktop <<EOF
+  [Desktop Entry]
+  Type=Application
+  Name=ATLAS
+  Comment=Arcadia Traceability, Logical Architecture Software
+  Exec=$PWD/ATLAS/ATLAS
+  Icon=$PWD/ATLAS/atlas.png
+  Categories=Development;
+  EOF
+  ```
 
 ## Sviluppo
 
-Requisiti: Windows e Python 3.14 (va bene anche dalla 3.12 in poi).
+Requisiti: Python 3.14 (va bene anche dalla 3.12 in poi), su Windows o Linux.
 
 ```powershell
+# Windows
 py -3.14 -m venv .venv
 .\.venv\Scripts\python.exe -m pip install -e ".[dev]"
+```
+
+```sh
+# Linux
+python3.14 -m venv .venv
+.venv/bin/python -m pip install -e ".[dev]"
 ```
 
 Stack:
@@ -117,24 +168,38 @@ Il codice è nel pacchetto `arcadia_tool`, nome interno rimasto quello delle pri
 | `src/arcadia_tool/ui/` | finestre e tema dell'interfaccia |
 | `src/arcadia_tool/resources/` | icona, simbolo e logo, installati con l'applicazione |
 
-### Avvio
+### Avvio dai sorgenti
 
 ```powershell
+# Windows
 .\scripts\run.ps1
 # oppure
 .\.venv\Scripts\python.exe -m arcadia_tool
 ```
 
+```sh
+# Linux
+sh scripts/run.sh
+# oppure
+.venv/bin/python -m arcadia_tool
+```
+
 ### Test
 
 ```powershell
-.\.venv\Scripts\python.exe -m pytest tests
+.\.venv\Scripts\python.exe -m pytest tests      # Windows
+```
+
+```sh
+.venv/bin/python -m pytest tests                # Linux
 ```
 
 Il test sui PDF reali del SUBSET-026 (non inclusi nel repository) si attiva indicando la cartella dei PDF nella
-variabile `ARCADIA_SRS_PDF_DIR`. I test non toccano le impostazioni né la Gestione credenziali reali.
+variabile `ARCADIA_SRS_PDF_DIR`. I test non toccano le impostazioni né il portachiavi reali.
 
 ### Eseguibile e installer
+
+**Windows**: va compilato su un PC Windows.
 
 ```powershell
 .\scripts\build.ps1               # dist\ATLAS\ + installer (se Inno Setup 6 è installato)
@@ -143,6 +208,16 @@ variabile `ARCADIA_SRS_PDF_DIR`. I test non toccano le impostazioni né la Gesti
 
 L'installer richiede [Inno Setup 6](https://jrsoftware.org/isinfo.php) e viene scritto in
 `dist\installer\ATLAS-Setup-<versione>.exe`.
+
+**Linux**: richiede `binutils`.
+
+```sh
+sh scripts/build.sh               # dist/ATLAS/ + dist/ATLAS-<versione>-linux-x86_64.tar.gz
+```
+
+La pipeline GitLab ([.gitlab-ci.yml](.gitlab-ci.yml)) esegue i test su Linux e compila l'archivio Linux a
+ogni push su `main`. Sui tag di versione (`v<versione>`) carica l'archivio tra i pacchetti del progetto, accanto
+all'installer Windows della release.
 
 ## Logo
 
