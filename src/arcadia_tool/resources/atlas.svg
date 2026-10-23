@@ -1,0 +1,170 @@
+<?xml version="1.0" encoding="UTF-8" standalone="no"?>
+<svg
+   width="512"
+   height="512"
+   viewBox="0 0 512 512"
+   role="img"
+   aria-label="ATLAS - ATLAS Icona App Blu"
+   version="1.1"
+   id="svg21"
+   xmlns="http://www.w3.org/2000/svg"
+   xmlns:svg="http://www.w3.org/2000/svg">
+  <title
+     id="title1">ATLAS - ATLAS Icona App Blu</title>
+  <defs
+     id="defs16">
+    <linearGradient
+       id="leftA"
+       gradientUnits="userSpaceOnUse"
+       x1="235"
+       y1="50"
+       x2="160"
+       y2="540">
+      <stop
+         stop-color="#29C0EF"
+         id="stop1" />
+      <stop
+         offset=".48"
+         stop-color="#0785C7"
+         id="stop2" />
+      <stop
+         offset="1"
+         stop-color="#082442"
+         id="stop3" />
+    </linearGradient>
+    <linearGradient
+       id="rightA"
+       gradientUnits="userSpaceOnUse"
+       x1="350"
+       y1="80"
+       x2="620"
+       y2="552">
+      <stop
+         stop-color="#104DAB"
+         id="stop4" />
+      <stop
+         offset=".60"
+         stop-color="#0879DF"
+         id="stop5" />
+      <stop
+         offset="1"
+         stop-color="#159DF6"
+         id="stop6" />
+    </linearGradient>
+    <linearGradient
+       id="silver"
+       gradientUnits="userSpaceOnUse"
+       x1="110"
+       y1="520"
+       x2="485"
+       y2="360">
+      <stop
+         stop-color="#7F878F"
+         id="stop7" />
+      <stop
+         offset=".48"
+         stop-color="#B4BCC2"
+         id="stop8" />
+      <stop
+         offset="1"
+         stop-color="#DBE0E3"
+         id="stop9" />
+    </linearGradient>
+    <radialGradient
+       id="dot"
+       cx=".3"
+       cy=".3"
+       r=".8">
+      <stop
+         stop-color="#38D0FF"
+         id="stop10" />
+      <stop
+         offset="1"
+         stop-color="#0591DE"
+         id="stop11" />
+    </radialGradient>
+    <linearGradient
+       id="appDark"
+       x1="0"
+       x2="1"
+       y1="0"
+       y2="1">
+      <stop
+         stop-color="#143E61"
+         id="stop12" />
+      <stop
+         offset="1"
+         stop-color="#07182D"
+         id="stop13" />
+    </linearGradient>
+    <linearGradient
+       id="appBlue"
+       x1="0"
+       x2="1"
+       y1="0"
+       y2="1">
+      <stop
+         stop-color="#29C3F2"
+         id="stop14" />
+      <stop
+         offset=".5"
+         stop-color="#087EDF"
+         id="stop15" />
+      <stop
+         offset="1"
+         stop-color="#004CA4"
+         id="stop16" />
+    </linearGradient>
+  </defs>
+  <rect
+     width="512"
+     height="512"
+     rx="109"
+     fill="url(#appBlue)"
+     id="rect16" />
+  <g
+     transform="translate(55 79) scale(0.61)"
+     id="g21">
+    <g
+       stroke-linejoin="round"
+       stroke-linecap="round"
+       id="g20">
+      <!-- Ribbon 1: left A stroke, dark navy base up to cyan peak -->
+      <path
+         d="M24,539 C47,490 211,188 301,28 C312,7 334,6 348,28 L408,135 L337,258 L223,463 Z"
+         fill="#FFFFFF"
+         id="path16" />
+      <!-- Ribbon 2: right A stroke, blue and cyan terminal -->
+      <path
+         d="M348,28 L643,529 C655,551 644,562 623,562 L528,562 C508,562 497,552 486,533 L328,260 L267,369 L222,463 L337,258 L408,135 Z"
+         fill="#FFFFFF"
+         id="path17" />
+      <!-- Thin negative-space boundary above curved route -->
+      <path
+         d="M26,539 C129,431 275,369 462,352"
+         fill="none"
+         stroke="#14314C"
+         stroke-width="15"
+         opacity=".98"
+         id="path18" />
+      <!-- Silver pathway, narrowing to the destination marker -->
+      <path
+         d="M13,562 C126,430 276,365 468,357 C357,387 266,453 167,554 C162,560 150,562 140,562 Z"
+         fill="#B6D0DD"
+         id="path19" />
+      <!-- Destination/traceability endpoint -->
+      <circle
+         cx="476"
+         cy="359"
+         r="39"
+         fill="#14314C"
+         id="circle19" />
+      <circle
+         cx="476"
+         cy="359"
+         r="29"
+         fill="#FFFFFF"
+         id="circle20" />
+    </g>
+  </g>
+</svg>

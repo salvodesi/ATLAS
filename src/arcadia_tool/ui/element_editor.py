@@ -1,0 +1,1050 @@
+"""Form editor generated from the schema of the selected element.
+
+A sheet opens read-only; in edit mode the changes stay in a draft until «Salva» applies them to the model and
+saves the project.
+"""
+from PySide6.QtCore import QEvent, QObject, QSize, Qt, QTimer, Signal
+from PySide6.QtGui import QColor, QFont, QKeySequence, QPainter, QPixmap
+from PySide6.QtWidgets import (QAbstractItemView, QCheckBox, QComboBox, QDialog, QDialogButtonBox, QFormLayout,
+                               QFrame, QGridLayout, QHBoxLayout, QLabel, QLineEdit, QListWidget, QListWidgetItem,
+                               QMessageBox, QPlainTextEdit, QPushButton, QScrollArea, QSpinBox, QStyle,
+                               QStyledItemDelegate, QTableWidget, QTableWidgetItem, QVBoxLayout, QWidget)
+
+from arcadia_tool.model.identifiers import compute_id, is_automatic, matches_context, missing_context, rule
+from arcadia_tool.model.schema import (BOOL, ENUM, IMAGE, INT, KINDS_BY_NAME, MAP, MULTIENUM, REF, REFS, STR,
+                                       STRLIST, TABLE, TEXT, enum_option)
+from arcadia_tool.ui.srs_edit_mode import SrsEditMode, edit_mode_button
+from arcadia_tool.ui.theme import ACCENT_SOFT, BORDER, MUTED, SURFACE, icon, kind_icon, status_colors
+from arcadia_tool.ui.theme import TEXT as TEXT_COLOR  # TEXT is also a field type of the schema
+
+# Kinds whose elements are imported from the specification and are read-only outside the edit mode.
+READ_ONLY_KINDS = ("requirement",)
+# Sheets traced to the SRS items (and, for a derived requirement, to its logical function).
+TRACE_CARDS = ("domain", "system_function", "logical_function", "derived_requirement")
+
+MAP_COLUMNS = 9
+SECTIONS = (
+    ("Identificazione", (STR, INT, BOOL, ENUM, MULTIENUM, STRLIST)),
+    ("Descrizione", (TEXT,)),
+    ("Relazioni", (REF, REFS)),
+)
+
+
+def _ref_choices(model, ref_kinds):
+    return [(e.uuid, model.choice_label(e)) for e in model.of_kind(*ref_kinds)]
+
+
+IMAGE_MAX_WIDTH = 900
+
+
+def load_pixmap(project, rel):
+    """Image of a project asset (also not yet saved, e.g. right after an import), or None."""
+    data = project.asset_data(rel) if rel else None
+    if not data:
+        return None
+    pixmap = QPixmap()
+    return pixmap if pixmap.loadFromData(data) else None
+
+
+def compact_combo():
+    """Combo box whose width does not grow with the longest item (labels of SRS items can be long)."""
+    combo = QComboBox()
+    combo.setSizeAdjustPolicy(QComboBox.AdjustToMinimumContentsLengthWithIcon)
+    combo.setMinimumContentsLength(24)
+    combo.view().setTextElideMode(Qt.ElideRight)
+    return combo
+
+
+def card(title=None):
+    frame = QFrame(objectName="card")
+    layout = QVBoxLayout(frame)
+    layout.setContentsMargins(16, 12, 16, 14)
+    layout.setSpacing(8)
+    if title:
+        layout.addWidget(QLabel(title.upper(), objectName="sectionCaption"))
+    return frame, layout
+
+
+class RefPicker(QDialog):
+    """Searchable selection of elements (requirements can be thousands): multiple, or single."""
+
+    def __init__(self, choices, selected, parent=None, single=False, title="Seleziona elementi"):
+        super().__init__(parent)
+        self.single = single
+        self.setWindowTitle(title)
+        self.resize(640, 620)
+        self.filter = QLineEdit(placeholderText="Filtra…", objectName="search")
+        self.filter.addAction(icon("mdi6.magnify"), QLineEdit.LeadingPosition)
+        self.filter.setClearButtonEnabled(True)
+        self.list = QListWidget()
+        for uuid, label in choices:
+            item = QListWidgetItem(label)
+            item.setData(Qt.UserRole, uuid)
+            if not single:
+                item.setFlags(item.flags() | Qt.ItemIsUserCheckable)
+                item.setCheckState(Qt.Checked if uuid in selected else Qt.Unchecked)
+            self.list.addItem(item)
+            if single and uuid in selected:
+                self.list.setCurrentItem(item)
+        if single:
+            self.list.itemDoubleClicked.connect(lambda _: self.accept())
+        self.filter.textChanged.connect(self._apply_filter)
+        buttons = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
+        buttons.button(QDialogButtonBox.Ok).setProperty("primary", True)
+        buttons.accepted.connect(self.accept)
+        buttons.rejected.connect(self.reject)
+        layout = QVBoxLayout(self)
+        layout.addWidget(self.filter)
+        layout.addWidget(self.list)
+        layout.addWidget(buttons)
+
+    def _apply_filter(self, text):
+        text = text.lower()
+        for i in range(self.list.count()):
+            item = self.list.item(i)
+            item.setHidden(text not in item.text().lower())
+
+    def selected(self):
+        if self.single:
+            item = self.list.currentItem()
+            return [item.data(Qt.UserRole)] if item and not item.isHidden() else []
+        return [self.list.item(i).data(Qt.UserRole) for i in range(self.list.count())
+                if self.list.item(i).checkState() == Qt.Checked]
+
+
+class RefsWidget(QWidget):
+    changed = Signal()
+
+    def __init__(self, model, ref_kinds):
+        super().__init__()
+        self.model, self.ref_kinds, self.uuids = model, ref_kinds, []
+        self.list = QListWidget()
+        self.list.setMaximumHeight(96)
+        self.list.setSelectionMode(QAbstractItemView.ExtendedSelection)
+        self.list.setIconSize(QSize(14, 14))
+        edit = QPushButton(icon("mdi6.pencil-outline"), "Seleziona")
+        remove = QPushButton(icon("mdi6.trash-can-outline"), "Rimuovi")
+        edit.clicked.connect(self._pick)
+        remove.clicked.connect(self._remove)
+        buttons = QVBoxLayout()
+        buttons.addWidget(edit)
+        buttons.addWidget(remove)
+        buttons.addStretch()
+        layout = QHBoxLayout(self)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.addWidget(self.list, 1)
+        layout.addLayout(buttons)
+
+    def set_value(self, uuids):
+        self.uuids = list(uuids or [])
+        self.list.clear()
+        for uuid in self.uuids:
+            element = self.model.get(uuid)
+            item = QListWidgetItem(self.model.label_of(uuid) or "(elemento inesistente)")
+            if element:
+                item.setIcon(kind_icon(element.kind))
+            item.setData(Qt.UserRole, uuid)
+            self.list.addItem(item)
+
+    def value(self):
+        return list(self.uuids)
+
+    def _pick(self):
+        dialog = RefPicker(_ref_choices(self.model, self.ref_kinds), set(self.uuids), self)
+        if dialog.exec():
+            self.set_value(dialog.selected())
+            self.changed.emit()
+
+    def _remove(self):
+        drop = {i.data(Qt.UserRole) for i in self.list.selectedItems()}
+        self.set_value([u for u in self.uuids if u not in drop])
+        self.changed.emit()
+
+
+class TableWidget(QWidget):
+    changed = Signal()
+
+    def __init__(self, model, field):
+        super().__init__()
+        self.model, self.columns = model, field.columns
+        self.table = QTableWidget(0, len(self.columns))
+        self.table.setHorizontalHeaderLabels([c.label for c in self.columns])
+        self.table.horizontalHeader().setStretchLastSection(True)
+        self.table.verticalHeader().setDefaultSectionSize(30)
+        self.table.setAlternatingRowColors(True)
+        self.table.setMinimumHeight(180)
+        self.table.itemChanged.connect(lambda _: self.changed.emit())
+        add = QPushButton(icon("mdi6.plus"), "Aggiungi riga")
+        remove = QPushButton(icon("mdi6.trash-can-outline"), "Elimina riga")
+        add.clicked.connect(self._add_clicked)
+        remove.clicked.connect(self._remove_row)
+        buttons = QHBoxLayout()
+        buttons.addWidget(add)
+        buttons.addWidget(remove)
+        buttons.addStretch()
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.addWidget(self.table)
+        layout.addLayout(buttons)
+
+    def _add_clicked(self):
+        self._add_row({})
+        self.changed.emit()
+
+    def _add_row(self, row):
+        r = self.table.rowCount()
+        self.table.blockSignals(True)
+        self.table.insertRow(r)
+        for c, col in enumerate(self.columns):
+            value = row.get(col.name, "")
+            if col.type in (ENUM, REF):
+                combo = compact_combo()
+                combo.addItem("", None)
+                choices = [(o, o) for o in col.options] if col.type == ENUM else _ref_choices(self.model, col.ref_kinds)
+                for data, label in choices:
+                    combo.addItem(label, data)
+                combo.setCurrentIndex(max(combo.findData(value), 0) if value else 0)
+                combo.currentIndexChanged.connect(lambda _: self.changed.emit())
+                self.table.setCellWidget(r, c, combo)
+            else:
+                self.table.setItem(r, c, QTableWidgetItem(str(value)))
+        self.table.blockSignals(False)
+
+    def _remove_row(self):
+        rows = sorted({i.row() for i in self.table.selectedIndexes()} or {self.table.rowCount() - 1}, reverse=True)
+        for r in rows:
+            if r >= 0:
+                self.table.removeRow(r)
+        self.changed.emit()
+
+    def set_value(self, rows):
+        self.table.setRowCount(0)
+        for row in rows or []:
+            self._add_row(row)
+
+    def value(self):
+        rows = []
+        for r in range(self.table.rowCount()):
+            row = {}
+            for c, col in enumerate(self.columns):
+                widget = self.table.cellWidget(r, c)
+                item = self.table.item(r, c)
+                value = widget.currentData() if widget else (item.text().strip() if item else "")
+                if value:
+                    row[col.name] = value
+            rows.append(row)
+        return rows
+
+
+class StatusCombo(QComboBox):
+    """State selector coloured like a status chip."""
+
+    def __init__(self, options, current):
+        super().__init__()
+        self.addItem("Nessuno stato", None)
+        for option in options:
+            self.addItem(option, option)
+        self.setItemDelegate(_StatusItemDelegate(self))
+        self.setCurrentIndex(max(self.findData(current), 0) if current else 0)
+        self.setMinimumWidth(150)
+        self.currentIndexChanged.connect(self._restyle)
+        self._restyle()
+
+    def _restyle(self, *_):
+        fg, bg = status_colors(self.currentData())
+        self.setStyleSheet(
+            f"QComboBox {{ background:{bg}; color:{fg}; border:1px solid {bg}; border-radius:12px;"
+            f" padding:3px 30px 3px 12px; font-weight:600; }}"
+            "QComboBox::drop-down { border: none; }"
+            # The list must not inherit the colour of the closed box (it made some states unreadable).
+            f"QComboBox QAbstractItemView {{ background:{SURFACE}; color:{TEXT_COLOR}; border:1px solid {BORDER};"
+            " padding: 4px; outline: none; }")
+
+
+class _StatusItemDelegate(QStyledItemDelegate):
+    """Rows of the open state list: each state as a chip in its own colours; the row under the mouse (or
+    selected with the keyboard) dark on light blue, so that its text is always readable."""
+    HEIGHT = 28
+
+    def paint(self, painter, option, index):
+        active = option.state & (QStyle.State_Selected | QStyle.State_MouseOver)
+        fg, bg = status_colors(index.data(Qt.UserRole))
+        rect = option.rect.adjusted(2, 2, -2, -2)
+        painter.save()
+        painter.setRenderHint(QPainter.Antialiasing)
+        painter.setPen(Qt.NoPen)
+        painter.setBrush(QColor(ACCENT_SOFT if active else bg))
+        painter.drawRoundedRect(rect, 5, 5)
+        font = QFont(option.font)
+        font.setBold(True)
+        painter.setFont(font)
+        painter.setPen(QColor(TEXT_COLOR if active else fg))
+        painter.drawText(rect.adjusted(10, 0, -6, 0), Qt.AlignVCenter | Qt.AlignLeft, index.data() or "")
+        painter.restore()
+
+    def sizeHint(self, option, index):
+        size = super().sizeHint(option, index)
+        return QSize(size.width() + 24, self.HEIGHT)
+
+
+class _ViewModeGuard(QObject):
+    """On a sheet shown read-only: an attempt to change a field asks to switch to edit mode (and is ignored)."""
+    TEXT_INPUTS = (QLineEdit, QPlainTextEdit)
+    EDIT_KEYS = (Qt.Key_Backspace, Qt.Key_Delete, Qt.Key_Return, Qt.Key_Enter, Qt.Key_Space, Qt.Key_Up,
+                 Qt.Key_Down)
+
+    def __init__(self, editor):
+        super().__init__(editor)
+        self.editor = editor
+
+    def eventFilter(self, watched, event):
+        kind = event.type()
+        if kind == QEvent.Wheel and isinstance(watched, (QComboBox, QSpinBox)):
+            return True  # the wheel would change the value
+        attempt = False
+        if kind == QEvent.KeyPress:
+            text_key = bool(event.text()) and not event.modifiers() & (Qt.ControlModifier | Qt.AltModifier)
+            attempt = text_key or event.key() in self.EDIT_KEYS
+        elif kind in (QEvent.MouseButtonPress, QEvent.MouseButtonDblClick):
+            attempt = not isinstance(watched, self.TEXT_INPUTS)  # a click in a text only selects it
+        if attempt:
+            self.editor.ask_to_edit()
+            return True
+        return False
+
+
+class ElementEditor(QScrollArea):
+    """Sheet of an element. It opens read-only: «Modifica» (or an attempt to change a field) switches to edit
+    mode, where the changes are kept in a draft copy of the element until «Salva» applies them to the model and
+    saves the project; «Annulla» discards them."""
+    element_changed = Signal(object)
+    back_requested = Signal(str)  # uuid of the element being left
+    open_requested = Signal(str)  # another element to show (e.g. an SRS item traced by a domain)
+    elements_created = Signal()  # e.g. derived requirements created from the allocation window
+    dirty_changed = Signal(bool)  # the draft has (True) or no longer has changes not yet saved
+    saved = Signal()  # «Salva»: the changes are in the model, the project is to be saved
+
+    def __init__(self, srs_edit_mode=None):
+        super().__init__()
+        self.setWidgetResizable(True)
+        self.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        self.project = self.element = self.draft = None
+        self.getters = {}
+        self.read_only = False
+        self.editing = self.dirty = self._building = False
+        self.back_label = None  # set when the page was opened from another view (e.g. the SUBSET-026 catalogue)
+        self._timer = QTimer(self, singleShot=True, interval=250)
+        self._timer.timeout.connect(self._apply)
+        self._guard = _ViewModeGuard(self)
+        self.srs_edit_mode = srs_edit_mode or SrsEditMode()
+        self.srs_edit_mode.changed.connect(self._edit_mode_changed)
+        self.clear()
+
+    def set_back(self, label):
+        """Show (label) or hide (None) the button that goes back to the view the page was opened from."""
+        self.back_label = label
+        if self.element is not None:
+            self._build()
+
+    def _edit_mode_changed(self, _enabled):
+        if self.element is not None and self.element.kind in READ_ONLY_KINDS:
+            self._build()
+
+    # --- view and edit mode -------------------------------------------------------------------------
+
+    def ask_to_edit(self):
+        answer = QMessageBox.question(self, "Scheda in sola lettura",
+                                      f"«{self.project.model.label(self.element)}» è in sola lettura. Passare in "
+                                      "modalità modifica?")
+        if answer == QMessageBox.Yes:
+            QTimer.singleShot(0, self.start_editing)  # not while the event of the old page is handled
+
+    def start_editing(self):
+        if self.element is not None and not self.editing:
+            self.editing = True
+            self._build()
+
+    def save_changes(self):
+        """«Salva»: the draft becomes the element in the model; the project is then saved (signal saved)."""
+        if self.element is None:
+            return
+        self.flush()
+        if self.dirty:
+            self.element.values = self.draft.copy().values
+            self.project.update(self.element)  # may assign the identifier, once its context is known
+            self.element_changed.emit(self.element)
+        self._end_editing()
+        self.saved.emit()
+
+    def cancel_changes(self, ask=True):
+        """«Annulla»: back to the element as it is in the model."""
+        if self.element is None:
+            return
+        self._timer.stop()
+        if ask and self.dirty and QMessageBox.question(
+                self, "Annulla le modifiche", "Scartare le modifiche non salvate della scheda?") != QMessageBox.Yes:
+            return
+        self._end_editing()
+
+    def _end_editing(self):
+        self.editing = False
+        self.draft = self.element.copy()
+        self._set_dirty(False)
+        self._build()
+
+    def _set_dirty(self, dirty):
+        if dirty != self.dirty:
+            self.dirty = dirty
+            self.dirty_changed.emit(dirty)
+
+    def refresh(self):
+        """Rebuild the sheet (e.g. other elements changed); without changes in progress, from the model."""
+        if self.element is None:
+            return
+        self.flush()
+        if not self.dirty:
+            self.draft = self.element.copy()
+        self._build()
+
+    def _guard_view_mode(self, page):
+        """Read-only sheet: inputs cannot change, and an attempt asks to switch to edit mode."""
+        kept = [w for w in page.findChildren(QWidget) if w.property("keepEnabled")]
+        for w in page.findChildren(QWidget):
+            if any(k is w or k.isAncestorOf(w) for k in kept):
+                continue
+            if isinstance(w, (QLineEdit, QPlainTextEdit, QSpinBox)):
+                w.setReadOnly(True)
+            elif isinstance(w, QTableWidget):
+                w.setEditTriggers(QAbstractItemView.NoEditTriggers)
+            if isinstance(w, (QLineEdit, QPlainTextEdit, QSpinBox, QComboBox, QCheckBox, QPushButton,
+                              QTableWidget)):
+                w.installEventFilter(self._guard)
+
+    def _make_read_only(self, page):
+        """Block every input of the page (texts stay selectable and readable, not greyed out)."""
+        kept = [w for w in page.findChildren(QWidget) if w.property("keepEnabled")]
+        for w in page.findChildren(QWidget):
+            if any(k is w or k.isAncestorOf(w) for k in kept):
+                continue
+            if isinstance(w, (QLineEdit, QPlainTextEdit)):
+                w.setReadOnly(True)
+            elif isinstance(w, QSpinBox):
+                w.setReadOnly(True)  # the arrows do nothing on a read-only spin box
+            elif isinstance(w, QTableWidget):
+                w.setEditTriggers(QAbstractItemView.NoEditTriggers)
+            elif isinstance(w, (QComboBox, QCheckBox, QPushButton)):
+                w.setEnabled(False)
+
+    def clear(self):
+        self._timer.stop()  # a draft not saved is not applied
+        self.element = self.draft = None
+        self.editing = False
+        self._set_dirty(False)
+        empty = QWidget()
+        layout = QVBoxLayout(empty)
+        layout.addStretch()
+        pic = QLabel(alignment=Qt.AlignCenter)
+        pic.setPixmap(icon("mdi6.file-tree-outline", "#B8C1CC").pixmap(64, 64))
+        text = QLabel("Seleziona un elemento nel modello oppure creane uno nuovo.", alignment=Qt.AlignCenter,
+                      objectName="muted")
+        layout.addWidget(pic)
+        layout.addWidget(text)
+        layout.addStretch()
+        self.setWidget(empty)
+
+    def edit(self, project, element, editing=False):
+        """Show an element: read-only, or directly in edit mode (e.g. a new element)."""
+        self._timer.stop()
+        self.project, self.element = project, element
+        self.draft = element.copy()
+        self.editing = editing
+        self._set_dirty(False)
+        self._build()
+
+    def _build(self):
+        """The page, from the draft (the element with the changes in progress)."""
+        self._building = True
+        try:
+            self._build_page()
+        finally:
+            self._building = False
+
+    def _build_page(self):
+        element = self.draft
+        self.getters, self.widgets = {}, {}
+        self.read_only = element.kind in READ_ONLY_KINDS and not self.srs_edit_mode.enabled
+        schema = element.schema
+        page = QWidget()
+        outer = QVBoxLayout(page)
+        outer.setContentsMargins(24, 20, 24, 24)
+        outer.setSpacing(14)
+        outer.addWidget(self._header(element))
+
+        status_field = schema.field("status")
+        # Sections of the kind's own (e.g. the SA-3 register) come first, with their fields in schema order.
+        own = [f.section for f in schema.fields if f.section and f.section not in dict(SECTIONS)]
+        sections = [(title, ()) for title in dict.fromkeys(own)] + list(SECTIONS)
+        for title, types in sections:
+            fields = [f for f in schema.fields if (f.section == title or (not f.section and f.type in types))
+                      and f is not status_field and not f.hidden]
+            if not fields:
+                continue
+            frame, layout = card(title)
+            form = QFormLayout()
+            form.setRowWrapPolicy(QFormLayout.WrapLongRows)
+            form.setFieldGrowthPolicy(QFormLayout.AllNonFixedFieldsGrow)
+            form.setLabelAlignment(Qt.AlignRight | Qt.AlignVCenter)
+            form.setHorizontalSpacing(16)
+            form.setVerticalSpacing(10)
+            for f in fields:
+                widget, getter = self._make_widget(f, element.values.get(f.name))
+                self.widgets[f.name] = widget
+                if f.stored:
+                    self.getters[f.name] = getter
+                if f.analysis:
+                    widget.setProperty("keepEnabled", True)  # editable also on a read-only SRS item
+                form.addRow(QLabel(f.label, objectName="formLabel"), widget)
+            layout.addLayout(form)
+            outer.addWidget(frame)
+            if title == "Descrizione" and element.kind in TRACE_CARDS:
+                outer.addWidget(self._srs_trace_card())  # right after the description
+        for f in schema.fields:
+            if f.hidden:
+                continue
+            if f.type == IMAGE and not element.values.get(f.name):
+                continue  # no empty image card on items without a figure
+            if f.type in (MAP, TABLE, IMAGE):
+                frame, layout = card(f.label)
+                widget, getter = self._make_widget(f, element.values.get(f.name))
+                self.getters[f.name] = getter
+                layout.addWidget(widget)
+                outer.addWidget(frame)
+        outer.addStretch()
+        if not self.editing:
+            self._guard_view_mode(page)
+        elif self.read_only:
+            self._make_read_only(page)
+        position = self.verticalScrollBar().value()
+        self.setWidget(page)
+        self.verticalScrollBar().setValue(position)  # rebuilt in place (edit mode, a choice made…)
+
+    def _header(self, element):
+        schema = element.schema
+        frame, layout = card()
+        if self.back_label:
+            back = QPushButton(icon("mdi6.arrow-left", "#2457A6"), self.back_label)
+            back.setProperty("flat", True)
+            back.setProperty("keepEnabled", True)
+            back.setShortcut(QKeySequence("Alt+Left"))
+            back.setToolTip("Torna al punto del catalogo da cui hai aperto la voce (Alt+Freccia sinistra)")
+            back.clicked.connect(lambda _checked=False: self.back_requested.emit(element.uuid))
+            row = QHBoxLayout()
+            row.addWidget(back)
+            row.addStretch()
+            layout.addLayout(row)
+        top = QHBoxLayout()
+        pic = QLabel()
+        pic.setPixmap(kind_icon(element.kind).pixmap(18, 18))
+        top.addWidget(pic)
+        top.addWidget(QLabel(schema.label, objectName="kindLabel"))
+        if schema.template:
+            top.addWidget(QLabel(f"Template {schema.template}", objectName="badge"))
+        top.addStretch()
+        status_field = schema.field("status")
+        if status_field:
+            combo = StatusCombo(status_field.options, element.get("status"))
+            combo.currentIndexChanged.connect(self._changed)
+            self.getters["status"] = combo.currentData
+            top.addWidget(QLabel("Stato", objectName="muted"))
+            top.addWidget(combo)
+        if element.kind in READ_ONLY_KINDS:
+            self.edit_mode_button = edit_mode_button(self.srs_edit_mode)
+            self.edit_mode_button.setProperty("keepEnabled", True)
+            top.addWidget(self.edit_mode_button)
+        top.addSpacing(8)
+        if self.editing:
+            self.cancel_button = QPushButton(icon("mdi6.close"), "Annulla")
+            self.cancel_button.setToolTip("Scarta le modifiche non salvate della scheda")
+            self.cancel_button.clicked.connect(lambda _=False: self.cancel_changes())
+            self.save_button = QPushButton(icon("mdi6.content-save-outline", "white"), "Salva")
+            self.save_button.setProperty("primary", True)
+            self.save_button.setToolTip("Applica le modifiche della scheda e salva il progetto")
+            self.save_button.clicked.connect(lambda _=False: self.save_changes())
+            buttons = (self.cancel_button, self.save_button)
+        else:
+            self.modify_button = QPushButton(icon("mdi6.pencil-outline"), "Modifica")
+            self.modify_button.setToolTip("Passa in modalità modifica delle informazioni della scheda")
+            self.modify_button.clicked.connect(lambda _=False: self.start_editing())
+            buttons = (self.modify_button,)
+        for button in buttons:
+            button.setProperty("keepEnabled", True)
+            top.addWidget(button)
+        layout.addLayout(top)
+        self.title = QLabel(self.project.model.choice_label(element), objectName="elementTitle")
+        self.title.setWordWrap(True)
+        layout.addWidget(self.title)
+        mode = QLabel("In modifica: le modifiche si applicano con «Salva»." if self.editing else
+                      "In sola lettura: premi «Modifica» per cambiare le informazioni.", objectName="muted")
+        layout.addWidget(mode)
+        if self.read_only and self.editing:
+            note = QLabel("Voce importata dalla specifica: è in sola lettura. Attiva la modalità modifica per "
+                          "cambiarla.", objectName="muted")
+            note.setWordWrap(True)
+            layout.addWidget(note)
+        return frame
+
+    def _id_widget(self):
+        """Automatic identifier: read-only, with an explicit «Rinumera» when the context has changed."""
+        self.id_edit = QLineEdit(self.draft.get("id") or "", readOnly=True, objectName="readonly")
+        self.renumber_button = QPushButton(icon("mdi6.refresh"), "Rinumera")
+        self.renumber_button.setToolTip("Riassegna l'ID secondo il contesto attuale (es. dopo lo spostamento "
+                                        "in un altro dominio)")
+        self.renumber_button.clicked.connect(self._renumber)
+        w = QWidget()
+        row = QHBoxLayout(w)
+        row.setContentsMargins(0, 0, 0, 0)
+        row.addWidget(self.id_edit, 1)
+        row.addWidget(self.renumber_button)
+        self._refresh_id()
+        return w, lambda: self.draft.get("id")
+
+    def _refresh_id(self):
+        model, element = self.project.model, self.draft
+        self.id_edit.setText(element.get("id") or "")
+        missing = missing_context(element, model)
+        self.id_edit.setPlaceholderText(
+            f"Verrà assegnato dopo aver indicato: {', '.join(missing)}" if missing else "Assegnato automaticamente")
+        self.renumber_button.setVisible(bool(element.get("id")) and rule(element, model) is not None
+                                        and not matches_context(element, model))
+
+    def _renumber(self):
+        """New identifier for the current context, in the draft (applied with «Salva»)."""
+        self.flush()
+        new_id = compute_id(self.draft, self.project.model, self.project.published_ids)
+        if new_id and new_id != self.draft.get("id"):
+            self.draft.set("id", new_id)
+            self._draft_changed()
+
+    def _srs_trace_card(self):
+        """Traced SRS items of the sheet, opened in their own window; edited with the «Traccia…» window.
+
+        SA-1 domain: sections of which it is principal, sections and clauses to which it contributes.
+        SA-2 / LA-2 function: sections and clauses it is allocated to, derived requirements (SA-4)."""
+        from arcadia_tool.ui import srs_trace
+
+        model, element = self.project.model, self.element
+        if element.kind == "derived_requirement":
+            return self._derived_trace_card()
+        if element.kind == "domain":
+            title, label, tip = ("Tracciabilità verso le voci SRS (A4)", "Traccia sezioni e clausole SRS…",
+                                 "Collega il dominio alle sezioni (es. 3.4.1) o alle clausole (es. 3.4.1.3)")
+            columns = (("srsPrincipal", "Sezioni SRS principali", srs_trace.principal_items(model, element)),
+                       ("srsContributing", "Sezioni e clausole SRS a cui contribuisce",
+                        srs_trace.contributed_items(model, element)))
+        elif element.kind == "system_function":
+            title, label, tip = ("Allocazione alle voci SRS", "Alloca a sezioni e clausole SRS…",
+                                 "Alloca la funzione a sezioni (es. 3.4.1) o clausole (es. 3.4.1.3)")
+            columns = (("srsAllocated", "Sezioni e clausole SRS", srs_trace.allocated_items(model, element)),)
+        else:  # logical function: also the derived requirements it refines (LA-2)
+            title, label, tip = ("Allocazione alle voci SRS e ai requisiti derivati",
+                                 "Alloca a sezioni, clausole e requisiti derivati…",
+                                 "Alloca la funzione a sezioni (es. 3.4.1), clausole (es. 3.4.1.3) o requisiti "
+                                 "derivati (SA-4)")
+            columns = (("srsAllocated", "Sezioni e clausole SRS", srs_trace.allocated_items(model, element)),
+                       ("derivedAllocated", "Requisiti derivati (SA-4)", srs_trace.derived_of(model, element)))
+        frame, layout = card(title)
+        has_srs = bool(model.of_kind("requirement"))
+        button = QPushButton(icon("mdi6.link-variant-plus"), label)
+        button.setEnabled(has_srs)
+        button.setToolTip(tip if has_srs else "Importa prima le voci SRS (menu Progetto › Importa voci SRS)")
+        button.clicked.connect(self._trace_srs)
+        row = QHBoxLayout()
+        row.addWidget(button)
+        row.addStretch()
+        layout.addLayout(row)
+        lists = QHBoxLayout()
+        for name, title, items in columns:
+            column = QVBoxLayout()
+            column.addWidget(QLabel(f"{title} ({len(items)})", objectName="formLabel"))
+            view = QListWidget(objectName=name)
+            view.setMinimumHeight(120)
+            view.setMaximumHeight(240)
+            for e in items:
+                entry = QListWidgetItem(model.label(e))  # a derived requirement: its ID only
+                entry.setData(Qt.UserRole, e.uuid)
+                entry.setToolTip((e.get("text") or e.get("obligation") or e.get("title") or "")[:600])
+                view.addItem(entry)
+            if not items:
+                view.addItem(QListWidgetItem("Nessuna voce tracciata"))
+                view.setEnabled(False)
+            view.setToolTip("Doppio clic per aprire la voce")
+            view.itemDoubleClicked.connect(lambda entry: entry.data(Qt.UserRole)
+                                           and self.open_requested.emit(entry.data(Qt.UserRole)))
+            column.addWidget(view)
+            lists.addLayout(column, 1)
+        layout.addLayout(lists)
+        return frame
+
+    def _derived_trace_card(self):
+        """SA-4: the SRS item the requirement is derived from and its logical function, each chosen in a window
+        with search and ticks."""
+        model, element = self.project.model, self.draft
+        frame, layout = card("Tracciabilità")
+        rows = (
+            ("parentItem", "Voce madre", element.get("parent"), "Scegli la voce madre…", self._choose_parent,
+             bool(model.of_kind("requirement")), "Importa prima le voci SRS (menu File › Importa SRS)"),
+            ("logicalFunction", "Funzione logica (LA-2)", element.get("function"), "Scegli la funzione logica…",
+             self._choose_function, bool(model.of_kind("logical_function")),
+             "Crea prima le funzioni logiche (LA-2) nel modello"),
+        )
+        form = QFormLayout()
+        form.setLabelAlignment(Qt.AlignRight | Qt.AlignVCenter)
+        form.setHorizontalSpacing(16)
+        for name, label, uuid, button_text, action, enabled, why in rows:
+            target = model.get(uuid) if uuid else None
+            shown = QLineEdit(model.choice_label(target) if target else "", readOnly=True, objectName="readonly")
+            shown.setAccessibleName(name)
+            shown.setPlaceholderText("Non indicata")
+            shown.setToolTip((target.get("text") or target.get("title") or "")[:600] if target else "")
+            button = QPushButton(icon("mdi6.link-variant-plus"), button_text)
+            button.setEnabled(enabled)
+            button.setToolTip("" if enabled else why)
+            button.clicked.connect(action)
+            line = QHBoxLayout()
+            line.addWidget(shown, 1)
+            line.addWidget(button)
+            if target is not None:
+                line.addWidget(self._open_button(target))
+            form.addRow(QLabel(label, objectName="formLabel"), line)
+            self.widgets[name] = shown
+        layout.addLayout(form)
+        return frame
+
+    def _open_button(self, target):
+        """Opens a referenced element in its own window; usable also on a read-only sheet."""
+        read = QPushButton(icon("mdi6.open-in-new"), "")
+        read.setToolTip("Apri in una finestra")
+        read.setProperty("keepEnabled", True)
+        read.clicked.connect(lambda _=False, u=target.uuid: self.open_requested.emit(u))
+        return read
+
+    def _choose_parent(self):
+        from arcadia_tool.ui.srs_trace import TraceParentDialog
+
+        self.flush()
+        dialog = TraceParentDialog(self.project, self.draft, self)  # sets the draft, applied with «Salva»
+        if dialog.exec() and dialog.changed:
+            self._draft_changed()
+
+    def _choose_function(self):
+        from arcadia_tool.ui.srs_trace import choose_logical_function
+
+        self.flush()
+        chosen = choose_logical_function(self.project, self.draft, self)
+        if chosen is not False and chosen != self.draft.get("function"):
+            self.draft.set("function", chosen)
+            self._draft_changed()
+
+    def _trace_srs(self):
+        """The traceability windows apply their choices with their own «Applica» (they change also other
+        elements, e.g. the allocation of the SRS items to the domain)."""
+        from arcadia_tool.ui.srs_trace import SRS_FIELD, TraceFunctionDialog, TraceSrsDialog
+
+        self.flush()
+        dialog_class = TraceSrsDialog if self.element.kind == "domain" else TraceFunctionDialog
+        dialog = dialog_class(self.project, self.element, self)
+        if dialog.exec():
+            if dialog.created:
+                self.elements_created.emit()
+            for item in dialog.changed:
+                self.element_changed.emit(item)
+            if self.element.kind in SRS_FIELD:  # its own list, set by the window
+                self.draft.set(SRS_FIELD[self.element.kind], self.element.get(SRS_FIELD[self.element.kind]))
+            self._build()  # shows the new lists
+
+    def _picker_widget(self, f, value):
+        """A reference chosen in a window with search and ticks (one element): the choice and «Scegli…»."""
+        model = self.project.model
+        target = model.get(value) if value else None
+        shown = QLineEdit(model.choice_label(target) if target else (value or ""), readOnly=True,
+                          objectName="readonly")
+        shown.setPlaceholderText("Non indicato")
+        shown.setToolTip((target.get("text") or target.get("description") or "")[:600] if target else "")
+        button = QPushButton(icon("mdi6.link-variant-plus"), "Scegli…")
+        button.setEnabled(bool(model.of_kind(*f.ref_kinds)))
+        button.setToolTip(f"Scegli «{f.label}» in una finestra con ricerca" if button.isEnabled()
+                          else "Nessun elemento da scegliere nel modello")
+        button.clicked.connect(lambda _=False: self._pick(f))
+        w = QWidget()
+        row = QHBoxLayout(w)
+        row.setContentsMargins(0, 0, 0, 0)
+        row.addWidget(shown, 1)
+        row.addWidget(button)
+        if target is not None:
+            row.addWidget(self._open_button(target))
+        return w, lambda: self.draft.get(f.name)
+
+    def _pick(self, f):
+        from arcadia_tool.ui.srs_trace import TraceItemDialog, choose_element
+
+        self.flush()
+        if f.ref_kinds == ("requirement",):  # SRS item: chapter tabs, search, full text
+            dialog = TraceItemDialog(self.project, self.draft, self)  # sets the draft
+            changed = dialog.exec() and dialog.changed
+        else:
+            chosen = choose_element(self.project, self.draft, f.name, self)
+            changed = chosen is not False and chosen != self.draft.get(f.name)
+            if changed:
+                self.draft.set(f.name, chosen)
+        if changed:
+            self._draft_changed()
+
+    def _derived_widget(self, f):
+        """Read-only copy of a field of the referenced element (the referent of the domain's team)."""
+        ref, source = f.derived_from
+        w = QLineEdit(readOnly=True, objectName="readonly")
+        ref_field = self.element.schema.field(ref)
+        source_label = KINDS_BY_NAME[ref_field.ref_kinds[0]].field(source).label.lower()
+
+        def reference():
+            return self.getters[ref]() if ref in self.getters else self.draft.get(ref)
+
+        def current():
+            target = self.project.model.get(reference()) if reference() else None
+            return target.get(source) if target is not None else None
+
+        def refresh(*_):
+            value = current()
+            w.setText(", ".join(value) if isinstance(value, list) else value or "")
+            w.setPlaceholderText(f"Non indicato in «{ref_field.label}»" if reference()
+                                 else f"Scegli «{ref_field.label}»")
+
+        w.setToolTip(f"Automatico: {source_label} indicato nella scheda di «{ref_field.label}».")
+        if isinstance(self.widgets.get(ref), QComboBox):  # a picker field refreshes the whole page instead
+            self.widgets[ref].currentIndexChanged.connect(refresh)
+        refresh()
+        return w, current
+
+    def _choice_widget(self, f, value):
+        """A text chosen among the values of a list field of the same element (the referent among the members)."""
+        w = compact_combo()
+        source_label = self.element.schema.field(f.choices_from).label
+
+        def options():
+            getter = self.getters.get(f.choices_from)
+            return getter() if getter else (self.draft.get(f.choices_from) or [])
+
+        def refresh(*_):
+            selected = w.currentData() if w.count() else value
+            w.blockSignals(True)
+            w.clear()
+            w.addItem("", None)
+            for name in options():
+                w.addItem(name, name)
+            if selected and w.findData(selected) < 0:
+                w.addItem(f"{selected} (non è tra i {source_label.lower()})", selected)
+            w.setCurrentIndex(max(w.findData(selected), 0) if selected else 0)
+            w.blockSignals(False)
+
+        w.setToolTip(f"Si sceglie tra i «{source_label}» indicati sopra.")
+        refresh()
+        if f.choices_from in self.widgets:
+            self.widgets[f.choices_from].textChanged.connect(refresh)
+        w.currentIndexChanged.connect(self._changed)
+        return w, w.currentData
+
+    def _make_widget(self, f, value):
+        model = self.project.model
+        if f.type == STR and f.name == "id" and is_automatic(self.element.kind):
+            return self._id_widget()
+        if f.derived_from:
+            return self._derived_widget(f)
+        if f.choices_from:
+            return self._choice_widget(f, value)
+        if f.picker:
+            return self._picker_widget(f, value)
+        if f.type == STR:
+            w = QLineEdit(value or "")
+            if self.element.schema.id_format and f.name == "id":
+                w.setPlaceholderText(f"es. {self.element.schema.id_format}")
+            w.textChanged.connect(self._changed)
+            return w, lambda: w.text().strip()
+        if f.type == TEXT:
+            w = QPlainTextEdit(value or "")
+            w.setFixedHeight(84)
+            w.textChanged.connect(self._changed)
+            return w, lambda: w.toPlainText().strip()
+        if f.type == INT:
+            w = QSpinBox(maximum=100000)
+            w.setSpecialValueText("—")
+            w.setValue(value or 0)
+            w.valueChanged.connect(self._changed)
+            return w, lambda: w.value() or None
+        if f.type == BOOL:
+            w = QCheckBox()
+            w.setChecked(bool(value))
+            w.toggled.connect(self._changed)
+            return w, w.isChecked
+        if f.type in (ENUM, REF):
+            w = compact_combo()
+            w.addItem("", None)
+            if f.type == ENUM:
+                choices, value = [(o, o) for o in f.options], enum_option(f, value)
+            else:
+                choices = _ref_choices(model, f.ref_kinds)
+            for data, label in choices:
+                if data != self.element.uuid:
+                    w.addItem(label, data)
+                    w.setItemData(w.count() - 1, label, Qt.ToolTipRole)
+            if value and w.findData(value) < 0:
+                w.addItem(model.label_of(value) or f"{value} (inesistente)", value)
+            w.setCurrentIndex(max(w.findData(value), 0) if value else 0)
+            w.currentIndexChanged.connect(self._changed)
+            return w, w.currentData
+        if f.type == MULTIENUM:
+            w = QWidget()
+            layout = QHBoxLayout(w)
+            layout.setContentsMargins(0, 0, 0, 0)
+            boxes = []
+            for option in f.options:
+                box = QCheckBox(option)
+                box.setChecked(option in (value or []))
+                box.toggled.connect(self._changed)
+                layout.addWidget(box)
+                boxes.append(box)
+            layout.addStretch()
+            return w, lambda: [b.text() for b in boxes if b.isChecked()]
+        if f.type == STRLIST:
+            w = QLineEdit(", ".join(value or []))
+            w.setPlaceholderText("valori separati da virgola")
+            w.textChanged.connect(self._changed)
+            return w, lambda: [s.strip() for s in w.text().split(",") if s.strip()]
+        if f.type == MAP:
+            w = QWidget()
+            grid = QGridLayout(w)
+            grid.setContentsMargins(0, 0, 0, 0)
+            grid.setHorizontalSpacing(8)
+            combos = {}
+            for i, key in enumerate(f.options):
+                combo = QComboBox()
+                combo.addItems(["", "X", "O"])
+                combo.setCurrentText((value or {}).get(key, ""))
+                combo.currentIndexChanged.connect(self._changed)
+                row, col = divmod(i, MAP_COLUMNS)
+                label = QLabel(key, alignment=Qt.AlignCenter)
+                label.setStyleSheet(f"color:{MUTED}; font-weight:600;")
+                grid.addWidget(label, row * 2, col)
+                grid.addWidget(combo, row * 2 + 1, col)
+                combos[key] = combo
+            return w, lambda: {k: c.currentText() for k, c in combos.items() if c.currentText()}
+        if f.type == REFS:
+            w = RefsWidget(model, f.ref_kinds)
+            w.set_value(value)
+            w.changed.connect(self._changed)
+            return w, w.value
+        if f.type == TABLE:
+            w = TableWidget(model, f)
+            w.set_value(value)
+            w.changed.connect(self._changed)
+            return w, w.value
+        if f.type == IMAGE:
+            w = QLabel(alignment=Qt.AlignLeft)
+            pixmap = load_pixmap(self.project, value)
+            if pixmap is None:
+                w.setText(f"Immagine non trovata: {value}")
+                w.setObjectName("muted")
+            else:
+                w.setPixmap(pixmap if pixmap.width() <= IMAGE_MAX_WIDTH
+                            else pixmap.scaledToWidth(IMAGE_MAX_WIDTH, Qt.SmoothTransformation))
+            w.setToolTip(value or "")
+            return w, lambda: value
+        raise ValueError(f"Tipo di campo non gestito: {f.type}")
+
+    def _changed(self, *_):
+        if self._building or not self.editing:
+            return  # values set while the page is built, or a read-only sheet
+        self._set_dirty(True)
+        self._timer.start()
+
+    def _draft_changed(self):
+        """A choice made in a window (voce madre, funzione…) changed the draft: show it."""
+        self._set_dirty(True)
+        self._build()
+
+    def discard_pending(self):
+        """Forget the changes not saved (the element was deleted)."""
+        self._timer.stop()
+        self.element = self.draft = None
+        self._set_dirty(False)
+
+    def flush(self):
+        """Copy the values being typed into the draft (they reach the model only with «Salva»)."""
+        if self._timer.isActive():
+            self._timer.stop()
+            self._apply()
+
+    def _apply(self):
+        if self.draft is None:
+            return
+        schema = self.draft.schema
+        names = [n for n in self.getters if not self.read_only or (schema.field(n) and schema.field(n).analysis)]
+        for name in names:
+            self.draft.set(name, self.getters[name]())
+        if is_automatic(self.draft.kind) and hasattr(self, "id_edit"):
+            self._refresh_id()
+        self.title.setText(self.project.model.choice_label(self.draft))
+
+
+class ElementWindow(QDialog):
+    """An element in its own window (e.g. an SRS item traced by the domain shown in the main page)."""
+
+    def __init__(self, srs_edit_mode=None, parent=None):
+        super().__init__(parent)
+        self.setWindowFlags(self.windowFlags() | Qt.WindowMaximizeButtonHint)
+        self.resize(900, 760)
+        self.editor = ElementEditor(srs_edit_mode)
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.addWidget(self.editor)
+
+    def show_element(self, project, element):
+        if self.editor.element is not element and not resolve_unsaved(self.editor, self):
+            return
+        if self.editor.element is not element:
+            self.editor.edit(project, element)
+        self.setWindowTitle(f"{element.schema.label} · {project.model.label(element)}")
+        self.show()
+        self.raise_()
+        self.activateWindow()
+
+    def closeEvent(self, event):
+        if not resolve_unsaved(self.editor, self):
+            event.ignore()
+            return
+        super().closeEvent(event)
+
+    def reject(self):  # Esc: like closing the window
+        if resolve_unsaved(self.editor, self):
+            super().reject()
+
+
+def resolve_unsaved(editor, parent, what=None):
+    """Before a sheet with changes not saved is closed: save or discard them. False if the user cancels."""
+    if not editor.dirty or editor.element is None:
+        return True
+    name = editor.project.model.label(editor.element)
+    box = QMessageBox(QMessageBox.Question, "Modifiche non salvate",
+                      what or f"La scheda «{name}» ha modifiche non salvate.", parent=parent)
+    box.setInformativeText("Salvarle o scartarle?")
+    save = box.addButton("Salva", QMessageBox.AcceptRole)
+    discard = box.addButton("Scarta", QMessageBox.DestructiveRole)
+    box.addButton(QMessageBox.Cancel)
+    box.setDefaultButton(save)
+    box.exec()
+    if box.clickedButton() is save:
+        editor.save_changes()
+        return True
+    if box.clickedButton() is discard:
+        editor.cancel_changes(ask=False)
+        return True
+    return False

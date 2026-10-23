@@ -1,0 +1,60 @@
+# ATLAS — repository of the source code.
+# Kept: src/, tests/, scripts/, installer/ (Inno Setup script), Templates/ (bundled in the build),
+# images/ (originals of the logos), pyproject.toml, README.md, this file.
+
+# --- Python environment and caches ------------------------------------------------------------------
+.venv/
+venv/
+env/
+__pycache__/
+*.py[cod]
+*.egg-info/
+.eggs/
+pip-wheel-metadata/
+
+# --- Tests and coverage -----------------------------------------------------------------------------
+.pytest_cache/
+.coverage
+.coverage.*
+htmlcov/
+coverage.xml
+
+# --- Build: PyInstaller and Inno Setup (scripts/build.ps1 recreates them) ----------------------------
+build/
+dist/
+*.spec
+installer/Output/
+
+# --- Inputs not to be published ---------------------------------------------------------------------
+# PDF of the SUBSET-026 (ERA specification, ~12 MB): obtained from ERA; the test on the real PDFs reads
+# them from the folder in ARCADIA_SRS_PDF_DIR.
+SUBSET 026/
+*.pdf
+# Documents of the RFI methodology: kept on the PCs of the team, not published.
+Metodologia/
+
+# --- Data of the tool when it is run from the sources -------------------------------------------------
+# Local folder of an ARCADIA project (cache, recovery copy, settings of the PC) and logs.
+.arcadia/
+*.log
+
+# --- Secrets ----------------------------------------------------------------------------------------
+# Never in the repository: environment files and SSH keys (the accounts keep them in %APPDATA%).
+.env
+.env.*
+*_ed25519
+*_ed25519.pub
+id_rsa*
+*.pem
+*.key
+
+# --- Editors and operating system -------------------------------------------------------------------
+.vscode/
+.idea/
+*.code-workspace
+~$*
+*.tmp
+*.bak
+Thumbs.db
+desktop.ini
+.DS_Store

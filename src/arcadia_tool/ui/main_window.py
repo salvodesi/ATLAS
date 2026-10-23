@@ -1,0 +1,820 @@
+from pathlib import Path
+
+from PySide6.QtCore import QSize, Qt, QTimer
+from PySide6.QtGui import QAction, QKeySequence
+from PySide6.QtWidgets import (QApplication, QFileDialog, QLabel, QMainWindow, QMessageBox, QProgressDialog,
+                               QSplitter, QStackedWidget, QTabWidget, QToolBar, QVBoxLayout, QWidget)
+
+from arcadia_tool import APP_NAME, __version__
+from arcadia_tool.accounts import git_credentials
+from arcadia_tool.storage.project import (Project, ProjectError, describe_project, read_recovery_info,
+                                          recovery_file)
+from arcadia_tool.storage.repository import PROJECT_FILE
+from arcadia_tool.storage.trash import move_to_trash
+
+TAB_TITLE_LENGTH = 48
+from arcadia_tool.ui.dialogs import NewProjectDialog, settings
+from arcadia_tool.ui.accounts import AccountDialog, account_store, require_login
+from arcadia_tool.ui.branding import FittedImage, logo_size, vertical_logo
+from arcadia_tool.ui.clone import CloneDialog
+from arcadia_tool.ui.migrate import MigrationDialog, ReloadDialog
+from arcadia_tool.ui.push import PushDialog
+from arcadia_tool.ui.element_editor import ElementEditor, ElementWindow, resolve_unsaved
+from arcadia_tool.ui.project_settings import ProjectSettingsDialog, recovery_minutes
+from arcadia_tool.ui.import_srs import ImportSrsDialog
+from arcadia_tool.ui.loading import LoadingDialog
+from arcadia_tool.ui.model_tree import ModelTree
+from arcadia_tool.ui.srs_edit_mode import SrsEditMode
+from arcadia_tool.ui.srs_reader import SrsReader
+from arcadia_tool.ui.start_page import StartPage
+from arcadia_tool.ui.theme import CHANGE_COLORS, TEXT, icon, kind_icon
+from arcadia_tool.ui.versions import CompareDialog, HistoryDialog, PublishDialog
+
+MAX_RECENT = 8
+SAVE_PROGRESS_THRESHOLD = 300
+
+
+class MainWindow(QMainWindow):
+    def __init__(self):
+        super().__init__()
+        self.project = None
+        self.user = None  # the logged-in account (see app.main): author of the published versions
+        self.resize(1440, 880)
+        # Unsaved edits are copied to the project's recovery file, restored after an unexpected interruption.
+        self._recovery_pending = False
+        self.recovery_timer = QTimer(self, interval=recovery_minutes() * 60_000, timeout=self.write_recovery)
+        self.recovery_timer.start()
+
+        self.start = StartPage()
+        self.start.new_requested.connect(self.new_project)
+        self.start.open_requested.connect(self.open_project_dialog)
+        self.start.clone_requested.connect(self.clone_project_dialog)
+        self.start.recent_requested.connect(self.open_project)
+        self.start.delete_requested.connect(self.delete_project)
+        self.start.forget_requested.connect(self.forget_project)
+        self.srs_edit_mode = SrsEditMode()
+        self.tree = ModelTree(self.srs_edit_mode)
+        # One tab per opened element, closed only by the user (or when its element is deleted).
+        self.editors = {}  # element uuid → ElementEditor in a tab
+        self._idle_editor = ElementEditor(self.srs_edit_mode)  # «editor» when no element tab is shown
+        self._last_editor = None
+        self.reader = None
+        self.pages = QTabWidget()
+        self.pages.setDocumentMode(True)
+        self.pages.setTabsClosable(True)
+        # No tab until an element is opened: its tab is named after it (see _show_editor).
+        self.pages.tabCloseRequested.connect(self._close_page)
+        self.pages.currentChanged.connect(self._page_changed)
+        # With no tab open the vertical logo (it has the name too) is shown in place of the empty tab area.
+        self.no_pages = QWidget()
+        empty = QVBoxLayout(self.no_pages)
+        empty.addWidget(FittedImage(vertical_logo(), logo_size()))  # its size, reduced only to fit the area
+        self.work_area = QStackedWidget()
+        self.work_area.addWidget(self.no_pages)
+        self.work_area.addWidget(self.pages)
+        workspace = QSplitter()
+        workspace.addWidget(self.tree)
+        workspace.addWidget(self.work_area)
+        workspace.setStretchFactor(1, 1)
+        workspace.setSizes([340, 1100])
+        self.stack = QStackedWidget()
+        self.stack.addWidget(self.start)
+        self.stack.addWidget(workspace)
+        self.setCentralWidget(self.stack)
+
+        self.tree.element_selected.connect(self._select)
+        self.tree.model_changed.connect(self._model_changed)
+        self.tree.srs_reader_requested.connect(self.open_srs_reader)
+        self.item_window = None  # separate window for an element linked to the page (e.g. a traced SRS item)
+
+        self._build_actions()
+        self._build_status_bar()
+        self._refresh_recent()
+        self._refresh_state()
+
+    def _action(self, text, icon_name, slot, shortcut=None, tip=None):
+        action = QAction(icon(icon_name, TEXT), text, self)
+        action.triggered.connect(lambda _checked=False: slot())
+        if shortcut:
+            action.setShortcut(shortcut)
+        action.setToolTip(f"{tip or text}" + (f" ({QKeySequence(shortcut).toString()})" if shortcut else ""))
+        return action
+
+    def _build_actions(self):
+        self.new_action = self._action("Nuovo", "mdi6.file-plus-outline", self.new_project, QKeySequence.New,
+                                       "Nuovo progetto")
+        self.open_action = self._action("Apri", "mdi6.folder-open-outline", self.open_project_dialog,
+                                        QKeySequence.Open, "Apri progetto")
+        self.save_action = self._action("Salva", "mdi6.content-save-outline", self.save, QKeySequence.Save,
+                                        "Salva le modifiche su disco")
+        self.publish_action = self._action("Pubblica…", "mdi6.cloud-upload-outline", self.publish,
+                                           QKeySequence("Ctrl+Shift+P"), "Pubblica una nuova versione del modello")
+        self.compare_action = self._action("Confronta…", "mdi6.compare-horizontal", self.compare, None,
+                                           "Confronta due versioni del modello")
+        self.history_action = self._action("Cronologia", "mdi6.history", self.history, None,
+                                           "Cronologia delle pubblicazioni")
+        self.close_action = self._action("Chiudi progetto", "mdi6.close", self.close_project)
+        self.import_action = self._action("Importa SRS…", "mdi6.file-import-outline", self.import_srs, None,
+                                          "Importa le voci SRS dai PDF del SUBSET-026")
+        self.clean_action = self._action("Pulisci progetto…", "mdi6.broom", self.clean_project, None,
+                                         "Rimuove gli elementi del progetto (anche mantenendo le voci SRS)")
+        self.remove_srs_action = self._action("Rimuovi tutte le voci SRS…", "mdi6.delete-sweep-outline",
+                                              self.remove_all_srs, None, "Rimuove tutte le voci SRS importate")
+        self.send_action = self._action("Invia al repository", "mdi6.cloud-upload", self.send_versions, None,
+                                        "Invia al repository remoto le versioni pubblicate e non ancora inviate")
+        self.clone_action = self._action("Scarica progetto da Git…", "mdi6.source-branch", self.clone_project_dialog,
+                                         None, "Scarica un progetto da un repository Git remoto e lo apre")
+        self.reload_action = self._action("Ricarica dal repository…", "mdi6.cloud-download-outline",
+                                          self.reload_from_remote, None,
+                                          "Sostituisce il contenuto locale con il ramo di lavoro del repository")
+        self.migrate_action = self._action("Migra repository…", "mdi6.transfer", self.migrate_repository, None,
+                                           "Copia la storia del progetto (tutti i rami o alcuni) in un altro Git")
+        self.settings_action = self._action("Impostazioni…", "mdi6.cog-outline", self.project_settings, None,
+                                            "Nome, repository Git e altri parametri del progetto")
+        self.account_action = self._action("Modifica account…", "mdi6.account-edit-outline", self.edit_account,
+                                           None, "Dati dell'utente e accesso ai repository Git")
+        self.switch_user_action = self._action("Cambia utente…", "mdi6.account-switch-outline", self.switch_user,
+                                               None, "Accedi con un altro account locale")
+
+        bar = QToolBar("Principale", movable=False)
+        bar.setIconSize(QSize(18, 18))
+        bar.setToolButtonStyle(Qt.ToolButtonTextBesideIcon)
+        for a in (self.new_action, self.open_action, self.save_action):
+            bar.addAction(a)
+        bar.addSeparator()
+        bar.addAction(self.import_action)
+        bar.addSeparator()
+        for a in (self.publish_action, self.compare_action, self.history_action):
+            bar.addAction(a)
+        self.addToolBar(bar)
+
+        file_menu = self.menuBar().addMenu("&File")
+        file_menu.addAction(self.new_action)
+        file_menu.addAction(self.open_action)
+        file_menu.addAction(self.clone_action)
+        self.recent_menu = file_menu.addMenu("Progetti recenti")
+        file_menu.addSeparator()
+        file_menu.addAction(self.save_action)
+        file_menu.addSeparator()
+        file_menu.addAction(self.import_action)
+        file_menu.addSeparator()
+        file_menu.addAction("Esci", self.close, QKeySequence.Quit)
+        project_menu = self.menuBar().addMenu("&Progetto")
+        project_menu.addAction(self.close_action)
+        project_menu.addSeparator()
+        project_menu.addAction(self.clean_action)
+        project_menu.addAction(self.remove_srs_action)
+        project_menu.addSeparator()
+        project_menu.addAction(self.reload_action)
+        project_menu.addAction(self.migrate_action)
+        project_menu.addSeparator()
+        project_menu.addAction(self.settings_action)
+        versions_menu = self.menuBar().addMenu("&Versioni")
+        for a in (self.publish_action, self.send_action, self.compare_action, self.history_action):
+            versions_menu.addAction(a)
+        user_menu = self.menuBar().addMenu("&Utente")
+        user_menu.addAction(self.account_action)
+        user_menu.addAction(self.switch_user_action)
+
+    def _build_status_bar(self):
+        self.status_user = QLabel()
+        self.status_project = QLabel()
+        self.status_modified = QLabel()
+        self.statusBar().addWidget(self.status_user)
+        self.statusBar().addWidget(self.status_project, 1)
+        self.statusBar().addPermanentWidget(self.status_modified)
+
+    # --- user ----------------------------------------------------------------------------------
+
+    def set_user(self, account):
+        self.user = account
+        self._refresh_state()
+
+    def edit_account(self):
+        if self.user is None:
+            return self.switch_user()
+        dialog = AccountDialog(account_store(), self.user, self)
+        if dialog.exec():
+            self.set_user(dialog.account)
+
+    def switch_user(self):
+        account = require_login(self, current=self.user)
+        if account is not None:
+            self.set_user(account)
+
+    def project_settings(self):
+        if not self.project:
+            return
+        dialog = ProjectSettingsDialog(self.project, self.user, self)
+        if dialog.exec():
+            self.recovery_timer.setInterval(recovery_minutes() * 60_000)
+            self._refresh_state()
+            self.statusBar().showMessage("Impostazioni del progetto salvate", 3000)
+            if dialog.remote_changed:
+                self._remote_changed()
+
+    def _remote_changed(self):
+        """The address of the repository changed: keep the project as it is, or reload it from there."""
+        box = QMessageBox(QMessageBox.Question, "Indirizzo del repository cambiato",
+                          f"Il progetto ora usa il repository {self.project.remote()}.", parent=self)
+        box.setInformativeText("Ricaricare il progetto dal nuovo repository (ramo di lavoro), o usare il nuovo "
+                               "indirizzo solo per i prossimi invii?")
+        reload = box.addButton("Ricarica dal nuovo repository", QMessageBox.AcceptRole)
+        box.addButton("Usa solo il nuovo indirizzo", QMessageBox.RejectRole)
+        box.setDefaultButton(reload)
+        box.exec()
+        if box.clickedButton() is reload:
+            self.reload_from_remote()
+
+    def reload_from_remote(self):
+        """Progetto › Ricarica dal repository: the working branch of the remote replaces the local content (what
+        was there stays in the Git history of the folder); the project is then opened again."""
+        if not self.project:
+            return
+        url = self.project.remote()
+        if not url:
+            QMessageBox.information(self, "Ricarica dal repository", "Nessun repository remoto: indica l'URL in "
+                                    "Progetto › Impostazioni › Repository Git.")
+            return
+        if not self._confirm_discard():  # changes not saved: saved or discarded first
+            return
+        unsent = self.project.unsent_versions()
+        if unsent and QMessageBox.question(
+                self, "Ricarica dal repository",
+                f"{len(unsent)} versioni pubblicate non sono state inviate al repository: dopo il ricaricamento non "
+                "saranno più sul ramo di lavoro (restano nella storia locale del progetto). Continuare?"
+        ) != QMessageBox.Yes:
+            return
+        path, branch = self.project.path, self.project.local_settings().get("branch")
+        credentials = git_credentials(self.user, url)
+        self._set_project(None)  # its files are about to change
+        dialog = ReloadDialog(path, url, branch, credentials, self)
+        dialog.exec()
+        self.open_project(str(path), confirmed=True)  # reloaded, or as it was if the download failed
+        if dialog.branch and self.project is not None:
+            self.statusBar().showMessage(f"Progetto ricaricato dal ramo «{dialog.branch}» di {url}", 6000)
+
+    def migrate_repository(self):
+        """Progetto › Migra repository: the history of the project (all its branches or some) to another Git."""
+        if not self.project:
+            return
+        dialog = MigrationDialog(self.project, self.user, self)
+        dialog.exec()
+        if dialog.use_destination:
+            target = dialog.target.text().strip()
+            self.project.update_settings(remote=target)
+            self.project.repository.set_remote_url(target)
+            self.statusBar().showMessage(f"Il progetto ora usa il repository {target}", 6000)
+
+    # --- state -------------------------------------------------------------------------------
+
+    def _refresh_state(self):
+        has_project = self.project is not None
+        modified = has_project and self.project.is_modified
+        if modified:
+            self._recovery_pending = True  # written by the timer
+        for a in (self.save_action, self.publish_action, self.compare_action, self.history_action,
+                  self.close_action, self.import_action, self.settings_action, self.send_action,
+                  self.reload_action, self.migrate_action):
+            a.setEnabled(has_project)
+        user = self.user.full_name if self.user else "nessuno"
+        self.status_user.setText(f"Utente: <b>{user}</b>   ·")
+        self.status_user.setToolTip(f"Utente collegato: {self.user.username} · {self.user.email}" if self.user
+                                    else "Nessun utente collegato")
+        self.save_action.setEnabled(modified)
+        self.clean_action.setEnabled(has_project and len(self.project.model) > 0)
+        self.remove_srs_action.setEnabled(has_project and bool(self.project.model.of_kind("requirement")))
+        name = f" — {self.project.name}" if has_project else ""
+        self.setWindowTitle(f"{'● ' if modified else ''}{APP_NAME} {__version__}{name}")
+        self.stack.setCurrentIndex(1 if has_project else 0)
+        if has_project:
+            self.status_project.setText(f"{self.project.name}   ·   {self.project.baseline}   ·   "
+                                        f"{len(self.project.model)} elementi   ·   {self.project.path}")
+            color = CHANGE_COLORS["modified"] if modified else CHANGE_COLORS["added"]
+            text = "● Modifiche non salvate" if modified else "✓ Salvato"
+            self.status_modified.setText(f"<span style='color:{color}; font-weight:600'>{text}</span>")
+        else:
+            self.status_project.setText("Nessun progetto aperto")
+            self.status_modified.clear()
+
+    def _refresh_recent(self):
+        # Projects moved or deleted (e.g. a temporary folder) are not offered any more.
+        recent = [p for p in (settings().value("recent", [], list) or []) if (Path(p) / PROJECT_FILE).exists()]
+        self.recent_menu.clear()
+        for path in recent:
+            self.recent_menu.addAction(path, lambda _checked=False, p=path: self.open_project(p))
+        self.recent_menu.setEnabled(bool(recent))
+        self.start.set_recent(recent)
+
+    def _remember(self, path):
+        s = settings()
+        recent = [p for p in (s.value("recent", [], list) or []) if p != str(path)]
+        s.setValue("recent", [str(path)] + recent[:MAX_RECENT - 1])
+        self._refresh_recent()
+
+    def forget_project(self, path):
+        """Out of the list of recent projects; the folder stays where it is."""
+        s = settings()
+        s.setValue("recent", [p for p in (s.value("recent", [], list) or []) if p != str(path)])
+        self._refresh_recent()
+
+    def delete_project(self, path):
+        """The folder of a project to the Recycle Bin of Windows, after a confirmation that says what would be
+        lost (versions never sent to a remote exist only on this PC)."""
+        path = Path(path)
+        if self.project is not None and Path(self.project.path).resolve() == path.resolve():
+            QMessageBox.information(self, "Elimina progetto", "Il progetto è aperto: chiudilo prima di eliminarlo.")
+            return
+        try:
+            info = describe_project(path)
+        except (OSError, ValueError) as exc:
+            QMessageBox.warning(self, "Elimina progetto", f"{path} non è leggibile come progetto: {exc}")
+            return
+        details = [f"Cartella: {path}",
+                   "La cartella viene spostata nel Cestino di Windows: puoi ancora recuperarla da lì."]
+        if not info["remote"]:
+            details.append("Il progetto non è su un repository remoto: tutto il suo contenuto, comprese le "
+                           f"{info['versions']} versioni pubblicate, esiste solo su questo PC.")
+        elif info["unsent"]:
+            details.append(f"Attenzione: {info['unsent']} versioni pubblicate non sono state inviate al repository "
+                           f"{info['remote']} ed esistono solo su questo PC.")
+        else:
+            details.append(f"Tutte le versioni pubblicate sono sul repository {info['remote']}; le modifiche non "
+                           "pubblicate andrebbero perse.")
+        box = QMessageBox(QMessageBox.Warning, "Elimina progetto", f"Eliminare il progetto «{info['name']}»?",
+                          parent=self)
+        box.setInformativeText("\n\n".join(details))
+        delete = box.addButton("Sposta nel Cestino", QMessageBox.DestructiveRole)
+        box.addButton(QMessageBox.Cancel)
+        box.setDefaultButton(QMessageBox.Cancel)
+        box.exec()
+        if box.clickedButton() is not delete:
+            return
+        try:
+            move_to_trash(path)
+        except OSError as exc:
+            QMessageBox.warning(self, "Elimina progetto", str(exc))
+            return
+        self.forget_project(path)
+        self.statusBar().showMessage(f"Progetto «{info['name']}» spostato nel Cestino", 6000)
+
+    # --- project lifecycle ---------------------------------------------------------------------
+
+    def _confirm_discard(self):
+        """Ask what to do with unsaved edits. Returns False if the user cancels."""
+        self._flush_editors()
+        for editor in self._unsaved_editors():  # sheets in edit mode with changes not saved
+            if editor in self.editors.values():
+                self._show_editor(editor)
+            if not resolve_unsaved(editor, self):
+                return False
+        if not self.project or not self.project.is_modified:
+            return True
+        answer = QMessageBox.question(
+            self, "Modifiche non salvate", f"Salvare le modifiche a «{self.project.name}»?",
+            QMessageBox.Save | QMessageBox.Discard | QMessageBox.Cancel, QMessageBox.Save)
+        if answer == QMessageBox.Save:
+            self.project.save()
+        elif answer == QMessageBox.Discard:
+            self.project.discard_recovery()
+        return answer != QMessageBox.Cancel
+
+    def new_project(self):
+        if not self._confirm_discard():
+            return
+        dialog = NewProjectDialog(self)
+        if not dialog.exec():
+            return
+        try:
+            project = Project.create(dialog.folder.text().strip(), dialog.name.text().strip(),
+                                     dialog.baseline.text().strip())
+        except (OSError, ProjectError) as exc:
+            QMessageBox.critical(self, "Nuovo progetto", str(exc))
+            return
+        self._set_project(project)
+
+    def open_project_dialog(self):
+        if not self._confirm_discard():
+            return
+        folder = QFileDialog.getExistingDirectory(self, "Apri progetto")
+        if folder:
+            self.open_project(folder, confirmed=True)
+
+    def clone_project_dialog(self):
+        """A project that is not on this PC yet: downloaded from a Git remote, then opened."""
+        if not self._confirm_discard():
+            return
+        dialog = CloneDialog(self.user, self)
+        if dialog.exec() and dialog.path is not None:
+            self.open_project(str(dialog.path), confirmed=True)
+            if self.project is not None:
+                self.statusBar().showMessage(f"Progetto scaricato in {dialog.path}", 6000)
+
+    def open_project(self, path, confirmed=False, restore=None):
+        if not confirmed and not self._confirm_discard():
+            return
+        loading = LoadingDialog(path, self._set_project, self)
+        if loading.exec():
+            self.offer_recovery(restore)
+        elif loading.error:
+            QMessageBox.critical(self, "Apri progetto", loading.error)
+
+    # --- recovery after an unexpected interruption ---------------------------------------------------
+
+    def write_recovery(self):
+        if not self.project or not self._recovery_pending:
+            return
+        self._flush_editors()
+        try:
+            self.project.write_recovery()
+            self._recovery_pending = False
+        except OSError:
+            pass  # retried at the next tick; the project files are not affected
+
+    def _ask_recovery(self, name, info):
+        when = (info.get("saved_at") or "").replace("T", " alle ")
+        changes = info.get("modified", 0) + len(info.get("deleted", []))
+        box = QMessageBox(QMessageBox.Warning, "Ripristino della sessione",
+                          f"Il tool si è chiuso in modo imprevisto mentre il progetto «{name}» aveva "
+                          "modifiche non salvate.", parent=self)
+        box.setInformativeText(f"Sono state recuperate {changes} modifiche (ultima copia del {when}).\n\n"
+                               "Ripristina: le modifiche tornano nel progetto come non salvate.\n"
+                               "Elimina: le modifiche recuperate vengono cancellate definitivamente.")
+        restore = box.addButton("Ripristina", QMessageBox.AcceptRole)
+        box.addButton("Elimina", QMessageBox.DestructiveRole)
+        box.setDefaultButton(restore)
+        box.exec()
+        return box.clickedButton() is restore
+
+    def offer_recovery(self, restore=None):
+        """After opening a project: restore or delete the edits of an interrupted session.
+
+        restore: the user already chose (at start-up); None asks."""
+        info = self.project.recovery_info() if self.project else None
+        if info is None:
+            return
+        if restore is None:
+            restore = self._ask_recovery(self.project.name, info)
+        if restore:
+            restored = self.project.restore_recovery()
+            self.tree.reload()
+            self._refresh_state()
+            self.statusBar().showMessage(f"Ripristinate {restored} modifiche non salvate: salva per conservarle.",
+                                         10000)
+        else:
+            self.project.discard_recovery()
+
+    def check_interrupted_sessions(self):
+        """At start-up: a recent project with a recovery file was not closed normally."""
+        for path in settings().value("recent", [], list) or []:
+            info = read_recovery_info(path)
+            if info is None or not (Path(path) / PROJECT_FILE).exists():
+                continue
+            name = Path(path).name
+            if self._ask_recovery(name, info):
+                self.open_project(path, confirmed=True, restore=True)
+            else:
+                recovery_file(path).unlink(missing_ok=True)
+            return
+
+    def clean_project(self):
+        """Remove the elements of the project: all of them, or all but the imported SRS items."""
+        if not self.project:
+            return
+        self._flush_editors()
+        model = self.project.model
+        srs = len(model.of_kind("requirement"))
+        others = len(model) - srs
+        box = QMessageBox(QMessageBox.Warning, "Pulisci progetto", f"Pulire il progetto «{self.project.name}»?",
+                          parent=self)
+        details = [f"Il progetto contiene {len(model)} elementi, di cui {srs} voci SRS importate."]
+        if srs:
+            details.append("«Mantieni le voci SRS» rimuove tutto il resto (domini, funzioni, esiti di tracciatura, "
+                           "requisiti derivati…) e azzera l'allocazione delle voci ai domini.")
+        details.append("La pulizia diventa definitiva al salvataggio; le versioni già pubblicate restano nella "
+                       "cronologia.")
+        box.setInformativeText("\n\n".join(details))
+        remove_all = box.addButton(f"Rimuovi tutto ({len(model)})", QMessageBox.DestructiveRole)
+        keep_srs = box.addButton(f"Mantieni le voci SRS (rimuove {others})", QMessageBox.AcceptRole) if srs else None
+        box.addButton(QMessageBox.Cancel)
+        box.setDefaultButton(QMessageBox.Cancel)
+        box.exec()
+        clicked = box.clickedButton()
+        if clicked is None or clicked not in (remove_all, keep_srs):
+            return  # «Annulla» or the window closed
+        removed = self.project.clean(keep_srs=clicked is keep_srs)
+        self._close_item_window()
+        self._model_changed()
+        self.statusBar().showMessage(f"Progetto pulito: {removed} elementi rimossi. Salva per renderlo definitivo.",
+                                     10000)
+
+    def remove_all_srs(self):
+        self._flush_editors()
+        self.tree.delete_all_requirements()  # asks to confirm (and to switch to the SRS edit mode)
+
+    def close_project(self):
+        if self._confirm_discard():
+            self._set_project(None)
+
+    def _set_project(self, project):
+        for editor in list(self.editors.values()):
+            self._hide_editor(editor)
+        self._close_item_window()
+        self._close_reader()
+        self.srs_edit_mode.set_enabled(False)  # imported SRS items start read-only in every session
+        if self.project:
+            self.project.close()
+        self.project = project
+        if project:
+            self._remember(Path(project.path).resolve())
+        self.tree.set_project(project)
+        self._refresh_state()
+
+    # --- editing -------------------------------------------------------------------------------
+
+    @property
+    def editor(self):
+        """Editor of the element tab shown (or last shown); an empty one when no element tab is open."""
+        current = self.pages.currentWidget()
+        if isinstance(current, ElementEditor):
+            return current
+        if self._last_editor is not None and self._last_editor in self.editors.values():
+            return self._last_editor
+        return self._idle_editor
+
+    def _page_changed(self, _index):
+        # Emitted also when the first tab is added (index 0) and when the last one is closed (index -1).
+        self.work_area.setCurrentWidget(self.pages if self.pages.count() else self.no_pages)
+        if isinstance(self.pages.currentWidget(), ElementEditor):
+            self._last_editor = self.pages.currentWidget()
+
+    def _new_editor(self):
+        editor = ElementEditor(self.srs_edit_mode)
+        editor.element_changed.connect(self._element_changed)
+        editor.back_requested.connect(self._back_to_reader)
+        editor.open_requested.connect(self.open_in_window)
+        editor.elements_created.connect(self._model_changed)
+        editor.dirty_changed.connect(lambda _dirty, e=editor: self._show_editor(e, activate=False))
+        editor.saved.connect(self._sheet_saved)
+        return editor
+
+    def _sheet_saved(self):
+        """«Salva» of a sheet: its changes are in the model; the project is saved."""
+        self._save_with_progress()
+        self._refresh_state()
+        self.statusBar().showMessage("Scheda salvata", 3000)
+
+    def _unsaved_editors(self):
+        editors = [e for e in self.editors.values() if e.dirty]
+        if self.item_window is not None and self.item_window.editor.dirty:
+            editors.append(self.item_window.editor)
+        return editors
+
+    def _select(self, element):
+        """Open an element in its tab (a new one, or the one already open). Selecting something that is not an
+        element (a group of the tree) leaves the open tabs as they are."""
+        if element is None:
+            return
+        editor = self.editors.get(element.uuid)
+        if editor is None:
+            editor = self._new_editor()
+            # A new element (never saved) opens directly in edit mode; the others (also imported SRS items not
+            # saved yet) read-only.
+            new = self.project.is_new(element) and element.kind != "requirement"
+            editor.edit(self.project, element, editing=new)
+            self.editors[element.uuid] = editor
+        elif editor.back_label:
+            editor.set_back(None)  # opened again from the model tree: nothing to go back to
+        self._show_editor(editor)
+
+    def _show_editor(self, editor=None, activate=True):
+        """The tab of an element, named after it, with its kind icon and a close button."""
+        editor = editor or self.editor
+        element = editor.element
+        if element is None:
+            return
+        index = self.pages.indexOf(editor)
+        if index < 0:
+            index = self.pages.insertTab(self._element_tab_count(), editor, "")
+        label = self.project.model.label(element)
+        short = label if len(label) <= TAB_TITLE_LENGTH else label[:TAB_TITLE_LENGTH - 1] + "…"
+        self.pages.setTabText(index, f"● {short}" if editor.dirty else short)  # ●: changes not saved
+        self.pages.setTabIcon(index, kind_icon(element.kind))
+        self.pages.setTabToolTip(index, f"{element.schema.label}: {label}")
+        if activate:
+            self.pages.setCurrentWidget(editor)
+
+    def _element_tab_count(self):
+        """Element tabs come before the SUBSET-026 catalogue."""
+        return sum(1 for i in range(self.pages.count()) if isinstance(self.pages.widget(i), ElementEditor))
+
+    def _hide_editor(self, editor=None):
+        editor = editor or self.editor
+        if editor is self._idle_editor:
+            return
+        editor.flush()
+        uuid = next((u for u, e in self.editors.items() if e is editor), None)
+        self.editors.pop(uuid, None)
+        index = self.pages.indexOf(editor)
+        if index >= 0:
+            self.pages.removeTab(index)
+        editor.clear()
+        editor.deleteLater()
+        if self._last_editor is editor:
+            self._last_editor = None
+
+    # --- SRS reading view ---------------------------------------------------------------------------
+
+    def open_srs_reader(self):
+        if not self.project:
+            return
+        self._flush_editors()
+        if self.reader is None:
+            self.reader = SrsReader(self.project, self.srs_edit_mode)
+            self.reader.open_element.connect(self._open_from_reader)
+            self.reader.derive_requested.connect(self._derive_from_reader)
+            self.reader.elements_deleted.connect(self._model_changed)
+            self.pages.addTab(self.reader, icon("mdi6.book-open-page-variant-outline"), "SUBSET-026")
+        self.pages.setCurrentWidget(self.reader)
+
+    def _open_from_reader(self, uuid):
+        element = self.project.model.get(uuid)
+        if element is None:
+            return
+        self.tree.select(uuid)
+        self._select(element)  # also when it is not (yet) in the tree
+        editor = self.editors[uuid]
+        editor.set_back("Torna al catalogo SUBSET-026")
+        self._show_editor(editor)
+
+    def _derive_from_reader(self, uuid):
+        """New derived requirement (SA-4) whose «Voce madre» is the SRS item; its ID is <voce>-Dn."""
+        self.tree.create("derived_requirement", {"parent": uuid})
+        self.editor.set_back("Torna al catalogo SUBSET-026")
+        self._show_editor()
+
+    def open_in_window(self, uuid):
+        """Show an element in its own window, leaving the page that links to it as it is."""
+        element = self.project.model.get(uuid) if self.project else None
+        if element is None:
+            return
+        if self.item_window is None:
+            self.item_window = ElementWindow(self.srs_edit_mode, self)
+            self.item_window.editor.element_changed.connect(self._window_element_changed)
+            self.item_window.editor.saved.connect(self._sheet_saved)
+        self.item_window.show_element(self.project, element)
+
+    def _window_element_changed(self, element):
+        self._element_changed(element)
+        if element.kind not in ("requirement", "derived_requirement"):
+            return
+        for editor in self.editors.values():  # e.g. the allocation changed: refresh the traced lists
+            page = editor.element
+            if page is not None and page.kind in ("domain", "system_function", "logical_function"):
+                editor.refresh()
+
+    def _close_item_window(self):
+        if self.item_window is not None:
+            self.item_window.editor.flush()
+            self.item_window.editor.clear()
+            self.item_window.close()
+
+    def _flush_editors(self):
+        """Apply the pending edits of the tabs and of the separate window (before saving, publishing…)."""
+        for editor in self.editors.values():
+            editor.flush()
+        if self.item_window is not None:
+            self.item_window.editor.flush()
+
+    def _back_to_reader(self, uuid):
+        if self.reader is None:
+            return
+        element = self.project.model.get(uuid)
+        if element is not None and element.kind == "derived_requirement":
+            uuid = element.get("parent") or uuid  # back to the SRS item it was derived from
+        self.pages.setCurrentWidget(self.reader)
+        self.reader.reveal(uuid)
+
+    def _close_page(self, index):
+        if self.pages.widget(index) is self.reader:
+            self._close_reader()
+        elif isinstance(self.pages.widget(index), ElementEditor):
+            editor = self.pages.widget(index)
+            if not resolve_unsaved(editor, self):  # changes in progress: save or discard them
+                return
+            current = self.tree.current_element()
+            if current is not None and current is editor.element:
+                self.tree.clear_selection()  # a click on the same element opens it again
+            self._hide_editor(editor)
+
+    def _close_reader(self):
+        if self.reader is not None:
+            self.pages.removeTab(self.pages.indexOf(self.reader))
+            self.reader.deleteLater()
+            self.reader = None
+
+    def _model_changed(self):
+        """Elements were created or deleted: refresh the views that list them."""
+        for uuid, editor in list(self.editors.items()):
+            if self.project.model.get(uuid) is None:  # its element was deleted: its pending edits too
+                editor.discard_pending()
+                self._hide_editor(editor)
+        if self.sender() is not self.tree:
+            self.tree.reload()
+        if self.reader is not None:
+            self.reader.reload()
+        self._refresh_state()
+
+    def _element_changed(self, element):
+        self.tree.refresh_label(element)
+        editor = self.editors.get(element.uuid)
+        if editor is not None:
+            self._show_editor(editor, activate=False)  # the name may have changed
+        if self.reader is not None:
+            self.reader.element_changed(element)
+        self._refresh_state()
+
+    def save(self):
+        if not self.project:
+            return
+        self._flush_editors()
+        self._save_with_progress()
+        self._refresh_state()
+        self.statusBar().showMessage("Modifiche salvate", 3000)
+
+    def _save_with_progress(self):
+        if self.project.pending_count < SAVE_PROGRESS_THRESHOLD:
+            self.project.save()
+            return
+        dialog = QProgressDialog("Salvataggio delle modifiche…", None, 0, self.project.pending_count, self)
+        dialog.setWindowTitle("Salva")
+        dialog.setWindowModality(Qt.WindowModal)
+        dialog.setMinimumDuration(0)
+
+        def progress(done, total):
+            dialog.setValue(done)
+            QApplication.processEvents()
+
+        self.project.save(progress)
+        dialog.close()
+
+    def import_srs(self):
+        if not self.project:
+            return
+        self._flush_editors()
+        dialog = ImportSrsDialog(self.project, self)
+        if dialog.exec():
+            self._model_changed()
+            deleted = f", {dialog.deleted} eliminate" if dialog.deleted else ""
+            self.statusBar().showMessage(
+                f"Import completato: {dialog.created} voci nuove, {dialog.updated} aggiornate{deleted}. "
+                "Salva per scriverle su disco.", 8000)
+
+    # --- versions (the only places where a diff is computed) ------------------------------------
+
+    def publish(self):
+        if not self.project:
+            return
+        self._flush_editors()
+        dialog = PublishDialog(self.project, self, user=self.user)
+        if dialog.exec():
+            if dialog.sha:
+                self.statusBar().showMessage(f"Pubblicata la versione {dialog.sha[:8]}", 5000)
+            if self.project.remote():
+                self.send_versions()  # the new version (or those recorded before) to the remote
+        self._refresh_state()
+
+    def send_versions(self):
+        """Versioni › Invia al repository: the versions published here and not sent yet, to the working branch."""
+        if not self.project:
+            return
+        if not self.project.remote():
+            QMessageBox.information(self, "Invia al repository", "Nessun repository remoto: indica l'URL in "
+                                    "Progetto › Impostazioni › Repository Git.")
+            return
+        if not self.project.unsent_versions():
+            QMessageBox.information(self, "Invia al repository", "Tutte le versioni pubblicate sono già state "
+                                    "inviate al repository.")
+            return
+        dialog = PushDialog(self.project, git_credentials(self.user, self.project.remote()), self)
+        dialog.exec()
+        if dialog.sent:
+            self.statusBar().showMessage(f"Versioni inviate al ramo «{self.project.push_branch()}»", 5000)
+
+    def compare(self):
+        if self.project:
+            self._flush_editors()
+            CompareDialog(self.project, parent=self).exec()
+
+    def history(self):
+        if self.project:
+            self._flush_editors()
+            HistoryDialog(self.project, self).exec()
+
+    def closeEvent(self, event):
+        if not self._confirm_discard():
+            event.ignore()
+            return
+        if self.project:
+            self.project.close()
+        super().closeEvent(event)
