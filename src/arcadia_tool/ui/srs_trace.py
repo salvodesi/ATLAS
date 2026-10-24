@@ -741,6 +741,77 @@ class TraceItemDialog(TraceParentDialog):
             "completo.")
 
 
+class TraceClauseDialog(TraceParentDialog):
+    """Request for clarification (X-2): the SRS section or clause it is about, one only."""
+    FIELD = "clause"
+    COLUMNS = ((PARENT, "Clausola"),)
+    TITLE = "clausola della richiesta di chiarimento"
+    HINT = ("Spunta la sezione (es. 3.4.1) o la clausola (es. 3.4.1.3) su cui si chiede il chiarimento: una sola, "
+            "spuntarne un'altra sposta la scelta. Doppio clic su una riga per leggerne il testo completo.")
+
+
+# The window to choose an SRS item, for each reference field to the specification chosen with ticks.
+ITEM_DIALOGS = {"requirement": TraceItemDialog, "clause": TraceClauseDialog, "parent": TraceParentDialog}
+
+
+class TraceItemsDialog(_TraceDialog):
+    """A list of SRS sections and clauses of a sheet (e.g. those an ADR is about, the clauses of an exchange):
+    any number, with ticks, as in the other traceability windows."""
+    COLUMNS = ((PARENT, "Scelta"),)
+    OWNER_HEADER = ""
+    REPLACE_TITLE = REPLACE_TEXT = ""
+
+    def __init__(self, project, owner, field, parent=None):
+        self.FIELD = field
+        label = owner.schema.field(field).label
+        self.TITLE = label.lower()
+        self.HINT = (f"Spunta le sezioni (es. 3.4.1) e le clausole (es. 3.4.1.3) di «{label}»: quante servono, un "
+                     "clic sulla spunta la toglie. Doppio clic su una riga per leggerne il testo completo.")
+        super().__init__(project, owner, parent)
+
+    def initial_state(self, e):
+        return PARENT if e.uuid in (self.owner.get(self.FIELD) or []) else None
+
+    def stored_owner(self, e):
+        return None
+
+    def owner_after_apply(self, e, state):
+        return None
+
+    def click(self, item, choice):
+        uuid = item.data(0, UUID_ROLE)
+        self.set_state(uuid, None if self.state[uuid] == PARENT else PARENT)
+
+    def count_text(self):
+        n = len(self.chosen(PARENT))
+        return "Nessuna voce scelta" if not n else "1 voce scelta" if n == 1 else f"{n} voci scelte"
+
+    @property
+    def selected(self):
+        """The chosen items in specification order; those of the list not offered here (list items) are kept."""
+        current = list(self.owner.get(self.FIELD) or [])
+        kept = [u for u in current if u not in self.state]
+        chosen = [e.uuid for e in document_order(self.project.model) if self.state.get(e.uuid) == PARENT]
+        return kept + chosen
+
+    def apply(self):
+        value, current = self.selected, list(self.owner.get(self.FIELD) or [])
+        if value == current:
+            return []
+        self.owner.set(self.FIELD, value)
+        if self.project.model.get(self.owner.uuid) is self.owner:
+            self.project.update(self.owner)
+        return [self.owner]
+
+
+def choose_items(project, element, field, current, parent=None):
+    """SRS items of a list field of a sheet (its draft), chosen with ticks: the new list, or None if cancelled."""
+    probe = element.copy()  # the window works on a copy: the sheet applies the choice with its «Salva»
+    probe.set(field, list(current))
+    dialog = TraceItemsDialog(project, probe, field, parent)
+    return dialog.selected if dialog.exec() else None
+
+
 class TraceSrsDialog(_TraceDialog):
     """Functional domain (SA-1): principal and contributing domain of sections and clauses (A4)."""
     TITLE = "sezioni e clausole SRS"

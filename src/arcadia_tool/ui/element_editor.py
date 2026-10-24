@@ -3,16 +3,23 @@
 A sheet opens read-only; in edit mode the changes stay in a draft until «Salva» applies them to the model and
 saves the project.
 """
+from html import escape
+
 from PySide6.QtCore import QEvent, QObject, QSize, Qt, QTimer, Signal
 from PySide6.QtGui import QColor, QFont, QKeySequence, QPainter, QPixmap
 from PySide6.QtWidgets import (QAbstractItemView, QCheckBox, QComboBox, QDialog, QDialogButtonBox, QFormLayout,
                                QFrame, QGridLayout, QHBoxLayout, QLabel, QLineEdit, QListWidget, QListWidgetItem,
                                QMessageBox, QPlainTextEdit, QPushButton, QScrollArea, QSpinBox, QStyle,
-                               QStyledItemDelegate, QTableWidget, QTableWidgetItem, QVBoxLayout, QWidget)
+                               QStyledItemDelegate, QTableWidget, QTableWidgetItem, QTextEdit, QVBoxLayout, QWidget)
 
+from arcadia_tool.checks import CHECKS_BY_CODE, count
+from arcadia_tool.checks.fields import SRS_CARD
 from arcadia_tool.model.identifiers import compute_id, is_automatic, matches_context, missing_context, rule
+from arcadia_tool.model.teams import DA_FIELD, da_teams
 from arcadia_tool.model.schema import (BOOL, ENUM, IMAGE, INT, KINDS_BY_NAME, MAP, MULTIENUM, REF, REFS, STR,
                                        STRLIST, TABLE, TEXT, enum_option)
+from arcadia_tool.ui.checks_panel import SEVERITY_COLORS, summary
+from arcadia_tool.ui.rich_text import RichTextEdit
 from arcadia_tool.ui.srs_edit_mode import SrsEditMode, edit_mode_button
 from arcadia_tool.ui.theme import ACCENT_SOFT, BORDER, MUTED, SURFACE, icon, kind_icon, status_colors
 from arcadia_tool.ui.theme import TEXT as TEXT_COLOR  # TEXT is also a field type of the schema
@@ -21,6 +28,14 @@ from arcadia_tool.ui.theme import TEXT as TEXT_COLOR  # TEXT is also a field typ
 READ_ONLY_KINDS = ("requirement",)
 # Sheets traced to the SRS items (and, for a derived requirement, to its logical function).
 TRACE_CARDS = ("domain", "system_function", "logical_function", "derived_requirement")
+FINDINGS_SHOWN = 8  # findings of the checks listed in the header of a sheet; the others are in the panel
+# Kinds whose sheet has the sections in another order: an ADR shows first what it is about (SRS items, ADR).
+SECTION_ORDER = {"adr": ("Identificazione", "Relazioni", "Descrizione")}
+# The texts of the SRS items are those of the specification, imported: plain text, no styles.
+PLAIN_TEXT_KINDS = ("requirement",)
+HEADER = "@header"  # the header card of the sheet, in ElementEditor.widgets
+HIGHLIGHT_COLOR = "#F79009"  # the field with the problem found by a check
+HIGHLIGHT_MS = 2500
 
 MAP_COLUMNS = 9
 SECTIONS = (
@@ -115,9 +130,10 @@ class RefPicker(QDialog):
 class RefsWidget(QWidget):
     changed = Signal()
 
-    def __init__(self, model, ref_kinds):
+    def __init__(self, model, ref_kinds, picker=None):
         super().__init__()
         self.model, self.ref_kinds, self.uuids = model, ref_kinds, []
+        self.picker = picker  # function(uuids) → new uuids or None: another window to choose (the SRS items)
         self.list = QListWidget()
         self.list.setMaximumHeight(96)
         self.list.setSelectionMode(QAbstractItemView.ExtendedSelection)
@@ -150,6 +166,12 @@ class RefsWidget(QWidget):
         return list(self.uuids)
 
     def _pick(self):
+        if self.picker is not None:
+            chosen = self.picker(self.uuids)
+            if chosen is not None and chosen != self.uuids:
+                self.set_value(chosen)
+                self.changed.emit()
+            return
         dialog = RefPicker(_ref_choices(self.model, self.ref_kinds), set(self.uuids), self)
         if dialog.exec():
             self.set_value(dialog.selected())
@@ -289,7 +311,7 @@ class _StatusItemDelegate(QStyledItemDelegate):
 
 class _ViewModeGuard(QObject):
     """On a sheet shown read-only: an attempt to change a field asks to switch to edit mode (and is ignored)."""
-    TEXT_INPUTS = (QLineEdit, QPlainTextEdit)
+    TEXT_INPUTS = (QLineEdit, QPlainTextEdit, QTextEdit)
     EDIT_KEYS = (Qt.Key_Backspace, Qt.Key_Delete, Qt.Key_Return, Qt.Key_Enter, Qt.Key_Space, Qt.Key_Up,
                  Qt.Key_Down)
 
@@ -333,6 +355,8 @@ class ElementEditor(QScrollArea):
         self.read_only = False
         self.editing = self.dirty = self._building = False
         self.back_label = None  # set when the page was opened from another view (e.g. the SUBSET-026 catalogue)
+        self.findings_for = None  # function(uuid) → findings of the checks about the sheet (shown in its header)
+        self.highlight = None  # frame around the field shown by reveal (removed after a moment)
         self._timer = QTimer(self, singleShot=True, interval=250)
         self._timer.timeout.connect(self._apply)
         self._guard = _ViewModeGuard(self)
@@ -370,11 +394,39 @@ class ElementEditor(QScrollArea):
             return
         self.flush()
         if self.dirty:
+            moved = self._single_design_authority()
+            if moved is None:
+                return  # not saved: the sheet stays in edit mode
+            previous = self.element.copy()
             self.element.values = self.draft.copy().values
-            self.project.update(self.element)  # may assign the identifier, once its context is known
+            # May assign the identifier, once its context is known; may change other elements kept in step
+            # (e.g. the team assigned to a domain lists it among its domains).
+            kept_in_step = self.project.update(self.element, previous) or []
             self.element_changed.emit(self.element)
+            for other in [*moved, *kept_in_step]:
+                self.element_changed.emit(other)
         self._end_editing()
         self.saved.emit()
+
+    def _single_design_authority(self):
+        """A team saved as Design Authority while another one is: the DA moves to this team if the user agrees.
+        Returns the teams that are no longer DA, or None if the sheet is not to be saved."""
+        if self.draft.kind != "team" or not self.draft.get(DA_FIELD):
+            return []
+        others = [t for t in da_teams(self.project.model) if t.uuid != self.element.uuid]
+        if not others:
+            return []
+        names = ", ".join(f"«{self.project.model.label(t)}»" for t in others)
+        answer = QMessageBox.question(
+            self, "Design Authority",
+            f"La Design Authority è già il team {names}: può essercene una sola.\n\nSpostare la Design Authority "
+            f"al team «{self.project.model.label(self.draft)}»?")
+        if answer != QMessageBox.Yes:
+            return None
+        for t in others:
+            t.set(DA_FIELD, False)
+            self.project.update(t)
+        return others
 
     def cancel_changes(self, ask=True):
         """«Annulla»: back to the element as it is in the model."""
@@ -412,11 +464,13 @@ class ElementEditor(QScrollArea):
         for w in page.findChildren(QWidget):
             if any(k is w or k.isAncestorOf(w) for k in kept):
                 continue
-            if isinstance(w, (QLineEdit, QPlainTextEdit, QSpinBox)):
+            if isinstance(w, RichTextEdit):
+                w.setReadOnly(True)  # the formatted text, without its toolbar
+            elif isinstance(w, (QLineEdit, QPlainTextEdit, QTextEdit, QSpinBox)):
                 w.setReadOnly(True)
             elif isinstance(w, QTableWidget):
                 w.setEditTriggers(QAbstractItemView.NoEditTriggers)
-            if isinstance(w, (QLineEdit, QPlainTextEdit, QSpinBox, QComboBox, QCheckBox, QPushButton,
+            if isinstance(w, (QLineEdit, QPlainTextEdit, QTextEdit, QSpinBox, QComboBox, QCheckBox, QPushButton,
                               QTableWidget)):
                 w.installEventFilter(self._guard)
 
@@ -426,7 +480,9 @@ class ElementEditor(QScrollArea):
         for w in page.findChildren(QWidget):
             if any(k is w or k.isAncestorOf(w) for k in kept):
                 continue
-            if isinstance(w, (QLineEdit, QPlainTextEdit)):
+            if isinstance(w, RichTextEdit):
+                w.setReadOnly(True)
+            elif isinstance(w, (QLineEdit, QPlainTextEdit, QTextEdit)):
                 w.setReadOnly(True)
             elif isinstance(w, QSpinBox):
                 w.setReadOnly(True)  # the arrows do nothing on a read-only spin box
@@ -471,19 +527,28 @@ class ElementEditor(QScrollArea):
 
     def _build_page(self):
         element = self.draft
-        self.getters, self.widgets = {}, {}
+        self.getters, self.widgets, self.field_labels = {}, {}, {}
         self.read_only = element.kind in READ_ONLY_KINDS and not self.srs_edit_mode.enabled
         schema = element.schema
         page = QWidget()
         outer = QVBoxLayout(page)
         outer.setContentsMargins(24, 20, 24, 24)
         outer.setSpacing(14)
-        outer.addWidget(self._header(element))
+        header = self._header(element)
+        self.widgets[HEADER] = header
+        outer.addWidget(header)
+        findings = self.findings_for(element.uuid) if self.findings_for else []
+        if findings:
+            outer.addWidget(self._findings_card(findings))
 
         status_field = schema.field("status")
         # Sections of the kind's own (e.g. the SA-3 register) come first, with their fields in schema order.
         own = [f.section for f in schema.fields if f.section and f.section not in dict(SECTIONS)]
-        sections = [(title, ()) for title in dict.fromkeys(own)] + list(SECTIONS)
+        standard = list(SECTIONS)
+        if element.kind in SECTION_ORDER:  # another order for this kind (e.g. the relations of an ADR first)
+            order = SECTION_ORDER[element.kind]
+            standard.sort(key=lambda s: order.index(s[0]) if s[0] in order else len(order))
+        sections = [(title, ()) for title in dict.fromkeys(own)] + standard
         for title, types in sections:
             fields = [f for f in schema.fields if (f.section == title or (not f.section and f.type in types))
                       and f is not status_field and not f.hidden]
@@ -503,11 +568,15 @@ class ElementEditor(QScrollArea):
                     self.getters[f.name] = getter
                 if f.analysis:
                     widget.setProperty("keepEnabled", True)  # editable also on a read-only SRS item
-                form.addRow(QLabel(f.label, objectName="formLabel"), widget)
+                label = QLabel(f.label, objectName="formLabel")
+                self.field_labels[f.name] = label
+                form.addRow(label, widget)
             layout.addLayout(form)
             outer.addWidget(frame)
             if title == "Descrizione" and element.kind in TRACE_CARDS:
-                outer.addWidget(self._srs_trace_card())  # right after the description
+                trace = self._srs_trace_card()
+                self.widgets[SRS_CARD] = trace
+                outer.addWidget(trace)  # right after the description
         for f in schema.fields:
             if f.hidden:
                 continue
@@ -517,6 +586,7 @@ class ElementEditor(QScrollArea):
                 frame, layout = card(f.label)
                 widget, getter = self._make_widget(f, element.values.get(f.name))
                 self.getters[f.name] = getter
+                self.widgets[f.name] = frame  # its card (shown by reveal)
                 layout.addWidget(widget)
                 outer.addWidget(frame)
         outer.addStretch()
@@ -555,6 +625,7 @@ class ElementEditor(QScrollArea):
             combo = StatusCombo(status_field.options, element.get("status"))
             combo.currentIndexChanged.connect(self._changed)
             self.getters["status"] = combo.currentData
+            self.widgets["status"] = combo
             top.addWidget(QLabel("Stato", objectName="muted"))
             top.addWidget(combo)
         if element.kind in READ_ONLY_KINDS:
@@ -591,6 +662,73 @@ class ElementEditor(QScrollArea):
                           "cambiarla.", objectName="muted")
             note.setWordWrap(True)
             layout.addWidget(note)
+        return frame
+
+    def reveal(self, field):
+        """Scroll to a field of the sheet (or «@srs», its traceability card) and highlight it for a moment: where a
+        check found the problem. Unknown or hidden fields shown elsewhere: their card, else the top of the sheet."""
+        if self.element is None:
+            return
+        target = self.widgets.get(field)
+        schema_field = self.element.schema.field(field) if field and field != SRS_CARD else None
+        if target is None and schema_field is not None and schema_field.hidden:
+            target = self.widgets.get(SRS_CARD)  # e.g. the SRS items of a function, the parent of a derived one
+        if target is None:
+            target = self.widgets.get(HEADER)
+        if target is None:
+            return
+        label = self.field_labels.get(field)
+        QTimer.singleShot(0, lambda: self._highlight(target, label))
+
+    def _highlight(self, target, label=None):
+        page = self.widget()
+        if page is None or not page.isAncestorOf(target):
+            return  # the page was rebuilt in the meantime
+        self.ensureWidgetVisible(target, 40, 80)
+        rect = target.geometry()
+        rect.moveTopLeft(target.parentWidget().mapTo(page, rect.topLeft()))
+        if label is not None and page.isAncestorOf(label):
+            label_rect = label.geometry()
+            label_rect.moveTopLeft(label.parentWidget().mapTo(page, label_rect.topLeft()))
+            rect = rect.united(label_rect)
+        overlay = QFrame(page)
+        overlay.setAttribute(Qt.WA_TransparentForMouseEvents)
+        overlay.setStyleSheet(f"QFrame {{ border: 2px solid {HIGHLIGHT_COLOR}; border-radius: 6px; "
+                              "background: rgba(247, 144, 9, 28); }")
+        overlay.setGeometry(rect.adjusted(-6, -4, 6, 4))
+        overlay.show()
+        overlay.raise_()
+        self.highlight = overlay
+        QTimer(overlay, singleShot=True, interval=HIGHLIGHT_MS, timeout=overlay.deleteLater).start()
+
+    def update_findings(self):
+        """The checks were run again: the sheet shows its findings (not while it is being edited)."""
+        if self.element is not None and not self.editing:
+            self.refresh()
+
+    def _findings_card(self, findings):
+        frame, layout = card(f"Verifiche · {summary(count(findings))}")
+        model = self.project.model
+        shown = findings[:FINDINGS_SHOWN]
+        lines = []
+        for f in shown:
+            color = SEVERITY_COLORS[f.severity]
+            others = ", ".join(f"<a href='{u}'>{escape(model.label(model.get(u)))}</a>" for u in f.related
+                               if model.get(u) is not None)
+            lines.append(f"<p style='margin:2px 0'><b style='color:{color}'>{f.code}</b> "
+                         f"<span style='color:{MUTED}'>{escape(CHECKS_BY_CODE[f.code].title)}</span><br>"
+                         f"{escape(f.message)}" + (f"<br><span style='color:{MUTED}'>Schede coinvolte:</span> {others}"
+                                                   if others else "") + "</p>")
+        if len(findings) > len(shown):
+            lines.append(f"<p style='color:{MUTED}'>… e altre {len(findings) - len(shown)} segnalazioni: vedi il "
+                         "pannello Verifiche.</p>")
+        text = QLabel("".join(lines))
+        text.setWordWrap(True)
+        text.setTextFormat(Qt.RichText)
+        text.setTextInteractionFlags(Qt.TextBrowserInteraction)
+        text.linkActivated.connect(self.open_requested)
+        text.setProperty("keepEnabled", True)
+        layout.addWidget(text)
         return frame
 
     def _id_widget(self):
@@ -785,11 +923,11 @@ class ElementEditor(QScrollArea):
         return w, lambda: self.draft.get(f.name)
 
     def _pick(self, f):
-        from arcadia_tool.ui.srs_trace import TraceItemDialog, choose_element
+        from arcadia_tool.ui.srs_trace import ITEM_DIALOGS, TraceItemDialog, choose_element
 
         self.flush()
-        if f.ref_kinds == ("requirement",):  # SRS item: chapter tabs, search, full text
-            dialog = TraceItemDialog(self.project, self.draft, self)  # sets the draft
+        if f.ref_kinds == ("requirement",):  # SRS item: chapter tabs, search, ticks, full text
+            dialog = ITEM_DIALOGS.get(f.name, TraceItemDialog)(self.project, self.draft, self)  # sets the draft
             changed = dialog.exec() and dialog.changed
         else:
             chosen = choose_element(self.project, self.draft, f.name, self)
@@ -869,11 +1007,15 @@ class ElementEditor(QScrollArea):
                 w.setPlaceholderText(f"es. {self.element.schema.id_format}")
             w.textChanged.connect(self._changed)
             return w, lambda: w.text().strip()
-        if f.type == TEXT:
+        if f.type == TEXT and self.element.kind in PLAIN_TEXT_KINDS:
             w = QPlainTextEdit(value or "")
             w.setFixedHeight(84)
             w.textChanged.connect(self._changed)
             return w, lambda: w.toPlainText().strip()
+        if f.type == TEXT:  # free text with styles (bold, lists…), stored as Markdown
+            w = RichTextEdit(value or "")
+            w.changed.connect(self._changed)
+            return w, w.markdown
         if f.type == INT:
             w = QSpinBox(maximum=100000)
             w.setSpecialValueText("—")
@@ -938,7 +1080,11 @@ class ElementEditor(QScrollArea):
                 combos[key] = combo
             return w, lambda: {k: c.currentText() for k, c in combos.items() if c.currentText()}
         if f.type == REFS:
-            w = RefsWidget(model, f.ref_kinds)
+            picker = None
+            if f.ref_kinds == ("requirement",):  # SRS items: ticks, chapters, search, as elsewhere
+                from arcadia_tool.ui.srs_trace import choose_items
+                picker = lambda uuids, name=f.name: choose_items(self.project, self.draft, name, uuids, self)
+            w = RefsWidget(model, f.ref_kinds, picker)
             w.set_value(value)
             w.changed.connect(self._changed)
             return w, w.value

@@ -26,6 +26,7 @@ CREATION_CONTEXT = {
     "system_function": "domain",
     "logical_function": "refines",
     "derived_requirement": "parent",
+    "clarification": "recipient",  # the Design Authority or a team
 }
 
 MANUAL_ID_KINDS = {"requirement"}

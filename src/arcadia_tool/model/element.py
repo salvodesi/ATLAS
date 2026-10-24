@@ -48,6 +48,8 @@ class Element:
         if not name and self.kind == "requirement" and self.get("text"):
             text = " ".join(self.get("text").split())
             name = text if len(text) <= LABEL_TEXT_LENGTH else text[:LABEL_TEXT_LENGTH].rstrip() + "…"
+        if self.kind == "team" and self.values.get("design_authority"):
+            name = f"{name} (Design Authority)".strip()  # recognised wherever a team is chosen or shown
         if ident and name:
             return f"{ident} {name}"
         return ident or name or f"({self.schema.label} senza nome)"

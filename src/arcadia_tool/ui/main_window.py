@@ -2,8 +2,8 @@ from pathlib import Path
 
 from PySide6.QtCore import QSize, Qt, QTimer
 from PySide6.QtGui import QAction, QKeySequence
-from PySide6.QtWidgets import (QApplication, QFileDialog, QLabel, QMainWindow, QMessageBox, QProgressDialog,
-                               QSplitter, QStackedWidget, QTabWidget, QToolBar, QVBoxLayout, QWidget)
+from PySide6.QtWidgets import (QApplication, QComboBox, QFileDialog, QLabel, QMainWindow, QMessageBox,
+                               QProgressDialog, QPushButton, QSplitter, QStackedWidget, QTabWidget, QToolBar, QVBoxLayout, QWidget)
 
 from arcadia_tool import APP_NAME, __version__
 from arcadia_tool.accounts import git_credentials
@@ -16,21 +16,38 @@ TAB_TITLE_LENGTH = 48
 from arcadia_tool.ui.dialogs import NewProjectDialog, settings
 from arcadia_tool.ui.accounts import AccountDialog, account_store, require_login
 from arcadia_tool.ui.branding import FittedImage, logo_size, vertical_logo
+from arcadia_tool.checks import problems as check_problems
+from arcadia_tool.model.schema import KINDS_BY_NAME
+from arcadia_tool.model.teams import design_authority, is_da_member
+from arcadia_tool.ui.checks_panel import ChecksDock, ChecksPanel, summary
 from arcadia_tool.ui.clone import CloneDialog
 from arcadia_tool.ui.migrate import MigrationDialog, ReloadDialog
 from arcadia_tool.ui.push import PushDialog
 from arcadia_tool.ui.element_editor import ElementEditor, ElementWindow, resolve_unsaved
+from arcadia_tool.ui.element_list import ElementListPage
 from arcadia_tool.ui.project_settings import ProjectSettingsDialog, recovery_minutes
 from arcadia_tool.ui.import_srs import ImportSrsDialog
 from arcadia_tool.ui.loading import LoadingDialog
 from arcadia_tool.ui.model_tree import ModelTree
 from arcadia_tool.ui.srs_edit_mode import SrsEditMode
-from arcadia_tool.ui.srs_reader import SrsReader
+from arcadia_tool.ui.srs_reader import SrsReader, SrsReaderWindow
 from arcadia_tool.ui.start_page import StartPage
-from arcadia_tool.ui.theme import CHANGE_COLORS, TEXT, icon, kind_icon
+from arcadia_tool.ui.theme import ACCENT, CHANGE_COLORS, TEXT, icon, kind_icon
 from arcadia_tool.ui.versions import CompareDialog, HistoryDialog, PublishDialog
 
 MAX_RECENT = 8
+
+
+def show_check_problems(parent, problems):
+    """Error message of «Verifica modello» when the checks cannot run. Returns True to open their settings."""
+    box = QMessageBox(QMessageBox.Critical, "Verifica modello", "Non è possibile verificare il modello.",
+                      parent=parent)
+    box.setInformativeText("\n".join(f"• {p}" for p in problems))
+    open_settings = box.addButton("Apri impostazioni verifiche", QMessageBox.AcceptRole)
+    box.addButton("Chiudi", QMessageBox.RejectRole)
+    box.setDefaultButton(open_settings)
+    box.exec()
+    return box.clickedButton() is open_settings
 SAVE_PROGRESS_THRESHOLD = 300
 
 
@@ -85,7 +102,26 @@ class MainWindow(QMainWindow):
         self.tree.element_selected.connect(self._select)
         self.tree.model_changed.connect(self._model_changed)
         self.tree.srs_reader_requested.connect(self.open_srs_reader)
+        self.tree.srs_window_requested.connect(self.open_srs_window)
+        self.tree.list_requested.connect(self.open_element_list)
+        self.list_pages = {}  # kind → tab with its elements as a table (e.g. X-2, the requests for clarification)
+        self.reader_window = None  # the SRS catalogue in its own window («Apri in altra finestra»)
         self.item_window = None  # separate window for an element linked to the page (e.g. a traced SRS item)
+
+        # Checks of the methodology: findings in a panel at the bottom, and in the header of the sheets.
+        self.checks = ChecksPanel()
+        self.checks.open_requested.connect(self._open_finding)
+        self.checks.settings_requested.connect(lambda: self.project_settings("Verifiche"))
+        self.checks.ran.connect(self._findings_updated)
+        self.checks.design_authority = lambda: self.user.full_name if self.user_is_da else None
+        self.checks_dock = ChecksDock(self.checks, self)  # always there with a project: collapsed until a run
+        self.verify_button = QPushButton(icon("mdi6.clipboard-check-outline", "white"), "Verifica modello")
+        self.verify_button.setProperty("primary", True)
+        self.verify_button.setMinimumHeight(34)
+        self.verify_button.clicked.connect(self.verify_model)
+        self.tree.add_footer(self.verify_button)  # below the model tree, enabled with valid settings only
+        self.addDockWidget(Qt.BottomDockWidgetArea, self.checks_dock)
+        self.checks_dock.hide()  # no project yet
 
         self._build_actions()
         self._build_status_bar()
@@ -130,7 +166,12 @@ class MainWindow(QMainWindow):
         self.migrate_action = self._action("Migra repository…", "mdi6.transfer", self.migrate_repository, None,
                                            "Copia la storia del progetto (tutti i rami o alcuni) in un altro Git")
         self.settings_action = self._action("Impostazioni…", "mdi6.cog-outline", self.project_settings, None,
-                                            "Nome, repository Git e altri parametri del progetto")
+                                            "Nome, repository Git, verifiche e altri parametri del progetto")
+        self.check_action = self._action("Verifica modello", "mdi6.clipboard-check-outline", self.verify_model,
+                                         QKeySequence("F7"), "Esegue i controlli della metodologia attivi sul modello")
+        self.check_settings_action = self._action("Impostazioni verifiche…", "mdi6.clipboard-edit-outline",
+                                                  lambda: self.project_settings("Verifiche"), None,
+                                                  "Sceglie i controlli da eseguire e i loro parametri")
         self.account_action = self._action("Modifica account…", "mdi6.account-edit-outline", self.edit_account,
                                            None, "Dati dell'utente e accesso ai repository Git")
         self.switch_user_action = self._action("Cambia utente…", "mdi6.account-switch-outline", self.switch_user,
@@ -143,6 +184,17 @@ class MainWindow(QMainWindow):
             bar.addAction(a)
         bar.addSeparator()
         bar.addAction(self.import_action)
+        bar.addSeparator()
+        bar.addAction(self.check_action)
+        # The profile of checks «Verifica modello» runs (the profiles are in the settings of the checks).
+        self.profile_combo = QComboBox()
+        self.profile_combo.setToolTip("Profilo di verifiche eseguito da «Verifica modello» (salvato nel progetto e "
+                                      "pubblicato per tutto il team)")
+        self.profile_combo.setMinimumContentsLength(12)
+        self.profile_combo.setSizeAdjustPolicy(QComboBox.AdjustToContents)
+        self.profile_combo.currentTextChanged.connect(self._profile_chosen)
+        self.profile_action = bar.addWidget(self.profile_combo)
+        bar.addAction(self.check_settings_action)
         bar.addSeparator()
         for a in (self.publish_action, self.compare_action, self.history_action):
             bar.addAction(a)
@@ -168,6 +220,9 @@ class MainWindow(QMainWindow):
         project_menu.addAction(self.reload_action)
         project_menu.addAction(self.migrate_action)
         project_menu.addSeparator()
+        project_menu.addAction(self.check_action)
+        project_menu.addAction(self.check_settings_action)
+        project_menu.addSeparator()
         project_menu.addAction(self.settings_action)
         versions_menu = self.menuBar().addMenu("&Versioni")
         for a in (self.publish_action, self.send_action, self.compare_action, self.history_action):
@@ -190,6 +245,12 @@ class MainWindow(QMainWindow):
         self.user = account
         self._refresh_state()
 
+    @property
+    def user_is_da(self):
+        """The logged-in user is a member of the Design Authority team of the open project (by name and surname):
+        the only one who integrates the branches into main."""
+        return bool(self.project and self.user and is_da_member(self.project.model, self.user.full_name))
+
     def edit_account(self):
         if self.user is None:
             return self.switch_user()
@@ -202,16 +263,81 @@ class MainWindow(QMainWindow):
         if account is not None:
             self.set_user(account)
 
-    def project_settings(self):
+    def project_settings(self, section="Generale"):
         if not self.project:
             return
-        dialog = ProjectSettingsDialog(self.project, self.user, self)
+        dialog = ProjectSettingsDialog(self.project, self.user, self, section=section)
         if dialog.exec():
             self.recovery_timer.setInterval(recovery_minutes() * 60_000)
             self._refresh_state()
             self.statusBar().showMessage("Impostazioni del progetto salvate", 3000)
+            if dialog.checks_changed:
+                self.checks.refresh()
             if dialog.remote_changed:
                 self._remote_changed()
+
+    # --- checks of the methodology -------------------------------------------------------------
+
+    def verify_model(self):
+        """Progetto › Verifica modello: runs the active checks and opens the panel with the findings. Without
+        checks chosen, or with settings that are not correct, says what the problem is instead."""
+        if not self.project:
+            return
+        found = check_problems(self.project.checks, self.project.model)
+        if found:
+            if show_check_problems(self, found):
+                self.project_settings("Verifiche")
+            return
+        self._flush_editors()
+        self.checks.run()
+        self.checks_dock.expand()
+        self.statusBar().showMessage(f"Verifica del modello: {summary(self.checks.counts())}", 6000)
+
+    def _refresh_profiles(self):
+        """The profiles of checks in the toolbar: shown only when there are more than one."""
+        config = self.project.checks if self.project is not None else None
+        names = list(config.profiles) if config is not None else []
+        self.profile_combo.blockSignals(True)
+        self.profile_combo.clear()
+        self.profile_combo.addItems(names)
+        if config is not None:
+            self.profile_combo.setCurrentText(config.active)
+        self.profile_combo.blockSignals(False)
+        self.profile_action.setVisible(len(names) > 1)
+
+    def _profile_chosen(self, name):
+        if self.project is None or self.project.checks is None or not name or name == self.project.checks.active:
+            return
+        self.project.choose_checks_profile(name)
+        self._refresh_state()
+        self.statusBar().showMessage(f"Profilo di verifiche «{name}»: salvato nel progetto, condiviso con il team alla "
+                                     "prossima pubblicazione", 5000)
+        if self.checks.has_run:
+            self.checks.run(show_progress=False)
+        else:
+            self.checks.refresh()
+
+    def _findings_updated(self):
+        for editor in self.editors.values():
+            editor.update_findings()
+        if self.item_window is not None:
+            self.item_window.editor.update_findings()
+
+    def _open_finding(self, uuid, field=""):
+        """A double click on a finding: its sheet, at the field with the problem."""
+        element = self.project.model.get(uuid) if self.project else None
+        if element is None:
+            return
+        self.tree.select(uuid)
+        self._select(element)
+        editor = self.editors.get(uuid)
+        if editor is not None and field:
+            editor.reveal(field)
+
+    def _after_save(self):
+        """Saved: the findings follow the model, once the checks have been run."""
+        if self.checks.has_run:
+            self.checks.run(show_progress=False)
 
     def _remote_changed(self):
         """The address of the repository changed: keep the project as it is, or reload it from there."""
@@ -275,13 +401,28 @@ class MainWindow(QMainWindow):
             self._recovery_pending = True  # written by the timer
         for a in (self.save_action, self.publish_action, self.compare_action, self.history_action,
                   self.close_action, self.import_action, self.settings_action, self.send_action,
-                  self.reload_action, self.migrate_action):
+                  self.reload_action, self.migrate_action, self.check_action, self.check_settings_action):
             a.setEnabled(has_project)
         user = self.user.full_name if self.user else "nessuno"
-        self.status_user.setText(f"Utente: <b>{user}</b>   ·")
-        self.status_user.setToolTip(f"Utente collegato: {self.user.username} · {self.user.email}" if self.user
-                                    else "Nessun utente collegato")
+        da = design_authority(self.project.model) if has_project else None
+        role = (f" <span style='color:{ACCENT}; font-weight:600'>· Design Authority</span>"
+                if self.user_is_da else "")
+        self.status_user.setText(f"Utente: <b>{user}</b>{role}   ·")
+        tip = f"Utente collegato: {self.user.username} · {self.user.email}" if self.user else "Nessun utente collegato"
+        if has_project:
+            tip += ("\nMembro della Design Authority" if self.user_is_da else
+                    "\nNessun team è indicato come Design Authority" if da is None else
+                    f"\nNon è tra i membri della Design Authority ({self.project.model.label(da)})")
+            tip += "\n(riconosciuto da nome e cognome dell'account tra i membri del team DA)"
+        self.status_user.setToolTip(tip)
         self.save_action.setEnabled(modified)
+        found = check_problems(self.project.checks, self.project.model) if has_project else []
+        self._refresh_profiles()
+        self.verify_button.setEnabled(has_project and not found)
+        self.verify_button.setToolTip(
+            "Esegue i controlli della metodologia attivi sul modello (F7)" if not found else
+            "Verifiche non configurate correttamente:\n" + "\n".join(f"• {p}" for p in found) +
+            "\n\nScegli i controlli in «Impostazioni verifiche».")
         self.clean_action.setEnabled(has_project and len(self.project.model) > 0)
         self.remove_srs_action.setEnabled(has_project and bool(self.project.model.of_kind("requirement")))
         name = f" — {self.project.name}" if has_project else ""
@@ -521,6 +662,8 @@ class MainWindow(QMainWindow):
             self._hide_editor(editor)
         self._close_item_window()
         self._close_reader()
+        for page in list(self.list_pages.values()):
+            self._close_list(page)
         self.srs_edit_mode.set_enabled(False)  # imported SRS items start read-only in every session
         if self.project:
             self.project.close()
@@ -528,6 +671,9 @@ class MainWindow(QMainWindow):
         if project:
             self._remember(Path(project.path).resolve())
         self.tree.set_project(project)
+        self.checks.set_project(project)
+        self.checks_dock.setVisible(project is not None)
+        self.checks_dock.reset()
         self._refresh_state()
 
     # --- editing -------------------------------------------------------------------------------
@@ -556,6 +702,7 @@ class MainWindow(QMainWindow):
         editor.elements_created.connect(self._model_changed)
         editor.dirty_changed.connect(lambda _dirty, e=editor: self._show_editor(e, activate=False))
         editor.saved.connect(self._sheet_saved)
+        editor.findings_for = self.checks.findings_for
         return editor
 
     def _sheet_saved(self):
@@ -563,6 +710,7 @@ class MainWindow(QMainWindow):
         self._save_with_progress()
         self._refresh_state()
         self.statusBar().showMessage("Scheda salvata", 3000)
+        self._after_save()
 
     def _unsaved_editors(self):
         editors = [e for e in self.editors.values() if e.dirty]
@@ -634,8 +782,84 @@ class MainWindow(QMainWindow):
             self.reader.open_element.connect(self._open_from_reader)
             self.reader.derive_requested.connect(self._derive_from_reader)
             self.reader.elements_deleted.connect(self._model_changed)
-            self.pages.addTab(self.reader, icon("mdi6.book-open-page-variant-outline"), "SUBSET-026")
-        self.pages.setCurrentWidget(self.reader)
+            self.reader.window_toggled.connect(self._toggle_reader_window)
+            self.reader.elements_changed.connect(self._reader_changed)
+            self.reader.elements_created.connect(self._model_changed)
+            self._reader_to_tab()
+        self._show_reader()
+
+    def open_element_list(self, kind):
+        """Double click on a kind in the model tree (e.g. X-2): its elements as a table in a tab."""
+        if not self.project:
+            return
+        page = self.list_pages.get(kind)
+        if page is None:
+            page = ElementListPage(self.project, kind)
+            page.open_requested.connect(self._open_finding)
+            page.create_requested.connect(self.tree.create)  # its sheet opens, in edit mode
+            page.delete_requested.connect(self._delete_from_list)
+            self.list_pages[kind] = page
+            schema = KINDS_BY_NAME[kind]
+            index = self.pages.addTab(page, kind_icon(kind), schema.plural)
+            self.pages.setTabToolTip(index, f"{schema.template} · {schema.plural}" if schema.template
+                                     else schema.plural)
+        self.pages.setCurrentWidget(page)
+
+    def _delete_from_list(self, uuid):
+        element = self.project.model.get(uuid) if self.project else None
+        page = self.sender()  # the table the deletion comes from
+        if element is not None and self.tree.delete_element(element) and page in self.list_pages.values():
+            self.pages.setCurrentWidget(page)  # the table stays shown
+
+    def _close_list(self, page):
+        kind = next((k for k, p in self.list_pages.items() if p is page), None)
+        self.list_pages.pop(kind, None)
+        index = self.pages.indexOf(page)
+        if index >= 0:
+            self.pages.removeTab(index)
+        page.deleteLater()
+
+    def _reload_lists(self):
+        for page in self.list_pages.values():
+            page.reload()
+
+    def open_srs_window(self):
+        """Voci SRS › Apri in altra finestra: the catalogue directly in a separate window."""
+        if not self.project:
+            return
+        self.open_srs_reader()
+        if self.reader_window is None:
+            self._toggle_reader_window()
+
+    def _reader_to_tab(self):
+        self.reader.set_detached(False)
+        self.pages.addTab(self.reader, icon("mdi6.book-open-page-variant-outline"), "SUBSET-026")
+
+    def _toggle_reader_window(self):
+        """«Apri in altra finestra» / «Riporta nelle schede»: the catalogue between a tab and its own window."""
+        if self.reader is None:
+            return
+        if self.reader_window is None:
+            self.pages.removeTab(self.pages.indexOf(self.reader))
+            self.reader_window = SrsReaderWindow(self.reader, f"Voci SRS · SUBSET-026 — {self.project.name}", self)
+            self.reader_window.setWindowIcon(self.windowIcon())
+            self.reader_window.closed.connect(self._close_reader)
+            self.reader.set_detached(True)
+            self.reader_window.show()
+        else:
+            window, self.reader_window = self.reader_window, None
+            window.release()
+            window.deleteLater()
+            self._reader_to_tab()
+        self._show_reader()
+
+    def _show_reader(self):
+        if self.reader_window is not None:
+            self.reader_window.show()
+            self.reader_window.raise_()
+            self.reader_window.activateWindow()
+        elif self.reader is not None:
+            self.pages.setCurrentWidget(self.reader)
 
     def _open_from_reader(self, uuid):
         element = self.project.model.get(uuid)
@@ -646,6 +870,9 @@ class MainWindow(QMainWindow):
         editor = self.editors[uuid]
         editor.set_back("Torna al catalogo SUBSET-026")
         self._show_editor(editor)
+        if self.reader_window is not None:  # the sheet opens in the main window, brought to the front
+            self.raise_()
+            self.activateWindow()
 
     def _derive_from_reader(self, uuid):
         """New derived requirement (SA-4) whose «Voce madre» is the SRS item; its ID is <voce>-Dn."""
@@ -662,7 +889,15 @@ class MainWindow(QMainWindow):
             self.item_window = ElementWindow(self.srs_edit_mode, self)
             self.item_window.editor.element_changed.connect(self._window_element_changed)
             self.item_window.editor.saved.connect(self._sheet_saved)
+            self.item_window.editor.findings_for = self.checks.findings_for
         self.item_window.show_element(self.project, element)
+
+    def _reader_changed(self, elements):
+        """Allocations made from the rows of the SRS catalogue: the open sheets (the domain, the function, the SA-3
+        record…) show them."""
+        for element in elements:
+            self._window_element_changed(element)
+        self._refresh_state()
 
     def _window_element_changed(self, element):
         self._element_changed(element)
@@ -692,12 +927,14 @@ class MainWindow(QMainWindow):
         element = self.project.model.get(uuid)
         if element is not None and element.kind == "derived_requirement":
             uuid = element.get("parent") or uuid  # back to the SRS item it was derived from
-        self.pages.setCurrentWidget(self.reader)
+        self._show_reader()  # its tab, or its own window
         self.reader.reveal(uuid)
 
     def _close_page(self, index):
         if self.pages.widget(index) is self.reader:
             self._close_reader()
+        elif self.pages.widget(index) in self.list_pages.values():
+            self._close_list(self.pages.widget(index))
         elif isinstance(self.pages.widget(index), ElementEditor):
             editor = self.pages.widget(index)
             if not resolve_unsaved(editor, self):  # changes in progress: save or discard them
@@ -708,8 +945,15 @@ class MainWindow(QMainWindow):
             self._hide_editor(editor)
 
     def _close_reader(self):
+        if self.reader_window is not None:  # closed from its own window, or with the project
+            window, self.reader_window = self.reader_window, None
+            window.releasing = True
+            window.close()
+            window.deleteLater()
         if self.reader is not None:
-            self.pages.removeTab(self.pages.indexOf(self.reader))
+            index = self.pages.indexOf(self.reader)
+            if index >= 0:
+                self.pages.removeTab(index)
             self.reader.deleteLater()
             self.reader = None
 
@@ -723,6 +967,7 @@ class MainWindow(QMainWindow):
             self.tree.reload()
         if self.reader is not None:
             self.reader.reload()
+        self._reload_lists()
         self._refresh_state()
 
     def _element_changed(self, element):
@@ -730,8 +975,14 @@ class MainWindow(QMainWindow):
         editor = self.editors.get(element.uuid)
         if editor is not None:
             self._show_editor(editor, activate=False)  # the name may have changed
+            if editor is not self.sender() and not editor.dirty:
+                # Changed from another sheet (e.g. the domains of a team, when a domain is assigned to it): its
+                # open tab shows the new values; a tab with changes in progress keeps them.
+                editor.refresh()
         if self.reader is not None:
             self.reader.element_changed(element)
+        if element.kind in self.list_pages:
+            self.list_pages[element.kind].reload()
         self._refresh_state()
 
     def save(self):
@@ -741,6 +992,7 @@ class MainWindow(QMainWindow):
         self._save_with_progress()
         self._refresh_state()
         self.statusBar().showMessage("Modifiche salvate", 3000)
+        self._after_save()
 
     def _save_with_progress(self):
         if self.project.pending_count < SAVE_PROGRESS_THRESHOLD:

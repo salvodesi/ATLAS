@@ -225,8 +225,10 @@ def test_reader_context_menu_opens_and_derives(app, tmp_path):
     window._set_project(p)
     window.open_srs_reader()
     menu = window.reader.context_menu(e["r10"])
-    go, derive, _, delete = menu.actions()
+    actions = {a.text().split(" ")[0]: a for a in menu.actions() if a.text()}
+    go, delete = menu.actions()[0], actions["Elimina"]
     assert not delete.isEnabled()  # read-only
+    assert "Alloca" in actions and "Deriva" in actions  # a clause: allocation and derivation from its row
     go.trigger()
     assert window.pages.currentWidget() is window.editor and window.editor.element is e["r10"]
 
@@ -240,3 +242,65 @@ def test_reader_context_menu_opens_and_derives(app, tmp_path):
     assert window.reader.view.currentIndex().data(srs_reader.ELEMENT_ROLE) is e["r10"]
     window.save()
     window.close()
+
+
+def test_the_catalogue_in_its_own_window(app, tmp_path):
+    p, e = build(tmp_path)
+    window = MainWindow()
+    window.show()
+    window._set_project(p)
+    window.open_srs_reader()
+    reader = window.reader
+    assert reader.window_button.text() == "Apri in altra finestra"  # next to «Sola lettura», «Elimina…»
+    reader.window_button.click()  # detached: out of the tabs, in a window of its own
+    assert window.reader_window is not None and window.reader_window.isVisible()
+    assert window.pages.indexOf(reader) < 0 and reader.window() is window.reader_window
+    assert reader.isVisible() and reader.view.isVisible()  # shown in it, not an empty window
+    assert reader.window_button.text() == "Riporta nelle schede"
+
+    reader.open_element.emit(e["r10"].uuid)  # an item opened from the window: its sheet in the main window
+    assert window.pages.currentWidget() is window.editors[e["r10"].uuid]
+    window.editor.back_requested.emit(e["r10"].uuid)  # «Torna al catalogo»: back to its window
+    assert window.reader_window.isVisible() and window.pages.indexOf(reader) < 0
+
+    reader.window_button.click()  # back to the tabs
+    assert window.reader_window is None and window.pages.indexOf(reader) >= 0 and window.reader is reader
+    assert reader.window_button.text() == "Apri in altra finestra"
+
+    window.tree.srs_window_requested.emit()  # right click on «Voci SRS» › Apri in altra finestra
+    assert window.reader_window is not None and window.reader is reader and window.pages.indexOf(reader) < 0
+    window.reader_window.close()  # closing the window closes the catalogue, as closing its tab does
+    assert window.reader is None and window.reader_window is None
+
+    window.open_srs_window()  # directly in a window, also when the catalogue was not open
+    assert window.reader_window is not None
+    window._set_project(None)  # the project closes: its window too
+    assert window.reader is None and window.reader_window is None
+    window.close()
+
+
+def test_external_actors_come_before_the_domains_in_the_tree(tmp_path):
+    p, _ = build(tmp_path)
+    tree = model_tree.ModelTree()
+    tree.set_project(p)
+    group = tree._kind_items["domain"].parent()
+    kinds = [group.child(i).data(0, model_tree.KIND_ROLE) for i in range(group.childCount())]
+    assert kinds[:3] == ["external_actor", "domain", "system_function"]
+
+
+def test_tree_menu_offers_the_separate_window(app, tmp_path, monkeypatch):
+    p, _ = build(tmp_path)
+    tree = model_tree.ModelTree()
+    tree.set_project(p)
+    tree.resize(400, 600)
+    tree.show()
+    app.processEvents()
+    shown = []
+
+    class RecordedMenu(model_tree.QMenu):
+        def exec(self, *args):  # not shown: its entries are recorded
+            shown.append([a.text() for a in self.actions()])
+    monkeypatch.setattr(model_tree, "QMenu", RecordedMenu)
+    item = tree._kind_items["requirement"]
+    tree._context_menu(tree.tree.visualItemRect(item).center())
+    assert "Apri in altra finestra" in shown[0]

@@ -4,17 +4,21 @@
 - Repository Git: URL of the remote, any Git server (shared, in project.yaml, and the «origin» of the local
   Git); working branch (this PC only); access to the server (user and password/token or SSH key, kept in the
   account of the logged-in user, never in the project); check of the connection.
+- Verifiche (shared, in checks.yaml): profiles of checks of the methodology (none active by default), with the
+  parameters, severity and scope of each check, kept until they are changed.
 - Avanzate (this PC only): copy for the recovery, default folder of the SRS PDFs, local cache.
 """
 from PySide6.QtCore import QThread, QUrl, Qt, Signal
 from PySide6.QtGui import QDesktopServices
 from PySide6.QtWidgets import (QComboBox, QDialog, QFileDialog, QFormLayout, QFrame, QHBoxLayout, QLabel, QLineEdit,
-                               QListWidget, QListWidgetItem, QMessageBox, QPlainTextEdit, QPushButton, QSpinBox,
+                               QListWidget, QListWidgetItem, QMessageBox, QPushButton, QSpinBox,
                                QStackedWidget, QVBoxLayout, QWidget)
 
 from arcadia_tool.accounts import AccountError, git_credentials, git_host
 from arcadia_tool.storage.repository import remote_branches_and_default
 from arcadia_tool.ui.accounts import GitAccessPanel, account_store
+from arcadia_tool.ui.checks_settings import ChecksSettingsPage
+from arcadia_tool.ui.rich_text import RichTextEdit
 from arcadia_tool.ui.dialogs import settings
 from arcadia_tool.ui.theme import MUTED, icon
 
@@ -70,23 +74,27 @@ def _page(title, scope):
 
 
 class ProjectSettingsDialog(QDialog):
-    def __init__(self, project, user=None, parent=None):
+    SECTIONS = ("Generale", "Repository Git", "Verifiche", "Avanzate")
+
+    def __init__(self, project, user=None, parent=None, section="Generale"):
         super().__init__(parent)
         self.project, self.user, self.worker = project, user, None
-        self.remote_changed = False  # set by «Salva»
+        self.remote_changed = self.checks_changed = False  # set by «Salva»
         self.setWindowTitle(f"Impostazioni del progetto · {project.name}")
-        self.resize(900, 560)
+        self.resize(1180, 760)
 
         self.sections = QListWidget()
         self.sections.setFixedWidth(200)
         self.pages = QStackedWidget()
+        self.checks_page = ChecksSettingsPage(project)
         for name, glyph, page in (("Generale", "mdi6.tune-variant", self._general()),
                                   ("Repository Git", "mdi6.source-branch", self._git()),
+                                  ("Verifiche", "mdi6.clipboard-check-outline", self._checks()),
                                   ("Avanzate", "mdi6.cog-outline", self._advanced())):
             self.sections.addItem(QListWidgetItem(icon(glyph), name))
             self.pages.addWidget(page)
         self.sections.currentRowChanged.connect(self.pages.setCurrentIndex)
-        self.sections.setCurrentRow(0)
+        self.sections.setCurrentRow(self.SECTIONS.index(section))
 
         save = QPushButton(icon("mdi6.check", "white"), "Salva")
         save.setProperty("primary", True)
@@ -115,8 +123,7 @@ class ProjectSettingsDialog(QDialog):
         self.name = QLineEdit(p.name)
         self.baseline = QLineEdit(p.baseline)
         self.baseline.setPlaceholderText("es. SUBSET-026 v3.6.0")
-        self.description = QPlainTextEdit(p.description)
-        self.description.setFixedHeight(80)
+        self.description = RichTextEdit(p.description, height=80)
         folder = QLineEdit(str(p.path), readOnly=True, objectName="readonly")
         open_folder = QPushButton(icon("mdi6.folder-open-outline"), "Apri cartella")
         open_folder.clicked.connect(lambda _=False: QDesktopServices.openUrl(QUrl.fromLocalFile(str(p.path))))
@@ -173,6 +180,18 @@ class ProjectSettingsDialog(QDialog):
         check_row.addStretch()
         form.addRow("", check_row)
         form.addRow("", self.check_result)
+        return page
+
+    def _checks(self):
+        page = QWidget()
+        layout = QVBoxLayout(page)
+        layout.setContentsMargins(0, 0, 0, 0)
+        card = QFrame(objectName="card")
+        card_layout = QVBoxLayout(card)
+        card_layout.setContentsMargins(16, 12, 16, 14)
+        card_layout.addWidget(QLabel("VERIFICHE DEL MODELLO", objectName="sectionCaption"))
+        card_layout.addWidget(self.checks_page, 1)
+        layout.addWidget(card, 1)
         return page
 
     def _advanced(self):
@@ -271,8 +290,12 @@ class ProjectSettingsDialog(QDialog):
                 return
         remote = self.remote.text().strip()
         self.remote_changed = bool(remote) and remote != self.project.remote()  # the project may be reloaded
+        checks = self.checks_page.value()
+        self.checks_changed = checks != self.project.checks
         self.project.update_settings(name=name, baseline=self.baseline.text().strip(),
-                                     description=self.description.toPlainText().strip(), remote=remote)
+                                     description=self.description.markdown(), remote=remote)
+        if self.checks_changed:
+            self.project.update_checks(checks)
         self.project.repository.set_remote_url(remote)  # also the standard «origin» of the local Git
         self.project.set_local_settings(branch=self.branch.currentText().strip())
         s = settings()

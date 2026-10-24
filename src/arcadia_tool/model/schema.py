@@ -326,6 +326,8 @@ KINDS = (
     Kind("team", "Team", "Team (EPBS-1)", "x/teams", "Trasversali", "EPBS-1", "Tn", (
         Field("id", "ID"),
         Field("name", "Nome"),
+        # One team only is the Design Authority: it integrates the branches into main (see model.teams).
+        Field("design_authority", "Design Authority (DA)", BOOL, significant=True),
         Field("domains", "Domini", REFS, ref_kinds=("domain",), significant=True),
         Field("components", "Componenti LC", REFS, ref_kinds=("logical_component",), significant=True),
         Field("members", "Membri del team", STRLIST),
@@ -338,10 +340,13 @@ KINDS = (
         Field("id", "ID"),
         Field("title", "Titolo"),
         Field("status", "Stato", ENUM, ("Proposta", "Decisa", "Superata"), significant=True),
-        Field("superseded_by", "Superata da", REF, ref_kinds=("adr",)),
+        # The ADR can be many: chosen in a window with search and ticks, not in a drop-down list.
+        Field("superseded_by", "Superata da", REF, ref_kinds=("adr",), picker=True),
         Field("date_decider", "Data e decisore"),
         Field("context", "Contesto", TEXT),
-        Field("affected", "Voci SRS ed elementi interessati", TEXT),
+        # The SRS sections and clauses the decision is about, chosen with ticks; the other elements in a text.
+        Field("srs_items", "Voci SRS interessate", REFS, ref_kinds=("requirement",)),
+        Field("affected", "Altri elementi del modello interessati", TEXT),
         Field("options", "Opzioni", TABLE, columns=(
             Column("option", "Opzione"), Column("description", "Descrizione"),
             Column("pros", "Vantaggi"), Column("cons", "Svantaggi e rischi"))),
@@ -353,11 +358,15 @@ KINDS = (
     Kind("clarification", "Richiesta di chiarimento", "Richieste di chiarimento (CQ)", "x/cq", "Trasversali", "X-2",
          "CQ-nn", (
         Field("id", "ID"),
-        Field("clause", "Clausola", REF, ref_kinds=("requirement",)),
+        # Chosen with ticks among the SRS items (chapters, search), as the other references to the specification.
+        Field("clause", "Clausola", REF, ref_kinds=("requirement",), picker=True),
         Field("problem", "Problema", TEXT),
         Field("interim_position", "Posizione adottata nel frattempo", TEXT),
         Field("model_impact", "Impatto sul modello", TEXT),
-        Field("recipient", "Destinatario"),
+        # The Design Authority or a team: asked when the request is created.
+        Field("recipient", "Destinatario", REF, ref_kinds=("team",)),
+        # A recipient written as text by earlier versions, that is not a team of the model (shown in the table).
+        Field("recipient_text", "Destinatario (testo)", hidden=True),
         Field("status", "Stato", ENUM, ("Aperta", "Chiusa"), significant=True),
     )),
 )

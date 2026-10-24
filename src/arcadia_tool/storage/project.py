@@ -2,6 +2,7 @@
 import io
 import json
 import os
+import re
 import shutil
 import zipfile
 from datetime import datetime
@@ -12,9 +13,10 @@ from dulwich import porcelain
 
 from arcadia_tool.model.element import Element, Model, natural_key
 from arcadia_tool.model.identifiers import compute_id, is_automatic, matches_context
-from arcadia_tool.model.schema import KINDS, KINDS_BY_NAME, derived_value
+from arcadia_tool.model.links import keep_in_step
+from arcadia_tool.model.schema import B5_QUESTIONS, KINDS, KINDS_BY_NAME, derived_value
 from arcadia_tool.model.serialization import dumps, loads
-from arcadia_tool.storage.repository import (MODEL_DIR, PROJECT_FILE, TRACKED_FILES, Repository,
+from arcadia_tool.storage.repository import (CHECKS_FILE, MODEL_DIR, PROJECT_FILE, TRACKED_FILES, Repository,
                                              remote_branches_and_default)
 
 FORMAT_VERSION = 1
@@ -262,6 +264,7 @@ class Project:
         self.settings = settings
         self.repository = repository
         self.model = model
+        self.checks = self._read_checks()
         self._modified = set()
         self._deleted = {}
         self._published_ids = None
@@ -290,6 +293,34 @@ class Project:
             else:
                 self.settings.pop(name, None)
         _write_text(self.path / PROJECT_FILE, yaml.safe_dump(self.settings, sort_keys=False, allow_unicode=True))
+
+    def _read_checks(self):
+        """Settings of the checks (checks.yaml); those of the first versions were in project.yaml («checks»)."""
+        from arcadia_tool.checks.config import ChecksConfig
+
+        file = self.path / CHECKS_FILE
+        if file.exists():
+            try:
+                return ChecksConfig.from_data(yaml.safe_load(file.read_text(encoding="utf-8")))
+            except (OSError, yaml.YAMLError):
+                return None  # not readable: «Verifica modello» says so (see checks.problems)
+        return ChecksConfig.from_project_settings(self.settings)
+
+    def update_checks(self, config):
+        """Save the settings of the checks (checks.yaml, versioned and shared with the team): the profiles, with
+        their settings, and the active one."""
+        self.checks = config.copy()
+        _write_text(self.path / CHECKS_FILE, config.dumps())
+        if "checks" in self.settings:  # moved from project.yaml
+            self.settings.pop("checks")
+            self.update_settings()
+
+    def choose_checks_profile(self, name):
+        """The profile «Verifica modello» runs: saved in checks.yaml, so it is published for the whole team."""
+        if self.checks is not None and name in self.checks.profiles and name != self.checks.active:
+            config = self.checks.copy()
+            config.active = name
+            self.update_checks(config)
 
     def local_settings(self):
         """Settings of this PC only (.arcadia/, not versioned): e.g. the working branch of the remote."""
@@ -364,7 +395,37 @@ class Project:
         """Data written by earlier versions of the tool: migrated in memory (saved with the next save).
 
         - A logical function listed its derived requirements («derived_requirements»): the derived requirement
-          now has one logical function, its «Funzione logica»."""
+          now has one logical function, its «Funzione logica».
+        - The recipient of a request for clarification (X-2) was a text: now it is the Design Authority or a
+          team. A text naming a team (its ID or name, or «DA»/«Design Authority») becomes that team; another one
+          is kept as «Destinatario (testo)».
+        - The SRS items an ADR is about were written in its text «Voci SRS ed elementi interessati»: the items
+          cited by number become «Voci SRS interessate» (chosen with ticks); the text stays as it is."""
+        by_id = {}
+        for item in self.model.of_kind("requirement"):
+            by_id.setdefault(item.get("id"), item.uuid)
+        for adr in self.model.of_kind("adr"):
+            text = adr.values.get("affected")
+            if not text or adr.values.get("srs_items"):
+                continue
+            cited = [by_id[t] for t in re.findall(r"[A-Z]?\d+(?:\.\d+)+(?:-[A-Z]\d+)?", text) if t in by_id]
+            if cited:
+                adr.set("srs_items", list(dict.fromkeys(cited)))
+                self.update(adr)
+        teams = self.model.of_kind("team")
+        for request in self.model.of_kind("clarification"):
+            text = request.values.get("recipient")
+            if not text or self.model.get(text) is not None:
+                continue
+            key = " ".join(str(text).casefold().split())
+            team = next((t for t in teams if key in {(t.get("id") or "").casefold(), (t.get("name") or "").casefold()}),
+                        None)
+            if team is None and key in ("da", "design authority"):
+                team = next((t for t in teams if t.get("design_authority")), None)
+            request.set("recipient", team.uuid if team is not None else None)
+            if team is None:
+                request.set("recipient_text", str(text))
+            self.update(request)
         for function in self.model.of_kind("logical_function"):
             refined = function.values.get("derived_requirements")
             if refined is None:
@@ -431,16 +492,29 @@ class Project:
         self.update(element)
         return element
 
-    def update(self, element):
+    def update(self, element, previous=None):
+        """Record a change of an element (previous: the element before it, when known). Returns the other
+        elements changed with it: the fields of other sheets kept in step (see model.links, e.g. the domains of a
+        team when its team is assigned in a domain sheet) and those copied from it (e.g. the referent)."""
         self.model.add(element)
         self._modified.add(element.uuid)
         self._deleted.pop(element.uuid, None)
         if is_automatic(element.kind) and not element.get("id"):
             element.set("id", compute_id(element, self.model, self.published_ids))
-        self._sync_derived(element)
+        changed = {}
+        for other in keep_in_step(self.model, element, previous):
+            self._modified.add(other.uuid)
+            changed[other.uuid] = other
+        for source in [element, *list(changed.values())]:
+            for other in self._sync_derived(source):
+                if other.uuid != element.uuid:
+                    changed[other.uuid] = other
+        return list(changed.values())
 
     def _sync_derived(self, element):
-        """Fields copied from a referenced element (the referent of a domain from its team), both ways."""
+        """Fields copied from a referenced element (the referent of a domain from its team), both ways. Returns the
+        other elements changed."""
+        changed = []
         for f in element.schema.fields:
             if f.derived_from and f.stored:
                 element.set(f.name, derived_value(self.model, element, f))
@@ -454,6 +528,8 @@ class Project:
                         if (other.get(f.name) or None) != (value or None):
                             other.set(f.name, value)
                             self._modified.add(other.uuid)
+                            changed.append(other)
+        return changed
 
     def trace_srs(self, domain, principal, contributing):
         """Matrix sections × domains (A4) seen from a domain: the SRS items (uuids) of which it is the principal
@@ -474,6 +550,46 @@ class Project:
                 self.update(item)
                 changed.append(item)
         return changed
+
+    def allocate_item(self, item, principal, contributing):
+        """Matrix A4 from an SRS item (a section): its principal domain and the contributing ones (uuids).
+        Returns the elements changed."""
+        before = item.copy()
+        item.set("primary_domain", principal)
+        item.set("contributing_domains", [d for d in contributing if d != principal])
+        if before.values == item.values:
+            return []
+        return [item, *self.update(item, before)]
+
+    def trace_item_to_functions(self, item, functions):
+        """The system functions (uuids) that trace an SRS clause directly; the others no longer do (those that
+        trace a section containing it are not changed). Returns the elements changed."""
+        changed = []
+        for sf in self.model.of_kind("system_function"):
+            traced = list(sf.get("sections") or [])
+            if (sf.uuid in functions) == (item.uuid in traced):
+                continue
+            before = sf.copy()
+            sf.set("sections", traced + [item.uuid] if sf.uuid in functions else
+                   [u for u in traced if u != item.uuid])
+            changed.append(sf)
+            changed.extend(e for e in self.update(sf, before) if all(e.uuid != c.uuid for c in changed))
+        return changed
+
+    def derive_requirements(self, item, obligations, decompose=True):
+        """Derived requirements (SA-4) of an SRS clause, one per (name, obligation); with decompose, the SA-3
+        record of the clause says «Scomposta in requisiti derivati» (question B5 4). Returns (created, changed)."""
+        created = [self.new_element("derived_requirement", parent=item.uuid, name=name or None, obligation=text)
+                   for name, text in obligations if (text or "").strip()]
+        changed = []
+        if decompose and created:
+            records = [r for r in self.model.of_kind("trace_record") if r.get("requirement") == item.uuid]
+            record = records[0] if records else self.new_element("trace_record", requirement=item.uuid)
+            before = record.copy()
+            record.set("b5_question", B5_QUESTIONS[3])
+            record.set("outcome", "Scomposta in requisiti derivati")
+            changed = [record, *self.update(record, before)]
+        return created, changed
 
     def clean(self, keep_srs=False):
         """Remove every element, or every element but the imported SRS items (whose analysis data, e.g. the

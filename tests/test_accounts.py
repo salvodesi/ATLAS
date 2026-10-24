@@ -163,7 +163,7 @@ def test_project_settings_set_the_git_access_kept_in_the_account(app, tmp_path, 
 
     dialog = ProjectSettingsDialog(window.project, user, window)
     dialog.name.setText("EVC bordo")
-    dialog.description.setPlainText("Modello funzionale dell'EVC")
+    dialog.description.editor.setPlainText("Modello funzionale dell'EVC")
     dialog.remote.setText(str(tmp_path / "remote"))  # a local path: no credentials needed
     dialog._show_access()
     assert not dialog.access.isEnabled()

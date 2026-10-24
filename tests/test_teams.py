@@ -5,6 +5,7 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 import pytest
 from PySide6.QtWidgets import QApplication
 
+from arcadia_tool.model.teams import da_teams, design_authority, is_da_member
 from arcadia_tool.storage.project import Project
 from arcadia_tool.ui.element_editor import ElementEditor
 
@@ -126,3 +127,98 @@ def test_referent_chosen_among_members_and_copied_to_the_domain(app, tmp_path):
     p.update(team)
     assert domain.get("referent") == "Anna Bianchi"
     p.close()
+
+
+def test_team_assigned_in_the_domain_sheet_lists_the_domain(tmp_path):
+    p = Project.create(tmp_path / "p", "Prova")
+    other_domain = p.new_element("domain", name="Velocità")
+    t1 = p.new_element("team", name="Odometria", domains=[other_domain.uuid])
+    t2 = p.new_element("team", name="Supervisione")
+    domain = p.new_element("domain", name="Protezione")
+
+    domain.set("team", t1.uuid)
+    assert p.update(domain) == [t1]  # the team sheet is kept in step
+    assert t1.get("domains") == [other_domain.uuid, domain.uuid]
+    domain.set("team", t2.uuid)  # moved to another team: one team per domain
+    changed = p.update(domain)
+    assert {t.uuid for t in changed} == {t1.uuid, t2.uuid}
+    assert t1.get("domains") == [other_domain.uuid] and t2.get("domains") == [domain.uuid]
+    domain.set("team", None)  # no team any more
+    p.update(domain)
+    assert not t2.get("domains") and t1.get("domains") == [other_domain.uuid]
+    assert p.update(domain) == []  # nothing to keep in step
+    p.save()
+    reopened = Project.open(tmp_path / "p")  # saved with the domain
+    assert reopened.model.get(t1.uuid).get("domains") == [other_domain.uuid]
+
+
+def test_the_open_team_sheet_follows_the_domain_sheet(app, tmp_path):
+    from arcadia_tool.ui.main_window import MainWindow
+    p = Project.create(tmp_path / "p", "Prova")
+    team = p.new_element("team", name="Supervisione")
+    domain = p.new_element("domain", name="Protezione")
+    p.save()
+    window = MainWindow()
+    window._set_project(p)
+    window._open_finding(team.uuid)
+    window._open_finding(domain.uuid)
+    team_tab, domain_tab = window.editors[team.uuid], window.editors[domain.uuid]
+    domain_tab.start_editing()
+    combo = domain_tab.widgets["team"]
+    combo.setCurrentIndex(combo.findData(team.uuid))
+    domain_tab.save_changes()
+    assert team.get("domains") == [domain.uuid]
+    assert team_tab.draft.get("domains") == [domain.uuid]  # the open team tab shows the domain
+    window.close()
+
+
+def test_da_member_is_recognised_by_name_and_surname(tmp_path):
+    p = Project.create(tmp_path / "p", "Prova")
+    da = p.new_element("team", name="Design Authority", design_authority=True,
+                       members=["Salvatore De Simone", "Anna Bianchi"])
+    p.new_element("team", name="Odometria", members=["Mario Rossi"])
+    assert design_authority(p.model) is da
+    for name in ("Salvatore De Simone", "salvatore de  simone", "De Simone Salvatore", "Anna Bianchì"):
+        assert is_da_member(p.model, name), name
+    for name in ("Mario Rossi", "Salvatore", ""):
+        assert not is_da_member(p.model, name), name
+    da.set("design_authority", False)
+    assert design_authority(p.model) is None and not is_da_member(p.model, "Anna Bianchi")
+
+
+def test_only_one_team_is_the_design_authority(app, tmp_path, monkeypatch):
+    from PySide6.QtWidgets import QCheckBox, QMessageBox
+    p = Project.create(tmp_path / "p", "Prova")
+    first = p.new_element("team", name="DA", design_authority=True)
+    second = p.new_element("team", name="Odometria")
+    editor = ElementEditor()
+    editor.edit(p, second, editing=True)
+    flag = editor.widgets["design_authority"]
+    assert isinstance(flag, QCheckBox) and not flag.isChecked()
+    flag.setChecked(True)
+    editor.save_changes()  # the question is answered «No» (tests): not saved, still in edit mode
+    assert editor.editing and not second.get("design_authority") and first.get("design_authority")
+
+    monkeypatch.setattr(QMessageBox, "question", lambda *a, **k: QMessageBox.Yes)
+    moved = []
+    editor.element_changed.connect(moved.append)
+    editor.save_changes()  # «Sì»: the DA moves to this team
+    assert not editor.editing and second.get("design_authority") and not first.get("design_authority")
+    assert first in moved and second in moved
+    assert [t.uuid for t in da_teams(p.model)] == [second.uuid]
+    p.close()
+
+
+def test_status_bar_shows_the_da_member(app, tmp_path):
+    from arcadia_tool.accounts import Account
+    from arcadia_tool.ui.main_window import MainWindow
+    p = Project.create(tmp_path / "p", "Prova")
+    window = MainWindow()
+    window.set_user(Account(first_name="Anna", last_name="Bianchi", username="a.bianchi", email="a@b.it"))
+    window._set_project(p)
+    assert not window.user_is_da and "Design Authority" not in window.status_user.text()
+    assert "Nessun team è indicato come Design Authority" in window.status_user.toolTip()
+    p.new_element("team", name="DA", design_authority=True, members=["Anna Bianchi"])
+    window._refresh_state()
+    assert window.user_is_da and "Design Authority" in window.status_user.text()
+    window.close()

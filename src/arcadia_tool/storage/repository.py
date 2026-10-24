@@ -25,7 +25,8 @@ from arcadia_tool.model.serialization import loads
 
 MODEL_DIR = "model"
 PROJECT_FILE = "project.yaml"
-TRACKED_FILES = (PROJECT_FILE, ".gitignore")
+CHECKS_FILE = "checks.yaml"  # settings of the checks of the methodology: profiles, parameters, exceptions
+TRACKED_FILES = (PROJECT_FILE, CHECKS_FILE, ".gitignore")
 FILE_MODE = 0o100644
 
 

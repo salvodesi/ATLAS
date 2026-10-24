@@ -1,12 +1,14 @@
 """Reading view of the imported SRS: the whole specification, chapter by chapter, item after item.
 
 Items are shown with their full text in document order, can be filtered by chapter 9 category and
-searched; several items can be selected (Shift+arrows, Ctrl/Shift+click) and deleted together.
+searched; several items can be selected (Shift+arrows, Ctrl/Shift+click) and deleted together. From the row of a
+section its domains are chosen (A4), from the row of a clause its system functions and its derived requirements.
 """
+import re
 from html import escape
 
-from PySide6.QtCore import QAbstractListModel, QModelIndex, QRect, QSize, Qt, Signal
-from PySide6.QtGui import QColor, QFont, QFontMetrics, QKeySequence, QPainter, QShortcut, QTextDocument
+from PySide6.QtCore import QAbstractListModel, QEvent, QModelIndex, QRect, QSize, Qt, Signal
+from PySide6.QtGui import QColor, QCursor, QFont, QFontMetrics, QKeySequence, QPainter, QShortcut, QTextDocument
 from PySide6.QtWidgets import (QAbstractItemView, QApplication, QCheckBox, QFrame, QHBoxLayout, QLabel, QLineEdit,
                                QListView, QMenu, QMessageBox, QPushButton, QStyle, QStyledItemDelegate, QTabBar, QVBoxLayout, QWidget)
 
@@ -84,6 +86,24 @@ PAD_TOP, PAD_BOTTOM, HEADING_PAD_TOP = 6, 8, 16
 CHIPS_WIDTH = 140
 CHIP_GAP = 4
 WRAP = Qt.TextWordWrap | Qt.AlignLeft | Qt.AlignTop
+# Actions in the row of a section (domains, A4) and of a clause (system functions, derived requirements).
+ROW_ACTIONS = {"section": (("domains", "Domini…", "Alloca la sezione ai domini funzionali (principale e "
+                                                   "contributori)"),),
+               "clause": (("functions", "Funzioni…", "Alloca la clausola alle funzioni di sistema"),
+                          ("derive", "Deriva…", "Deriva uno o più requisiti dalla clausola"))}
+ACTION_GAP = 6
+
+
+def row_kind(element):
+    """«section» for a section (three numbers), «clause» for a clause (four numbers or more), else None."""
+    item_type = element.get("item_type")
+    if item_type == "Sezione":
+        return "section"
+    if item_type in ("Requisito", "Titolo"):
+        number = re.split(r"[\s\-(]", element.get("id") or "", maxsplit=1)[0]
+        if len([p for p in number.split(".") if p]) >= 4:
+            return "clause"
+    return None
 
 
 class ItemDelegate(QStyledItemDelegate):
@@ -93,10 +113,13 @@ class ItemDelegate(QStyledItemDelegate):
     and heights are cached per width.
     """
 
+    action_clicked = Signal(str, str)  # uuid of the item, action (see ROW_ACTIONS)
+
     def __init__(self, view, project=None):
         super().__init__(view)
         self.view = view
         self.project = project
+        self.links = None  # function(element) → what the item is allocated to, shown in its row of actions
         self._sizes = {}
         self._pixmaps = {}
         self.highlight = ""  # searched text, highlighted in the items (lower case)
@@ -236,7 +259,41 @@ class ItemDelegate(QStyledItemDelegate):
             rows, chip_h = self._chip_rows(element.get("category"), CHIPS_WIDTH)
             chips = (chips_left, top, rows, chip_h)
             height = max(height, len(rows) * (chip_h + CHIP_GAP), self.metrics["bold"].height())
-        return left, top, placed, chips, height + (top - rect.y()) + PAD_BOTTOM
+        actions = None
+        kind = row_kind(element)
+        if kind:  # a line below the text: what the item is allocated to, and the buttons to change it
+            line_h = self.metrics["chip"].height() + 8
+            line_top = top + height + 4
+            x, buttons = right, []
+            for name, label, _ in reversed(ROW_ACTIONS[kind]):
+                w = self.metrics["chip"].horizontalAdvance(label) + 22
+                x -= w
+                buttons.insert(0, (name, label, QRect(x, line_top, w, line_h)))
+                x -= ACTION_GAP
+            actions = (QRect(body_left, line_top, max(x - 8 - body_left, 40), line_h), buttons)
+            height += line_h + 6
+        return left, top, placed, chips, actions, height + (top - rect.y()) + PAD_BOTTOM
+
+    def button_at(self, index, pos):
+        """Action of the button of the row under a point of the viewport, or None."""
+        element = index.data(ELEMENT_ROLE)
+        if element is None or not row_kind(element):
+            return None
+        *_, actions, _ = self._layout(element, self.view.visualRect(index))
+        for name, _, box in actions[1] if actions else ():
+            if box.contains(pos):
+                return name
+        return None
+
+    def editorEvent(self, event, model, option, index):
+        """A click on a button of a row runs its action (and does not change the selection)."""
+        if event.type() in (QEvent.MouseButtonPress, QEvent.MouseButtonRelease, QEvent.MouseButtonDblClick):
+            name = self.button_at(index, event.position().toPoint())
+            if name is not None:
+                if event.type() == QEvent.MouseButtonRelease and event.button() == Qt.LeftButton:
+                    self.action_clicked.emit(index.data(ELEMENT_ROLE).uuid, name)
+                return True
+        return super().editorEvent(event, model, option, index)
 
     def sizeHint(self, option, index):
         element = index.data(ELEMENT_ROLE)
@@ -258,7 +315,7 @@ class ItemDelegate(QStyledItemDelegate):
             painter.fillRect(rect.x(), rect.y(), 3, rect.height(), QColor(ACCENT))
         elif option.state & QStyle.State_MouseOver:
             painter.fillRect(rect, QColor("#F6F8FB"))
-        left, top, placed, chips, _ = self._layout(element, rect)
+        left, top, placed, chips, actions, _ = self._layout(element, rect)
         if chips is not None:
             ident = element.get("id") or ""
             number_box = QRect(left, top, NUMBER_WIDTH - 10, rect.height())
@@ -300,6 +357,19 @@ class ItemDelegate(QStyledItemDelegate):
                     painter.drawText(chip, Qt.AlignCenter, c)
                     x += w + CHIP_GAP
                 y += chip_h + CHIP_GAP
+        if actions is not None:
+            text_box, buttons = actions
+            painter.setFont(self.fonts["chip"])
+            painter.setPen(QColor(MUTED))
+            text = self.links(element) if self.links else ""
+            painter.drawText(text_box, Qt.AlignLeft | Qt.AlignVCenter,
+                             self.metrics["chip"].elidedText(text, Qt.ElideRight, text_box.width()))
+            painter.setRenderHint(QPainter.Antialiasing)
+            for _, label, box in buttons:
+                painter.setPen(QColor(ACCENT))
+                painter.setBrush(QColor("white"))
+                painter.drawRoundedRect(box.adjusted(0, 0, -1, -1), 6, 6)
+                painter.drawText(box, Qt.AlignCenter, label)
         painter.setPen(QColor("#EEF1F5"))
         painter.drawLine(rect.x() + MARGIN_X, rect.bottom(), rect.right() - MARGIN_X, rect.bottom())
         painter.restore()
@@ -319,6 +389,9 @@ class SrsReader(QWidget):
     open_element = Signal(str)
     derive_requested = Signal(str)  # a derived requirement (SA-4) to create from an SRS item
     elements_deleted = Signal()
+    window_toggled = Signal()  # «Apri in altra finestra» / «Riporta nelle schede»
+    elements_changed = Signal(list)  # elements changed from a row (domains of a section, functions of a clause)
+    elements_created = Signal()  # derived requirements created from a row
 
     def __init__(self, project, edit_mode=None):
         super().__init__()
@@ -360,16 +433,24 @@ class SrsReader(QWidget):
         self.delete_button.setEnabled(False)
         self.delete_button.clicked.connect(self.delete_selected)
         self.edit_mode_button = edit_mode_button(self.edit_mode)
+        self.window_button = QPushButton()
+        self.window_button.clicked.connect(self.window_toggled)
+        self.set_detached(False)
         top_row = QHBoxLayout()
         top_row.addWidget(self.search, 1)
         top_row.addWidget(self.count)
         top_row.addWidget(self.edit_mode_button)
         top_row.addWidget(self.delete_button)
+        top_row.addWidget(self.window_button)
 
         self.model = SrsListModel()
         self.view = SrsView()
         self.view.setModel(self.model)
-        self.view.setItemDelegate(ItemDelegate(self.view, project))
+        self.delegate = ItemDelegate(self.view, project)
+        self.delegate.links = self._links_text
+        self.delegate.action_clicked.connect(self.run_action)
+        self.view.setItemDelegate(self.delegate)
+        self._links = {}
         self.view.setSelectionMode(QAbstractItemView.ExtendedSelection)
         self.view.setVerticalScrollMode(QAbstractItemView.ScrollPerPixel)
         self.view.setMouseTracking(True)
@@ -378,16 +459,18 @@ class SrsReader(QWidget):
         # Always shown: otherwise its appearance narrows the view and every item is measured again.
         self.view.setVerticalScrollBarPolicy(Qt.ScrollBarAlwaysOn)
         self.view.setStyleSheet(f"QListView {{ background: white; border: 1px solid {BORDER}; border-radius: 6px; }}")
-        self.view.doubleClicked.connect(lambda index: self.open_element.emit(index.data(ELEMENT_ROLE).uuid))
+        self.view.doubleClicked.connect(self._double_clicked)
         self.view.selectionModel().selectionChanged.connect(self._selection_changed)
         self.view.setContextMenuPolicy(Qt.CustomContextMenu)
         self.view.customContextMenuRequested.connect(self._context_menu)
         QShortcut(QKeySequence.Delete, self.view, activated=self.delete_selected)
 
-        hint = QLabel("Selezione multipla: Maiusc + frecce, Ctrl + clic o Maiusc + clic (Ctrl + A per tutte). "
-                      "Doppio clic apre la voce, clic destro per derivare un requisito. "
-                      "In modalità modifica, Canc elimina le voci selezionate.",
+        hint = QLabel("Sezioni: «Domini…» le alloca ai domini funzionali. Clausole: «Funzioni…» le alloca alle "
+                      "funzioni di sistema, «Deriva…» crea uno o più requisiti derivati. Doppio clic apre la voce. "
+                      "Selezione multipla: Maiusc + frecce, Ctrl + clic o Maiusc + clic (Ctrl + A per tutte); in "
+                      "modalità modifica, Canc elimina le voci selezionate.",
                       objectName="muted")
+        hint.setWordWrap(True)
         header = QFrame(objectName="card")
         header_layout = QVBoxLayout(header)
         header_layout.setContentsMargins(16, 12, 16, 12)
@@ -410,6 +493,7 @@ class SrsReader(QWidget):
     def reload(self):
         """Re-read the requirements from the model (after an import or a deletion)."""
         self.all = document_order(self.project.model)
+        self._rebuild_links()
         # What the filters need, computed once per item instead of at every filter change.
         self.rows = []
         self.parents = {e.uuid: e.values.get("parent") for e in self.all}
@@ -507,6 +591,19 @@ class SrsReader(QWidget):
         self.count.setText("1 voce" if len(items) == 1 else f"{len(items)} voci")
         self._selection_changed()
 
+    def set_detached(self, detached):
+        """The catalogue is shown in its own window (detached) or in a tab of the main window."""
+        self.detached = detached
+        if detached:
+            self.window_button.setIcon(icon("mdi6.dock-window"))
+            self.window_button.setText("Riporta nelle schede")
+            self.window_button.setToolTip("Riporta le voci SRS in una scheda della finestra principale")
+        else:
+            self.window_button.setIcon(icon("mdi6.open-in-new"))
+            self.window_button.setText("Apri in altra finestra")
+            self.window_button.setToolTip("Stacca le voci SRS in una finestra separata, da tenere affiancata alle "
+                                          "schede (es. su un secondo schermo)")
+
     def reveal(self, uuid):
         """Select and show an item (e.g. when coming back from its page); keeps filters and position."""
         row = next((i for i, e in enumerate(self.model.elements) if e.uuid == uuid), None)
@@ -517,8 +614,93 @@ class SrsReader(QWidget):
         self.view.scrollTo(index, QAbstractItemView.PositionAtCenter)
         self.view.setFocus()
 
+    # --- allocation from the rows --------------------------------------------------------------------
+
+    def _rebuild_links(self):
+        """What the rows show: system functions tracing each item directly, derived requirements of each item."""
+        functions, derived = {}, {}
+        for sf in self.project.model.of_kind("system_function"):
+            for uuid in sf.get("sections") or []:
+                functions.setdefault(uuid, []).append(sf)
+        for d in self.project.model.of_kind("derived_requirement"):
+            if d.get("parent"):
+                derived.setdefault(d.get("parent"), []).append(d)
+        self._links = {"functions": functions, "derived": derived}
+
+    def _short(self, uuid):
+        e = self.project.model.get(uuid)
+        return (e.get("id") or self.project.model.label(e)) if e is not None else "?"
+
+    def _links_text(self, element):
+        kind = row_kind(element)
+        if kind == "section":
+            parts = []
+            if element.get("primary_domain"):
+                parts.append(f"{self._short(element.get('primary_domain'))} (principale)")
+            parts += [f"{self._short(d)} (contributo)" for d in element.get("contributing_domains") or []]
+            return "Domini: " + " · ".join(parts) if parts else "Nessun dominio allocato"
+        if kind == "clause":
+            functions = self._links.get("functions", {})
+            direct = [f.get("id") or f.label for f in functions.get(element.uuid, [])]
+            inherited = []
+            parent = element.get("parent")
+            while parent:  # functions tracing a section (or a clause) that contains it
+                inherited += [f.get("id") or f.label for f in functions.get(parent, []) if
+                              (f.get("id") or f.label) not in direct + inherited]
+                parent = self.parents.get(parent)
+            parts = direct + [f"{i} (sezione)" for i in inherited]
+            text = "Funzioni: " + " · ".join(parts) if parts else "Nessuna funzione di sistema"
+            derived = [d.get("id") or "?" for d in self._links.get("derived", {}).get(element.uuid, [])]
+            if derived:
+                text += "   ·   Derivati: " + ", ".join(derived)
+            return text
+        return ""
+
+    def run_action(self, uuid, name):
+        """«Domini…» of a section, «Funzioni…» or «Deriva…» of a clause."""
+        from arcadia_tool.ui.srs_row_actions import DeriveDialog, ItemDomainsDialog, choose_functions
+
+        item = self.project.model.get(uuid)
+        if item is None:
+            return
+        if name == "domains":
+            dialog = ItemDomainsDialog(self.project, item, self)
+            if not dialog.exec():
+                return
+            changed = self.project.allocate_item(item, *dialog.chosen())
+        elif name == "functions":
+            chosen = choose_functions(self.project, item, self)
+            if chosen is None:
+                return
+            changed = self.project.trace_item_to_functions(item, chosen)
+        elif name == "derive":
+            dialog = DeriveDialog(self.project, item, self)
+            if not dialog.exec():
+                return
+            self._rebuild_links()
+            self.view.viewport().update()
+            self.elements_changed.emit([*dialog.changed])
+            self.elements_created.emit()
+            return
+        else:
+            return
+        self._rebuild_links()
+        self.view.viewport().update()
+        if changed:
+            self.elements_changed.emit(changed)
+
+    def _double_clicked(self, index):
+        pos = self.view.viewport().mapFromGlobal(QCursor.pos())
+        if self.delegate.button_at(index, pos) is None:  # a double click on a button is not «open the item»
+            self.open_element.emit(index.data(ELEMENT_ROLE).uuid)
+
     def element_changed(self, element):
-        """An item was edited elsewhere (e.g. in the editor): re-measure and repaint it."""
+        """An item was edited elsewhere (e.g. in the editor): re-measure and repaint it. A function, a derived
+        requirement or a domain changed: the rows that show it are repainted."""
+        if element.kind in ("system_function", "derived_requirement", "domain"):
+            self._rebuild_links()
+            self.view.viewport().update()
+            return
         if element.kind != "requirement":
             return
         self.view.itemDelegate().invalidate(element.uuid)
@@ -547,6 +729,17 @@ class SrsReader(QWidget):
                        lambda _=False: self.open_element.emit(element.uuid))
         menu.addAction(icon("mdi6.call-split"), f"Deriva requisito da {label}…",
                        lambda _=False: self.derive_requested.emit(element.uuid))
+        kind = row_kind(element)
+        if kind:
+            menu.addSeparator()
+        if kind == "section":
+            menu.addAction(icon("mdi6.sitemap-outline"), "Alloca ai domini funzionali…",
+                           lambda _=False: self.run_action(element.uuid, "domains"))
+        elif kind == "clause":
+            menu.addAction(icon("mdi6.function-variant"), "Alloca alle funzioni di sistema…",
+                           lambda _=False: self.run_action(element.uuid, "functions"))
+            menu.addAction(icon("mdi6.call-split"), "Deriva più requisiti…",
+                           lambda _=False: self.run_action(element.uuid, "derive"))
         menu.addSeparator()
         n = len(self.view.selectionModel().selectedRows())
         delete = menu.addAction(icon("mdi6.trash-can-outline"), f"Elimina selezionate ({n})",
@@ -570,6 +763,36 @@ class SrsReader(QWidget):
             return
         if confirm_delete(self, self.project, [e.uuid for e in selected]):
             self.elements_deleted.emit()
+
+
+class SrsReaderWindow(QWidget):
+    """Separate window of the SRS catalogue («Apri in altra finestra»). Closing it closes the catalogue, as
+    closing its tab does."""
+    closed = Signal()
+
+    def __init__(self, reader, title, parent=None):
+        super().__init__(parent, Qt.Window)
+        self.setWindowTitle(title)
+        self.resize(1200, 860)
+        self.reader = reader
+        self.releasing = False  # set when the catalogue goes back to a tab: closing is not closing it
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.addWidget(reader)
+        reader.show()  # hidden by the tab widget it was taken from
+
+    def release(self):
+        """Give the catalogue back (to a tab) and close the window."""
+        self.releasing = True
+        self.layout().removeWidget(self.reader)
+        self.reader.setParent(None)
+        self.close()
+        return self.reader
+
+    def closeEvent(self, event):
+        super().closeEvent(event)
+        if not self.releasing:
+            self.closed.emit()
 
 
 def confirm_delete(parent, project, uuids, what=None):

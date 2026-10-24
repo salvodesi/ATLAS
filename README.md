@@ -5,7 +5,7 @@
 <p align="center">
   <b>Arcadia Traceability, Logical Architecture Software</b><br>
   Strumento desktop di modellazione ARCADIA per l'EVC ERTMS di bordo<br>
-  <sub>RFI - Ricerca e Sviluppo - Sviluppo Sistemi · versione 0.2.0</sub>
+  <sub>RFI - Ricerca e Sviluppo - Sviluppo Sistemi · versione 0.3.0</sub>
 </p>
 
 > [!WARNING]
@@ -29,8 +29,18 @@ repository serve solo per scaricare e pubblicare le versioni.
   scambi funzionali (SA-5) e functional chain (SA-7).
 - **Logical Architecture**: funzioni logiche (LA-2), componenti logici (LA-1), component exchange (LA-3) e
   realizzazioni delle chain (LA-4).
-- **Elementi trasversali**: team (EPBS-1), con membri e referente; decisioni architetturali (X-1) e richieste di
-  chiarimento (X-2).
+- **Elementi trasversali**:
+  - team (EPBS-1), con membri e referente. Un solo team può essere la **Design Authority**: i suoi membri sono
+    riconosciuti da nome e cognome dell'account e il ruolo è indicato nella barra di stato;
+  - decisioni architetturali (X-1) e richieste di chiarimento (X-2), ciascuna con un elenco in tabella (doppio
+    clic sul nodo dell'albero) da cui crearle, aprirle ed eliminarle.
+- Le richieste di chiarimento sono indirizzate alla Design Authority o a un team, scelto alla creazione. La clausola
+  si sceglie con una finestra a spunta.
+- Negli ADR le voci SRS interessate si scelgono a spunta e «Superata da» da un elenco con ricerca.
+- I campi collegati tra schede diverse restano allineati: per esempio il team assegnato a un dominio compare tra i
+  domini del team, e viceversa.
+- Campi di testo libero con editor formattato (grassetto, corsivo, elenchi), salvati in Markdown, che si
+  allungano con il contenuto.
 - Identificativi automatici, una tab per ogni elemento aperto, schede in sola lettura finché non si passa in
   modalità modifica, con salvataggio o annullamento esplicito.
 
@@ -43,6 +53,9 @@ repository serve solo per scaricare e pubblicare le versioni.
   - domini → sezioni e clausole, come principale o contributore;
   - funzioni di sistema → sezioni e clausole;
   - funzioni logiche → sezioni, clausole e requisiti derivati.
+- Il catalogo delle voci SRS si apre anche in una finestra separata (pulsante o menu contestuale dell'albero).
+  Dalle righe si allocano le sezioni ai domini e le clausole alle funzioni di sistema, e si derivano uno o più
+  requisiti da una clausola.
 
 **Versioni e collaborazione**
 - Pubblicazione delle versioni su un repository Git remoto, via HTTPS o SSH. Va bene qualsiasi servizio (GitLab,
@@ -53,6 +66,31 @@ repository serve solo per scaricare e pubblicare le versioni.
 - Migrazione della storia del progetto da un server Git a un altro.
 - Account locali obbligatori: ogni modifica pubblicata è associata a un utente. Le credenziali Git restano
   nell'account sul PC (Gestione credenziali di Windows), mai nel progetto o nel repository.
+- Anche le sole impostazioni condivise del progetto (per esempio le verifiche) si possono pubblicare.
+
+**Verifiche del modello**
+- 171 controlli ricavati dalla metodologia:
+  - regole D1–D10, attività A4–A6 e B1–B7;
+  - checklist dei template SA-1…LA-4, EPBS-1, X-1, X-2;
+  - relazioni tra i campi di schede diverse, per esempio voce → funzione di sistema → funzione logica →
+    componente, scambi, chain.
+- I controlli sono divisi per scheda: controlli generali, matrice A4, SA-1…SA-7 e LA-1…LA-4, Team, ADR e CQ,
+  indicatori di revisione, confronto con l'ultima versione pubblicata.
+- Si scelgono in *Progetto › Impostazioni › Verifiche*, di default nessuno è attivo:
+  - **profili** di verifiche (per esempio uno per ogni revisione di fase); il profilo attivo si sceglie anche
+    dalla barra in alto;
+  - per ogni controllo: **parametri** (soglie, formati degli ID, domini di codifica…), **gravità** e **ambito**,
+    cioè lo stato e i domini delle schede controllate;
+  - «Ripristina valori della metodologia» annulla le personalizzazioni di un controllo.
+- Profili, profilo attivo ed eccezioni sono salvati nel progetto (`checks.yaml`) e pubblicati per tutto il team.
+- *Verifica modello* (F7, o il pulsante sotto l'albero) mostra l'avanzamento, controllo per controllo, e si può
+  interrompere. Il pannello delle segnalazioni resta ridotto in fondo alla finestra finché non c'è una verifica, e
+  si può fissare aperto.
+- Ogni segnalazione indica la scheda che viola il controllo e le altre schede coinvolte. Il doppio clic apre la
+  scheda sul campo con il problema; ogni scheda mostra in cima le proprie segnalazioni.
+- La Design Authority può accettare una segnalazione come **eccezione**, con una motivazione obbligatoria. L'eccezione
+  vale finché la scheda non cambia e si può revocare.
+- Gli errori non bloccano la pubblicazione: la finestra *Pubblica* ne mostra il riepilogo.
 
 **Affidabilità**
 - Ripristino delle modifiche non salvate dopo un'interruzione imprevista.
@@ -64,11 +102,11 @@ repository serve solo per scaricare e pubblicare le versioni.
   - diagrammi di System Analysis per domini, funzioni di sistema, attori, scambi funzionali e functional chain;
   - diagrammi di Logical Architecture per funzioni logiche, componenti, allocazioni e component exchange;
   - diagrammi a ogni livello di scomposizione, generati dal modello e coerenti con esso.
-- **Verifiche di coerenza del modello** secondo le regole della metodologia, ad esempio voci SRS non tracciate,
-  funzioni non allocate e scambi incompleti.
 - **Generazione dei documenti** di progetto dal modello, ad esempio registri di tracciamento e schede delle fasi.
 - **Aggiornamento da Git**: ricezione delle versioni pubblicate dagli altri team e gestione delle modifiche in
   conflitto.
+- **Rami di attività**: rami brevi per le singole attività, confronto tra rami e integrazione in `main` fatta
+  dalla Design Authority direttamente in ATLAS.
 - **Cambio del ramo di sviluppo** in un progetto già scaricato.
 
 ## Il progetto su disco
@@ -78,6 +116,7 @@ Un progetto ATLAS è una cartella:
 | Percorso | Contenuto | Versionato |
 |---|---|---|
 | `project.yaml` | nome, baseline, descrizione, URL del repository remoto | sì |
+| `checks.yaml` | profili delle verifiche, profilo attivo ed eccezioni della Design Authority | sì |
 | `model/<tipo>/<uuid>.yaml` | un file per ogni elemento del modello | sì |
 | `.arcadia/` | cache, file di ripristino, stato locale del ramo | no |
 
@@ -90,7 +129,8 @@ Il nome della cartella è quello delle prime versioni ed è rimasto invariato pe
 
 ## Installazione e avvio
 
-Le versioni compilate sono nelle [Release](https://gitlab.com/salvatoredesi/atlas/-/releases) del progetto.
+Le versioni compilate sono nelle [Release](https://gitlab.com/salvatoredesi/atlas/-/releases) del progetto. Le
+novità di ogni versione sono nel [CHANGELOG](CHANGELOG.md).
 
 ### Windows (10/11, 64 bit)
 
@@ -164,6 +204,7 @@ Il codice è nel pacchetto `arcadia_tool`, nome interno rimasto quello delle pri
 | `src/arcadia_tool/model/` | schema degli elementi ARCADIA |
 | `src/arcadia_tool/importers/` | import delle voci SRS dai PDF |
 | `src/arcadia_tool/diff/` | confronto semantico tra versioni |
+| `src/arcadia_tool/checks/` | verifiche del modello secondo la metodologia |
 | `src/arcadia_tool/storage/` | progetto, repository Git, cache, ripristino |
 | `src/arcadia_tool/ui/` | finestre e tema dell'interfaccia |
 | `src/arcadia_tool/resources/` | icona, simbolo e logo, installati con l'applicazione |

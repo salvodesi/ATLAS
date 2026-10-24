@@ -9,9 +9,11 @@ from PySide6.QtWidgets import (QAbstractItemView, QComboBox, QDialog, QFormLayou
                                QLineEdit, QMessageBox, QPlainTextEdit, QPushButton, QTableWidget, QTableWidgetItem,
                                QVBoxLayout)
 
+from arcadia_tool.checks import ERROR, WARNING, count, problems
 from arcadia_tool.diff.semantic import diff_models
 from arcadia_tool.model.element import Model
 from arcadia_tool.storage.repository import NothingToSave
+from arcadia_tool.ui.checks_panel import SEVERITY_COLORS, enabled_count, run_checks, summary
 from arcadia_tool.ui.diff_view import DiffView
 from arcadia_tool.ui.dialogs import settings
 from arcadia_tool.ui.element_editor import card
@@ -41,6 +43,9 @@ class PublishDialog(QDialog):
         versions = project.versions()
         base_label = version_label(versions[0]) if versions else "Nessuna versione pubblicata"
         self.diff = diff_models(project.published_model(), project.model)
+        # Changed only in the files of the project shared with the team (checks.yaml, project.yaml): also to publish.
+        self.settings_changed = not self.diff and project.has_unpublished_changes()
+        publishable = bool(self.diff) or self.settings_changed
 
         s = settings()
         self.message = QPlainTextEdit()
@@ -69,21 +74,27 @@ class PublishDialog(QDialog):
                       "salvate vengono salvate prima della pubblicazione.", objectName="muted")
         note.setWordWrap(True)
         info_layout.addWidget(note)
+        info_layout.addWidget(self._checks_summary(project))
 
         if versions and remote:  # where the last version is: on the repository or only here
             base_label += " (solo su questo PC)" if unsent else " (inviata al repository)"
         # Without changes the current state is the last version itself: said so, not «non pubblicato».
-        working_label = WORKING_LABEL if self.diff else "Stato attuale: identico, nulla da pubblicare"
+        working_label = (WORKING_LABEL if self.diff else
+                         "Stato attuale: modello identico, cambiate le impostazioni del progetto"
+                         if self.settings_changed else "Stato attuale: identico, nulla da pubblicare")
         changes, changes_layout = card("Modifiche rispetto all'ultima pubblicazione")
         changes_layout.addWidget(DiffView(self.diff, base_label, working_label), 1)
 
         self.publish_button = primary(QPushButton(icon("mdi6.cloud-upload-outline", "white"), "Pubblica"))
-        self.publish_button.setEnabled(bool(self.diff))
+        self.publish_button.setEnabled(publishable)
         self.publish_button.clicked.connect(self._publish)
         cancel = QPushButton("Annulla")
         cancel.clicked.connect(self.reject)
         buttons = QHBoxLayout()
-        if not self.diff and unsent:
+        if self.settings_changed:
+            buttons.addWidget(QLabel("Nessuna modifica al modello · cambiate le impostazioni condivise del progetto "
+                                     "(verifiche, nome, descrizione…): vengono pubblicate.", objectName="muted"))
+        elif not self.diff and unsent:
             # Nothing new to record, but versions recorded here and never sent (e.g. published before a remote
             # was set): they can be sent now.
             self.publish_button.setText("Invia al repository")
@@ -105,6 +116,27 @@ class PublishDialog(QDialog):
         layout.addWidget(info)
         layout.addWidget(changes, 1)
         layout.addLayout(buttons)
+
+    def _checks_summary(self, project):
+        """Findings of the active checks on what is being published: shown, they never block the publication."""
+        enabled = enabled_count(project)
+        label = QLabel(objectName="muted")
+        label.setWordWrap(True)
+        self.findings = []
+        if not enabled:
+            label.setText("Verifiche del modello: nessun controllo attivo (Progetto › Impostazioni › Verifiche).")
+            return label
+        if problems(project.checks, project.model):
+            label.setText("Verifiche del modello non eseguite: le impostazioni non sono corrette (Progetto › "
+                          "Impostazioni › Verifiche).")
+            return label
+        self.findings = run_checks(project)
+        counts = count(self.findings)
+        color = SEVERITY_COLORS[ERROR] if counts[ERROR] else SEVERITY_COLORS[WARNING] if counts[WARNING] else "#166534"
+        label.setText(f"<span style='color:{color}; font-weight:600'>Verifiche del modello ({enabled} controlli "
+                      f"attivi): {summary(counts)}.</span> Non bloccano la pubblicazione; per il dettaglio usa «Verifica "
+                      "modello» (F7).")
+        return label
 
     def _send_only(self):
         self.send_only = True

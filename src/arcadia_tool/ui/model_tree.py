@@ -6,6 +6,7 @@ from PySide6.QtWidgets import (QFrame, QHBoxLayout, QHeaderView, QLabel, QLineEd
 
 from arcadia_tool.model.element import natural_key
 from arcadia_tool.model.identifiers import CREATION_CONTEXT
+from arcadia_tool.ui.element_list import LIST_COLUMNS
 from arcadia_tool.model.schema import GROUPS, KINDS, KINDS_BY_NAME
 from arcadia_tool.ui.element_editor import RefPicker
 from arcadia_tool.ui.srs_edit_mode import SrsEditMode
@@ -14,6 +15,9 @@ from arcadia_tool.ui.theme import GROUP_ICONS, MUTED, icon, kind_icon
 
 KIND_ROLE = Qt.UserRole
 UUID_ROLE = Qt.UserRole + 1
+# Kinds shown first in their group of the tree (the others in the order of the schema): the external actors
+# before the domains (SA-1), as the context of the system comes before its decomposition.
+TREE_FIRST = ("external_actor",)
 
 
 def _self_parent_field(kind):
@@ -44,6 +48,8 @@ class ModelTree(QFrame):
     element_selected = Signal(object)
     model_changed = Signal()
     srs_reader_requested = Signal()
+    srs_window_requested = Signal()  # the SRS catalogue in a separate window
+    list_requested = Signal(str)  # a kind whose elements are shown as a table in a tab (e.g. X-2)
 
     def __init__(self, srs_edit_mode=None):
         super().__init__(objectName="panel")
@@ -67,23 +73,21 @@ class ModelTree(QFrame):
         self.tree.currentItemChanged.connect(self._current_changed)
         self.tree.itemDoubleClicked.connect(self._double_clicked)
         self.tree.setExpandsOnDoubleClick(False)
-        add = QPushButton(icon("mdi6.plus", "white"), "Nuovo")
-        add.setProperty("primary", True)
-        delete = QPushButton(icon("mdi6.trash-can-outline"), "Elimina")
-        add.clicked.connect(self._new_from_selection)
-        delete.clicked.connect(self._delete_selected)
-        buttons = QHBoxLayout()
-        buttons.addWidget(add)
-        buttons.addWidget(delete)
+        # Elements are created and deleted from the context menu; below the tree the window puts its own
+        # buttons (see add_footer).
+        self.footer = QHBoxLayout()
         layout = QVBoxLayout(self)
         layout.setContentsMargins(12, 12, 12, 12)
         layout.setSpacing(8)
         layout.addWidget(caption)
         layout.addWidget(self.filter)
         layout.addWidget(self.tree, 1)
-        layout.addLayout(buttons)
+        layout.addLayout(self.footer)
         self._kind_items = {}
         self._items = {}
+
+    def add_footer(self, widget):
+        self.footer.addWidget(widget)
 
     def set_project(self, project):
         self.project = project
@@ -118,7 +122,7 @@ class ModelTree(QFrame):
             item.setExpanded(True)
             groups[g] = item
         model = self.project.model
-        for k in KINDS:
+        for k in sorted(KINDS, key=lambda k: TREE_FIRST.index(k.name) if k.name in TREE_FIRST else len(TREE_FIRST)):
             elements = model.of_kind(k.name)
             title = f"{k.template} · {k.plural}" if k.template else k.plural
             kind_item = QTreeWidgetItem(groups[k.group], [title, str(len(elements))])
@@ -215,8 +219,11 @@ class ModelTree(QFrame):
         self.element_selected.emit(self.project.model.get(uuid) if uuid and self.project else None)
 
     def _double_clicked(self, item, _column):
-        if item.data(0, KIND_ROLE) == "requirement" and not item.data(0, UUID_ROLE):
+        kind = item.data(0, KIND_ROLE)
+        if kind == "requirement" and not item.data(0, UUID_ROLE):
             self.srs_reader_requested.emit()
+        elif kind in LIST_COLUMNS and not item.data(0, UUID_ROLE):
+            self.list_requested.emit(kind)  # a tab with its elements as a table, instead of the branch
         elif item.childCount():
             # The whole branch: expanded at once, or collapsed again if it is already fully expanded.
             self.tree.setUpdatesEnabled(False)
@@ -234,6 +241,8 @@ class ModelTree(QFrame):
         if kind == "requirement" and not uuid:
             menu.addAction(icon("mdi6.book-open-page-variant-outline"), "Consulta il SUBSET-026",
                            lambda _=False: self.srs_reader_requested.emit())
+            menu.addAction(icon("mdi6.open-in-new"), "Apri in altra finestra",
+                           lambda _=False: self.srs_window_requested.emit())
             toggle = menu.addAction(icon("mdi6.lock-open-variant-outline"), "Modalità modifica delle voci SRS")
             toggle.setCheckable(True)
             toggle.setChecked(self.srs_edit_mode.enabled)
@@ -281,6 +290,10 @@ class ModelTree(QFrame):
             return None
         current = self.current_element()
         preselect = {current.uuid} if current and current.kind in field.ref_kinds else set()
+        if kind == "clarification":
+            # Possible recipients: the Design Authority first, then the teams.
+            candidates = sorted(candidates, key=lambda t: not t.get("design_authority"))
+            preselect = {c.uuid for c in candidates[:1] if c.get("design_authority")} or preselect
         picker = RefPicker([(e.uuid, self.project.model.choice_label(e)) for e in candidates], preselect, self,
                            single=True, title=f"{KINDS_BY_NAME[kind].label}: {field.label}")
         if not picker.exec() or not picker.selected():
@@ -324,12 +337,17 @@ class ModelTree(QFrame):
             self.model_changed.emit()
 
     def _delete_selected(self):
-        element = self.current_element()
+        self.delete_element(self.current_element())
+
+    def delete_element(self, element):
+        """Delete an element of the model, after a confirmation (also from the table of a kind, e.g. X-2)."""
         if element is None or self._locked(element.kind):
-            return
+            return False
         answer = QMessageBox.question(self, "Elimina", f"Eliminare «{self.project.model.label(element)}»?")
-        if answer == QMessageBox.Yes:
-            self.project.delete_element(element.uuid)
-            self.reload()
-            self.element_selected.emit(None)
-            self.model_changed.emit()
+        if answer != QMessageBox.Yes:
+            return False
+        self.project.delete_element(element.uuid)
+        self.reload()
+        self.element_selected.emit(None)
+        self.model_changed.emit()
+        return True
