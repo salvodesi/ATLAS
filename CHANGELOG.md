@@ -132,6 +132,9 @@ l'altra.
   elenco, già compilato dal progetto, si salva in Excel da ATLAS con «Esporta ADR aperte…» nell'elenco X-1.
 
 ### Corretto
+- Su Linux ATLAS non si chiude più di colpo cambiando il tipo di un'ADR, ripristinando un controllo nelle
+  impostazioni delle verifiche o eliminando un progetto dall'elenco dei recenti: la pagina che si ricostruisce
+  viene distrutta dopo, non mentre il suo pulsante o la sua casella sta ancora gestendo la scelta.
 - Un progetto scaricato su un PC con Git per Windows installato non risulta più sempre «modificato e non
   pubblicato»: Git per Windows imposta per tutto il sistema la conversione delle fine riga (`core.autocrlf`), che
   ATLAS applicava scaricando i file. Ora ogni progetto mantiene le fine riga delle versioni.
