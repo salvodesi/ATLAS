@@ -1,6 +1,35 @@
+import os
+import sys
+
 import pytest
 from PySide6.QtCore import QSettings
 from PySide6.QtWidgets import QMessageBox
+
+_exit_status = None
+
+
+def pytest_sessionfinish(session, exitstatus):
+    """The windows left by the tests are destroyed while Qt is still whole (not closed: a main window would ask
+    whether to save, with a real message box)."""
+    global _exit_status
+    _exit_status = int(exitstatus)
+    from PySide6.QtCore import QCoreApplication, QEvent
+    from PySide6.QtWidgets import QApplication
+    if QApplication.instance() is not None:
+        for widget in QApplication.topLevelWidgets():
+            widget.deleteLater()
+        QCoreApplication.sendPostedEvents(None, QEvent.DeferredDelete)
+
+
+@pytest.hookimpl(trylast=True)
+def pytest_unconfigure(config):
+    """Out with the status of the tests, after the report, without the final cleanup of PySide: on Linux it may
+    destroy in the wrong order the objects still alive and crash the process after the tests have passed."""
+    from PySide6.QtCore import QCoreApplication
+    if _exit_status is not None and QCoreApplication.instance() is not None:
+        sys.stdout.flush()
+        sys.stderr.flush()
+        os._exit(_exit_status)
 
 
 @pytest.fixture(autouse=True)
