@@ -16,10 +16,12 @@ def settings():
 def replace_page(scroll, page):
     """Show page in a scroll area in place of the one shown. The old page is destroyed later, not now: it may be
     rebuilt from a signal of one of its own widgets (a combo, a button), and destroying the sender while its
-    signal is delivered crashes on Linux."""
+    signal is delivered crashes on Linux. Until then it stays a hidden child of the scroll area (taken out, it would
+    have no parent), so without an event loop that deletes it it goes with the scroll area."""
     old = scroll.takeWidget()
     if old is not None:
         old.hide()
+        old.setParent(scroll)
         old.deleteLater()
     scroll.setWidget(page)
 

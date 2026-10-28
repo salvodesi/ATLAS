@@ -46,7 +46,7 @@ jobs:
           set -o pipefail
           python -X faulthandler -m pytest tests -q -p no:cacheprovider 2>&1 | tee pytest.log || {
             status=$?
-            summary=$( { grep -A 6 "^Current thread" pytest.log | head -n 14; grep -A 3 "in libQt\|^Extension" pytest.log | head -n 16; tail -n 25 pytest.log; } )
+            summary=$( { grep -E "passed|failed|^FAILED|^ERROR" pytest.log | tail -n 12; grep -A 8 "^Current thread 0x" pytest.log | head -n 10; grep -B 2 -A 12 "C stack trace" pytest.log | grep -v "libpython\|libc.so" | head -n 14; } )
             echo "::error title=Test falliti::$(echo "$summary" | sed 's/%/%25/g' | sed ':a;N;$!ba;s/\n/%0A/g')"
             exit $status
           }

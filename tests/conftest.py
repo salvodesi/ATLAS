@@ -38,3 +38,13 @@ def no_modal_message_boxes(monkeypatch):
     yield shown
     critical = [text for kind, text in shown if kind == "critical"]
     assert not critical, f"messaggio di errore mostrato durante il test: {critical}"
+
+
+@pytest.fixture(autouse=True)
+def deferred_deletes():
+    """The widgets destroyed later (deleteLater, e.g. a page rebuilt from one of its signals) are destroyed after
+    the test, as the event loop of the application does: they don't pile up until Python exits."""
+    yield
+    from PySide6.QtCore import QCoreApplication, QEvent
+    if QCoreApplication.instance() is not None:
+        QCoreApplication.sendPostedEvents(None, QEvent.DeferredDelete)
