@@ -721,6 +721,10 @@ class ElementEditor(QScrollArea):
         elif self.read_only:
             self._make_read_only(page)
         position = self.verticalScrollBar().value()
+        old = self.takeWidget()
+        if old is not None:
+            old.hide()
+            old.deleteLater()  # not now: the page may be rebuilt from a signal of one of its widgets (the type)
         self.setWidget(page)
         self.verticalScrollBar().setValue(position)  # rebuilt in place (edit mode, a choice made…)
 
