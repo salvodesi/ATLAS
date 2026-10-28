@@ -148,7 +148,7 @@ Il nome della cartella è quello delle prime versioni ed è rimasto invariato pe
 
 ## Installazione e avvio
 
-Le versioni compilate sono nelle [Release](https://gitlab.com/salvatoredesi/atlas/-/releases) del progetto. Le
+Le versioni compilate sono nelle [Release](https://github.com/salvodesi/ATLAS/releases) del progetto. Le
 novità di ogni versione sono nel [CHANGELOG](CHANGELOG.md).
 
 ### Windows (10/11, 64 bit)
@@ -275,9 +275,11 @@ L'installer richiede [Inno Setup 6](https://jrsoftware.org/isinfo.php) e viene s
 sh scripts/build.sh               # dist/ATLAS/ + dist/ATLAS-<versione>-linux-x86_64.tar.gz
 ```
 
-La pipeline GitLab ([.gitlab-ci.yml](.gitlab-ci.yml)) esegue i test su Linux e compila l'archivio Linux a
-ogni push su `main`. Sui tag di versione (`v<versione>`) carica l'archivio tra i pacchetti del progetto, accanto
-all'installer Windows della release.
+Il workflow GitHub Actions ([.github/workflows/ci.yml](.github/workflows/ci.yml)) esegue i test su Linux e
+compila l'archivio Linux a ogni push su `main`. Sui tag di versione (`v<versione>`) allega l'archivio alla release
+del tag, accanto all'installer Windows. Per un tag già pubblicato si lancia a mano da *Actions › CI › Run
+workflow*, indicando il tag. La pipeline GitLab ([.gitlab-ci.yml](.gitlab-ci.yml)) resta per chi usa ancora
+il repository GitLab.
 
 ## Logo
 

@@ -140,6 +140,8 @@ l'altra.
   restava e sembrava una chiusura imprevista.
 
 ### Modificato
+- Il repository dello strumento è ora su GitHub (<https://github.com/salvodesi/ATLAS>), con le release di tutte
+  le versioni. I test su Linux e l'archivio Linux sono compilati da GitHub Actions.
 - Un elemento creato con «Nuovo…» (albero, elenchi X-1 e X-2) la cui scheda non viene mai salvata sparisce
   dal modello e dall'albero: con «Annulla», chiudendone la scheda o chiudendo il progetto. Non resta nulla da
   salvare.
@@ -258,6 +260,6 @@ Prima versione pubblicata su GitLab.
 - Nome ATLAS (Arcadia Traceability, Logical Architecture Software), icona e logo.
 - Installer Windows e archivio Linux. La pipeline GitLab esegue i test e compila la versione Linux.
 
-[0.4.0]: https://gitlab.com/salvatoredesi/atlas/-/compare/v0.3.0...v0.4.0
-[0.3.0]: https://gitlab.com/salvatoredesi/atlas/-/compare/v0.2.0...v0.3.0
-[0.2.0]: https://gitlab.com/salvatoredesi/atlas/-/releases/v0.2.0
+[0.4.0]: https://github.com/salvodesi/ATLAS/compare/v0.3.0...v0.4.0
+[0.3.0]: https://github.com/salvodesi/ATLAS/compare/v0.2.0...v0.3.0
+[0.2.0]: https://github.com/salvodesi/ATLAS/releases/tag/v0.2.0
