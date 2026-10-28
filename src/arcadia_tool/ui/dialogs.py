@@ -13,6 +13,17 @@ def settings():
     return QSettings(QSettings.IniFormat, QSettings.UserScope, "RFI", DATA_NAME)
 
 
+def replace_page(scroll, page):
+    """Show page in a scroll area in place of the one shown. The old page is destroyed later, not now: it may be
+    rebuilt from a signal of one of its own widgets (a combo, a button), and destroying the sender while its
+    signal is delivered crashes on Linux."""
+    old = scroll.takeWidget()
+    if old is not None:
+        old.hide()
+        old.deleteLater()
+    scroll.setWidget(page)
+
+
 class NewProjectDialog(QDialog):
     def __init__(self, parent=None):
         super().__init__(parent)

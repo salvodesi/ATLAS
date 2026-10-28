@@ -67,13 +67,15 @@ class StartPage(QWidget):
         while self.recent_layout.count() > 1:  # the rows (a project and its delete button) or the empty note
             entry = self.recent_layout.takeAt(1)
             if entry.widget():
-                entry.widget().setParent(None)
+                entry.widget().hide()
+                entry.widget().deleteLater()  # later: it may be the sender of the signal that clears
                 continue
             row = entry.layout()
             while row is not None and row.count():
                 widget = row.takeAt(0).widget()
                 if widget:
-                    widget.setParent(None)
+                    widget.hide()
+                    widget.deleteLater()  # later: it may be the sender of the signal that clears
         if not paths:
             self.recent_layout.addWidget(QLabel("Nessun progetto aperto di recente.", objectName="muted"))
         for path in paths:

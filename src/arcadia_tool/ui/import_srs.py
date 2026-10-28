@@ -298,7 +298,8 @@ class ImportSrsDialog(QDialog):
         while self.preview_layout.count() > 1:
             widget = self.preview_layout.takeAt(1).widget()
             if widget:
-                widget.setParent(None)
+                widget.hide()
+                widget.deleteLater()  # later: it may be the sender of the signal that clears
 
     def _show_message(self, text):
         self._clear_preview()

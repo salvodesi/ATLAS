@@ -38,7 +38,18 @@ jobs:
             libxcb-image0 libxcb-keysyms1 libxcb-randr0 libxcb-render-util0 libxcb-shape0 libxcb-xinerama0 \
             libxcb-xkb1 > /dev/null
       - run: pip install -q -e ".[dev]"
-      - run: python -m pytest tests -q
+      - name: Test
+        shell: bash
+        # On a failure the end of the output (failed tests, or the traceback of a crash) becomes an annotation of
+        # the run, readable on the page of the run without opening the log.
+        run: |
+          set -o pipefail
+          python -X faulthandler -m pytest tests -q -p no:cacheprovider 2>&1 | tee pytest.log || {
+            status=$?
+            summary=$( { grep -A 6 "^Current thread" pytest.log | head -n 14; grep -A 3 "in libQt\|^Extension" pytest.log | head -n 16; tail -n 25 pytest.log; } )
+            echo "::error title=Test falliti::$(echo "$summary" | sed 's/%/%25/g' | sed ':a;N;$!ba;s/\n/%0A/g')"
+            exit $status
+          }
 
   linux:
     needs: test

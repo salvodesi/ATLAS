@@ -389,7 +389,8 @@ class CompareDialog(QDialog):
         while self.result_layout.count():
             widget = self.result_layout.takeAt(0).widget()
             if widget:
-                widget.setParent(None)
+                widget.hide()
+                widget.deleteLater()  # later: it may be the sender of the signal that clears
 
     def _placeholder(self):
         self._clear_result()

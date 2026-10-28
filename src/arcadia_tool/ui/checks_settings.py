@@ -15,6 +15,7 @@ from arcadia_tool.checks import (CHECKS, CHECKS_BY_CODE, ERROR, GROUPS, INFO, SE
 from arcadia_tool.checks.config import SCOPE_STATUS, ChecksConfig
 from arcadia_tool.checks.params import (BOOL, DOMAIN, DOMAINS, INT, MAP_REGEX, MAP_STRINGS, REGEX, STRINGS,
                                         key_label, params_of)
+from arcadia_tool.ui.dialogs import replace_page
 from arcadia_tool.ui.theme import ACCENT, MUTED, icon
 
 CODE_ROLE = Qt.UserRole
@@ -283,7 +284,7 @@ class ChecksSettingsPage(QWidget):
             hint.setWordWrap(True)
             layout.addWidget(hint)
             layout.addStretch()
-            self.detail.setWidget(page)
+            replace_page(self.detail, page)
             return
         check = CHECKS_BY_CODE[code]
         profile = self.config.profile
@@ -369,7 +370,7 @@ class ChecksSettingsPage(QWidget):
         layout.addWidget(reset, 0, Qt.AlignLeft)
         self.reset_button = reset
         layout.addStretch()
-        self.detail.setWidget(page)
+        replace_page(self.detail, page)
 
     @staticmethod
     def _form():

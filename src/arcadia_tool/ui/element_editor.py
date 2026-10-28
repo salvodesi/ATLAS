@@ -22,6 +22,7 @@ from arcadia_tool.model.element import is_empty
 from arcadia_tool.model.schema import (ADR_DETAILS, BOOL, ENUM, IMAGE, INT, KINDS_BY_NAME, MAP, MULTIENUM, REF,
                                        REFS, STR, STRLIST, TABLE, TEXT, enum_option)
 from arcadia_tool.ui.checks_panel import SEVERITY_COLORS, summary
+from arcadia_tool.ui.dialogs import replace_page
 from arcadia_tool.ui.rich_text import RichTextEdit
 from arcadia_tool.ui.srs_edit_mode import SrsEditMode, edit_mode_button
 from arcadia_tool.ui.theme import ACCENT_SOFT, BORDER, MUTED, SURFACE, icon, kind_icon, status_colors
@@ -617,7 +618,7 @@ class ElementEditor(QScrollArea):
         layout.addWidget(pic)
         layout.addWidget(text)
         layout.addStretch()
-        self.setWidget(empty)
+        replace_page(self, empty)
 
     def edit(self, project, element, editing=False):
         """Show an element: read-only, or directly in edit mode (e.g. a new element)."""
@@ -721,11 +722,7 @@ class ElementEditor(QScrollArea):
         elif self.read_only:
             self._make_read_only(page)
         position = self.verticalScrollBar().value()
-        old = self.takeWidget()
-        if old is not None:
-            old.hide()
-            old.deleteLater()  # not now: the page may be rebuilt from a signal of one of its widgets (the type)
-        self.setWidget(page)
+        replace_page(self, page)
         self.verticalScrollBar().setValue(position)  # rebuilt in place (edit mode, a choice made…)
 
     def _field_card(self, f, element):
