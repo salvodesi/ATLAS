@@ -63,14 +63,18 @@ def test_id_waits_for_context_and_then_stays_stable(tmp_path):
     p.close()
 
 
-def test_published_ids_are_never_reused(tmp_path):
+def test_the_first_free_number_is_given_also_after_a_deletion(tmp_path):
     p = Project.create(tmp_path / "p", "Prova")
-    p.new_element("domain")
-    gone = p.new_element("domain")
-    assert gone.get("id") == "DF02"
+    first = p.new_element("team", name="UniMib")
+    assert first.get("id") == "T1"
     p.publish("v1", AUTHOR)
-    p.delete_element(gone.uuid)
-    assert p.new_element("domain").get("id") == "DF03"
+    p.delete_element(first.uuid)  # the only team, published, deleted
+    assert p.new_element("team", name="Nuovo").get("id") == "T1"
+    domains = [p.new_element("domain") for _ in range(3)]
+    assert [d.get("id") for d in domains] == ["DF01", "DF02", "DF03"]
+    p.delete_element(domains[0].uuid)
+    assert p.new_element("domain").get("id") == "DF01"  # the gap left by the deleted one
+    assert p.new_element("domain").get("id") == "DF04"
     p.close()
 
 

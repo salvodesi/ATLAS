@@ -3,11 +3,12 @@ import os
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 import pytest
-from PySide6.QtWidgets import QApplication
+from PySide6.QtWidgets import QApplication, QDialog
 
 from arcadia_tool.model.teams import da_teams, design_authority, is_da_member
 from arcadia_tool.storage.project import Project
 from arcadia_tool.ui.element_editor import ElementEditor
+from arcadia_tool.ui.team_members import MembersWidget
 
 
 @pytest.fixture(scope="module")
@@ -107,7 +108,9 @@ def test_referent_chosen_among_members_and_copied_to_the_domain(app, tmp_path):
     editor.edit(p, team, editing=True)
     referent = editor.widgets["referent"]
     assert [referent.itemText(i) for i in range(referent.count())] == ["", "Anna Bianchi", "Mario Rossi"]
-    editor.widgets["members"].setText("Anna Bianchi, Mario Rossi, Luca Verdi")  # members added in the sheet
+    members = editor.widget().findChildren(MembersWidget)[0]
+    members.rows.append({"name": "Luca Verdi", "account": "c" * 32})  # a member added in the sheet
+    members.changed.emit()
     assert referent.findData("Luca Verdi") > 0
     referent.setCurrentIndex(referent.findData("Mario Rossi"))
     editor.save_changes()
@@ -222,3 +225,267 @@ def test_status_bar_shows_the_da_member(app, tmp_path):
     window._refresh_state()
     assert window.user_is_da and "Design Authority" in window.status_user.text()
     window.close()
+
+
+ANNA, MARIO = "a" * 32, "b" * 32  # IDs of local accounts
+
+
+def user(name, account=""):
+    from types import SimpleNamespace
+    return SimpleNamespace(full_name=name, id=account, username=name.split()[0].lower(),
+                           email=f"{name.split()[0].lower()}@example.org")
+
+
+def test_members_are_added_changed_and_removed_with_the_id_of_their_account(app, tmp_path, monkeypatch):
+    import arcadia_tool.ui.team_members as team_members
+    from arcadia_tool.model.teams import member_rows
+    from PySide6.QtWidgets import QMessageBox
+
+    p = Project.create(tmp_path / "p", "Prova")
+    team = p.new_element("team", name="Odometria")
+    editor = ElementEditor()
+    editor.edit(p, team, editing=True)
+    members = editor.widget().findChildren(MembersWidget)[0]
+    assert members.empty.isVisibleTo(editor) and members.add_button.text() == "Aggiungi membro…"
+    warnings = []
+    monkeypatch.setattr(QMessageBox, "warning", lambda *a, **k: warnings.append(a[2]))
+
+    def fill(name, account, email="", role=""):
+        def run(dialog):
+            dialog.name.setText(name)
+            dialog.account.setText(account)
+            dialog.email.setText(email)
+            dialog.role.setText(role)
+            dialog._accept()
+            return dialog.result()
+        return run
+    monkeypatch.setattr(team_members.MemberDialog, "exec", fill("Anna Bianchi", "", "anna@example.org"))
+    assert members.add_member() is None and "Indica l'ID" in warnings[-1]  # the ID is required
+    monkeypatch.setattr(team_members.MemberDialog, "exec", fill("Anna Bianchi", "non-un-id"))
+    assert members.add_member() is None and "non è valido" in warnings[-1]
+    dashed = (ANNA[:8] + "-" + ANNA[8:]).upper()  # as typed: normalized
+    monkeypatch.setattr(team_members.MemberDialog, "exec", fill("Anna Bianchi", dashed, "anna@example.org", "Analista"))
+    anna = members.add_member()
+    assert anna == {"name": "Anna Bianchi", "account": ANNA, "email": "anna@example.org", "role": "Analista"}
+    monkeypatch.setattr(team_members.MemberDialog, "exec", fill("anna  BIANCHI", MARIO))
+    assert members.add_member() is None and "già tra i membri" in warnings[-1]
+    monkeypatch.setattr(team_members.MemberDialog, "exec", fill("Mario Rossi", ANNA))
+    assert members.add_member() is None and "già di un altro membro" in warnings[-1]
+    monkeypatch.setattr(team_members.MemberDialog, "exec", fill("Mario Rossi", MARIO))
+    members.add_member()
+    assert members.table.rowCount() == 2 and members.table.item(0, 3).text() == f"{ANNA[:8]}…"
+
+    monkeypatch.setattr(team_members.MemberDialog, "exec", fill("Anna Bianchi Verdi", ANNA, "anna@example.org"))
+    members.edit_member(0)
+    assert members.rows[0]["name"] == "Anna Bianchi Verdi" and members.rows[0]["account"] == ANNA
+    monkeypatch.setattr(QMessageBox, "question", lambda *a, **k: QMessageBox.Yes)
+    members.remove_member(1)
+    editor.save_changes()
+    assert [r["name"] for r in member_rows(team)] == ["Anna Bianchi Verdi"]
+
+    team.set("design_authority", True)
+    p.update(team)
+    assert is_da_member(p.model, user("A. Verdi", ANNA))  # by the ID, also with another name
+    assert not is_da_member(p.model, user("Anna Bianchi Verdi", MARIO))  # her name, another account: no
+    p.close()
+
+
+def test_members_of_the_first_versions_are_recognized_by_name_until_their_id_is_written(tmp_path):
+    from arcadia_tool.model.serialization import dumps
+    from arcadia_tool.model.element import Element
+    from arcadia_tool.model.teams import member_of, member_rows
+
+    p = Project.create(tmp_path / "p", "Prova")
+    p.close()
+    old = Element("team", values={"id": "T1", "name": "DA", "members": [
+        "Anna Bianchi", {"code": "M-AAAA-BBBB", "name": "Mario Rossi"}]})  # names, and a code of a test version
+    folder = tmp_path / "p" / "model" / "x" / "teams"
+    folder.mkdir(parents=True, exist_ok=True)
+    (folder / f"{old.uuid}.yaml").write_text(dumps(old), encoding="utf-8")
+    opened = Project.open(tmp_path / "p")
+    team = opened.model.get(old.uuid)
+    assert member_rows(team) == [{"name": "Anna Bianchi"}, {"name": "Mario Rossi"}]
+    assert member_of(team, user("anna bianchi", ANNA))["name"] == "Anna Bianchi"  # no ID yet: by name
+    team.set("members", [{"name": "Anna Bianchi", "account": ANNA}, {"name": "Mario Rossi"}])
+    opened.update(team)
+    assert member_of(team, user("Anna Bianchi", MARIO)) is None  # her ID is written: the name is not enough
+    opened.close()
+
+
+def test_only_the_design_authority_changes_the_teams(app, tmp_path, monkeypatch):
+    from PySide6.QtWidgets import QMessageBox
+    from arcadia_tool.model.teams import edit_denied
+    from arcadia_tool.ui.model_tree import ModelTree
+
+    p = Project.create(tmp_path / "p", "Prova")
+    team = p.new_element("team", name="Odometria")
+    anna, mario = user("Anna Bianchi", ANNA), user("Mario Rossi", MARIO)
+    assert edit_denied(p.model, mario, "team") is None  # no DA yet: anyone sets it up
+    da = p.new_element("team", name="DA", design_authority=True)
+    assert edit_denied(p.model, mario, "team") is None  # a DA without members: still anyone
+    da.set("members", [{"name": "Anna B.", "account": ANNA}])
+    p.update(da)
+    assert edit_denied(p.model, anna, "team") is None  # recognized by the ID of her account
+    reason = edit_denied(p.model, mario, "team")
+    assert "Design Authority" in reason and edit_denied(p.model, mario, "domain") is None
+
+    shown = []
+    monkeypatch.setattr(QMessageBox, "information", lambda *a, **k: shown.append(a[2]))
+    editor = ElementEditor()
+    editor.edit_denied = lambda kind, field=None: edit_denied(p.model, mario, kind, field)
+    editor.edit(p, team, editing=True)
+    assert not editor.editing and not editor.modify_button.isEnabled()
+    assert editor.modify_button.toolTip() == reason
+    editor.start_editing()
+    assert not editor.editing
+    editor.ask_to_edit()
+    assert shown == [reason]
+
+    tree = ModelTree()
+    tree.project = p
+    tree.edit_denied = lambda kind: edit_denied(p.model, mario, kind)
+    count = len(p.model.of_kind("team"))
+    tree.create("team")
+    assert len(p.model.of_kind("team")) == count and shown[-1] == reason
+    assert not tree.delete_element(team) and p.model.get(team.uuid) is not None
+
+    editor.edit_denied = lambda kind, field=None: edit_denied(p.model, anna, kind, field)
+    editor.edit(p, team, editing=True)
+    assert editor.editing  # a member of the DA
+    p.close()
+
+
+def test_only_the_design_authority_assigns_the_domains_to_the_teams(app, tmp_path):
+    from arcadia_tool.model.teams import edit_denied
+
+    p = Project.create(tmp_path / "p", "Prova")
+    p.new_element("team", name="DA", design_authority=True, members=[{"name": "Anna", "account": ANNA}])
+    team = p.new_element("team", name="Odometria")
+    domain = p.new_element("domain", name="Localizzazione")
+    anna, mario = user("Anna", ANNA), user("Mario Rossi", MARIO)
+    assert edit_denied(p.model, mario, "domain") is None  # the domain sheet: anyone
+    assert "assegnare i domini" in edit_denied(p.model, mario, "domain", "team")
+    assert edit_denied(p.model, mario, "domain", "mission") is None
+
+    editor = ElementEditor()
+    editor.edit_denied = lambda kind, field=None: edit_denied(p.model, mario, kind, field)
+    editor.edit(p, domain, editing=True)
+    combo = editor.widgets["team"]
+    assert editor.editing and not combo.isEnabled() and "Design Authority" in combo.toolTip()
+    editor.draft.set("team", team.uuid)  # even if it were changed: not saved
+    editor.draft.set("mission", "Stimare la posizione.")
+    editor._set_dirty(True)
+    editor.save_changes()
+    assert domain.get("team") is None and domain.get("mission") == "Stimare la posizione."
+    assert domain.uuid not in (team.get("domains") or [])
+
+    editor.edit_denied = lambda kind, field=None: edit_denied(p.model, anna, kind, field)
+    editor.edit(p, domain, editing=True)
+    combo = editor.widgets["team"]
+    assert combo.isEnabled()
+    combo.setCurrentIndex(combo.findData(team.uuid))
+    editor.save_changes()
+    assert domain.get("team") == team.uuid and domain.uuid in team.get("domains")
+    p.close()
+
+
+def test_the_account_window_shows_the_id_to_tell_the_design_authority(app):
+    from arcadia_tool.accounts import Account, AccountStore
+    from arcadia_tool.ui.accounts import AccountDialog
+
+    account = Account(first_name="Anna", last_name="Bianchi", username="abianchi", email="anna@example.org")
+    store = AccountStore.__new__(AccountStore)
+    store.accounts = [account]
+    dialog = AccountDialog(store, account)
+    assert dialog.ident.text() == account.id and len(account.id) == 32
+    assert not hasattr(account, "member_codes")
+
+
+def test_the_members_are_right_below_the_description_of_the_team(app, tmp_path):
+    from PySide6.QtWidgets import QLabel
+    p = Project.create(tmp_path / "p", "Prova")
+    team = p.new_element("team", name="Odometria", members=[{"name": "Anna", "account": ANNA}])
+    editor = ElementEditor()
+    editor.edit(p, team)
+    captions = [l.text() for l in editor.widget().findChildren(QLabel) if l.objectName() == "sectionCaption"]
+    order = [c.upper() for c in captions]
+    assert order.index("MEMBRI DEL TEAM") == order.index("DESCRIZIONE") + 1, order
+    p.close()
+
+
+def test_only_the_members_of_the_teams_open_the_project(app, tmp_path, monkeypatch):
+    import arcadia_tool.ui.main_window as main_window
+    from arcadia_tool.model.teams import access_denied, locks_out
+
+    p = Project.create(tmp_path / "p", "Prova")
+    anna, mario = user("Anna Bianchi", ANNA), user("Mario Rossi", MARIO)
+    assert access_denied(p.model, mario) is None  # no ID in the teams yet: anyone, to set them up
+    da = p.new_element("team", name="DA", design_authority=True, members=[{"name": "Mario Rossi"}])
+    assert access_denied(p.model, mario) is None  # a member by name only: still the setup
+    draft = da.copy()
+    draft.set("members", [{"name": "Anna Bianchi", "account": ANNA}, {"name": "Mario Rossi"}])
+    assert locks_out(p.model, draft, mario) and not locks_out(p.model, draft, anna)  # Mario would be left out
+    da.set("members", [{"name": "Anna Bianchi", "account": ANNA}])
+    p.update(da)
+    assert access_denied(p.model, anna) is None
+    assert "Chiedi alla Design Authority" in access_denied(p.model, mario)
+    p.save()
+
+    shown = []
+    monkeypatch.setattr(main_window, "show_access_denied", lambda parent, reason, who: shown.append(who))
+    window = main_window.MainWindow()
+    window.set_user(mario)
+    window._denied = None
+    window._open_loaded(Project.open(tmp_path / "p"))  # what open_project does once the project is loaded
+    assert window.project is None and window._denied
+    window.set_user(anna)
+    window._open_loaded(Project.open(tmp_path / "p"))
+    assert window.project is not None and window._denied is None
+    window.set_user(mario)  # another user logs in while the project is open: it closes
+    assert window.project is None and shown == [mario]
+
+    window.set_user(anna)
+    window._open_loaded(Project.open(tmp_path / "p"))
+    editor = ElementEditor()
+    editor.locks_out = window.locks_out
+    team = window.project.model.get(da.uuid)
+    editor.edit(window.project, team, editing=True)
+    editor.draft.set("members", [{"name": "Mario Rossi", "account": MARIO}])  # Anna removes herself
+    editor._set_dirty(True)
+    errors = []
+    from PySide6.QtWidgets import QMessageBox
+    monkeypatch.setattr(QMessageBox, "critical", lambda *a, **k: errors.append(a[2]))
+    editor.save_changes()
+    assert errors and editor.editing and team.get("members") == [{"name": "Anna Bianchi", "account": ANNA}]
+    assert "non potresti più aprire il progetto" in errors[-1]
+
+    # The error at once, in the table of the members: her own row removed, or her ID changed, by mistake.
+    import arcadia_tool.ui.team_members as team_members
+    editor.edit(window.project, team, editing=True)
+    members = editor.widget().findChildren(MembersWidget)[0]
+    monkeypatch.setattr(QMessageBox, "question", lambda *a, **k: QMessageBox.Yes)
+    members.remove_member(0)
+    assert len(errors) == 2 and members.rows == [{"name": "Anna Bianchi", "account": ANNA}]
+
+    def change_id(dialog):
+        dialog.account.setText(MARIO)
+        dialog._accept()
+        return dialog.result()
+    monkeypatch.setattr(team_members.MemberDialog, "exec", change_id)
+    members.edit_member(0)
+    assert len(errors) == 3 and members.rows[0]["account"] == ANNA
+
+    # Removing someone else is fine.
+    members.rows.append({"name": "Mario Rossi", "account": MARIO})
+    members.remove_member(1)
+    assert len(errors) == 3 and len(members.rows) == 1
+
+    # Deleting the team with her ID, from the tree: refused too.
+    from arcadia_tool.ui.model_tree import ModelTree
+    tree = ModelTree()
+    tree.project = window.project
+    tree.locks_out = window.locks_out
+    assert not tree.delete_element(team) and len(errors) == 4 and window.project.model.get(team.uuid) is not None
+    window._set_project(None)
+    window.close()
+    p.close()

@@ -8,16 +8,19 @@ from html import escape
 from PySide6.QtCore import QEvent, QObject, QSize, Qt, QTimer, Signal
 from PySide6.QtGui import QColor, QFont, QKeySequence, QPainter, QPixmap
 from PySide6.QtWidgets import (QAbstractItemView, QCheckBox, QComboBox, QDialog, QDialogButtonBox, QFormLayout,
-                               QFrame, QGridLayout, QHBoxLayout, QLabel, QLineEdit, QListWidget, QListWidgetItem,
+                               QFrame, QGridLayout, QHBoxLayout, QHeaderView, QLabel, QLineEdit, QListWidget,
+                               QListWidgetItem,
                                QMessageBox, QPlainTextEdit, QPushButton, QScrollArea, QSpinBox, QStyle,
                                QStyledItemDelegate, QTableWidget, QTableWidgetItem, QTextEdit, QVBoxLayout, QWidget)
 
 from arcadia_tool.checks import CHECKS_BY_CODE, count
 from arcadia_tool.checks.fields import SRS_CARD
 from arcadia_tool.model.identifiers import compute_id, is_automatic, matches_context, missing_context, rule
-from arcadia_tool.model.teams import DA_FIELD, da_teams
-from arcadia_tool.model.schema import (BOOL, ENUM, IMAGE, INT, KINDS_BY_NAME, MAP, MULTIENUM, REF, REFS, STR,
-                                       STRLIST, TABLE, TEXT, enum_option)
+from arcadia_tool.model.teams import DA_FIELD, MEMBERS, da_teams, member_rows
+from arcadia_tool.model.adr import approval_problems, approve_new_domain, can_approve, sections_taken
+from arcadia_tool.model.element import is_empty
+from arcadia_tool.model.schema import (ADR_DETAILS, BOOL, ENUM, IMAGE, INT, KINDS_BY_NAME, MAP, MULTIENUM, REF,
+                                       REFS, STR, STRLIST, TABLE, TEXT, enum_option)
 from arcadia_tool.ui.checks_panel import SEVERITY_COLORS, summary
 from arcadia_tool.ui.rich_text import RichTextEdit
 from arcadia_tool.ui.srs_edit_mode import SrsEditMode, edit_mode_button
@@ -30,7 +33,7 @@ READ_ONLY_KINDS = ("requirement",)
 TRACE_CARDS = ("domain", "system_function", "logical_function", "derived_requirement")
 FINDINGS_SHOWN = 8  # findings of the checks listed in the header of a sheet; the others are in the panel
 # Kinds whose sheet has the sections in another order: an ADR shows first what it is about (SRS items, ADR).
-SECTION_ORDER = {"adr": ("Identificazione", "Relazioni", "Descrizione")}
+SECTION_ORDER = {"adr": ("Identificazione", ADR_DETAILS, "Relazioni", "Descrizione")}
 # The texts of the SRS items are those of the specification, imported: plain text, no styles.
 PLAIN_TEXT_KINDS = ("requirement",)
 HEADER = "@header"  # the header card of the sheet, in ElementEditor.widgets
@@ -161,9 +164,23 @@ class RefsWidget(QWidget):
                 item.setIcon(kind_icon(element.kind))
             item.setData(Qt.UserRole, uuid)
             self.list.addItem(item)
+        self._fit()
 
     def value(self):
         return list(self.uuids)
+
+    def set_read_only(self, tip):
+        """Only shown (e.g. computed by the tool): no buttons to change it, as high as its rows."""
+        for button in self.findChildren(QPushButton):
+            button.hide()
+        self.list.setToolTip(tip)
+        self.read_only = True
+        self._fit()
+
+    def _fit(self):
+        if getattr(self, "read_only", False):
+            rows = max(1, min(self.list.count(), 8))
+            self.list.setFixedHeight(rows * (self.list.sizeHintForRow(0) if self.list.count() else 22) + 8)
 
     def _pick(self):
         if self.picker is not None:
@@ -186,12 +203,14 @@ class RefsWidget(QWidget):
 class TableWidget(QWidget):
     changed = Signal()
 
-    def __init__(self, model, field):
+    def __init__(self, model, field, choices=None):
         super().__init__()
         self.model, self.columns = model, field.columns
+        # function(column) → [(value, label)]: the list of a column whose choices depend on the element
+        self.choices = choices
         self.table = QTableWidget(0, len(self.columns))
         self.table.setHorizontalHeaderLabels([c.label for c in self.columns])
-        self.table.horizontalHeader().setStretchLastSection(True)
+        self.table.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)  # readable headers
         self.table.verticalHeader().setDefaultSectionSize(30)
         self.table.setAlternatingRowColors(True)
         self.table.setMinimumHeight(180)
@@ -219,18 +238,40 @@ class TableWidget(QWidget):
         self.table.insertRow(r)
         for c, col in enumerate(self.columns):
             value = row.get(col.name, "")
-            if col.type in (ENUM, REF):
+            if col.choices or col.type in (ENUM, REF):
                 combo = compact_combo()
-                combo.addItem("", None)
-                choices = [(o, o) for o in col.options] if col.type == ENUM else _ref_choices(self.model, col.ref_kinds)
-                for data, label in choices:
-                    combo.addItem(label, data)
-                combo.setCurrentIndex(max(combo.findData(value), 0) if value else 0)
+                self._fill_combo(combo, col, value)
                 combo.currentIndexChanged.connect(lambda _: self.changed.emit())
                 self.table.setCellWidget(r, c, combo)
             else:
                 self.table.setItem(r, c, QTableWidgetItem(str(value)))
         self.table.blockSignals(False)
+
+    def _column_choices(self, col):
+        if col.choices:
+            return self.choices(col) if self.choices else []
+        return [(o, o) for o in col.options] if col.type == ENUM else _ref_choices(self.model, col.ref_kinds)
+
+    def _fill_combo(self, combo, col, value):
+        combo.blockSignals(True)
+        combo.clear()
+        combo.addItem("", None)
+        for data, label in self._column_choices(col):
+            combo.addItem(label, data)
+        if value and combo.findData(value) < 0:  # no longer among the choices (e.g. a domain renamed above)
+            combo.addItem(f"{self.model.label_of(value) or value} (non più disponibile)", value)
+        combo.setCurrentIndex(max(combo.findData(value), 0) if value else 0)
+        combo.blockSignals(False)
+
+    def refresh_choices(self):
+        """The lists of the columns that depend on the element follow it (the current values are kept)."""
+        for c, col in enumerate(self.columns):
+            if not col.choices:
+                continue
+            for r in range(self.table.rowCount()):
+                combo = self.table.cellWidget(r, c)
+                if combo is not None:
+                    self._fill_combo(combo, col, combo.currentData())
 
     def _remove_row(self):
         rows = sorted({i.row() for i in self.table.selectedIndexes()} or {self.table.rowCount() - 1}, reverse=True)
@@ -309,6 +350,10 @@ class _StatusItemDelegate(QStyledItemDelegate):
         return QSize(size.width() + 24, self.HEIGHT)
 
 
+# Fields in a card of their own shown right after the description, instead of at the end of the sheet.
+AFTER_DESCRIPTION = {"team": ("members",)}
+
+
 class _ViewModeGuard(QObject):
     """On a sheet shown read-only: an attempt to change a field asks to switch to edit mode (and is ignored)."""
     TEXT_INPUTS = (QLineEdit, QPlainTextEdit, QTextEdit)
@@ -345,6 +390,7 @@ class ElementEditor(QScrollArea):
     elements_created = Signal()  # e.g. derived requirements created from the allocation window
     dirty_changed = Signal(bool)  # the draft has (True) or no longer has changes not yet saved
     saved = Signal()  # «Salva»: the changes are in the model, the project is to be saved
+    abandoned = Signal(object)  # «Annulla» on an element just created and never saved: it is to be removed
 
     def __init__(self, srs_edit_mode=None):
         super().__init__()
@@ -356,6 +402,15 @@ class ElementEditor(QScrollArea):
         self.editing = self.dirty = self._building = False
         self.back_label = None  # set when the page was opened from another view (e.g. the SUBSET-026 catalogue)
         self.findings_for = None  # function(uuid) → findings of the checks about the sheet (shown in its header)
+        # function(kind, field=None) → why the user may not change sheets of this kind, or that field of them
+        # (e.g. the teams, and the team of a domain: only the DA), or None
+        self.edit_denied = None
+        # function(draft) → True if saving the sheet would leave the user outside the project (see teams.locks_out)
+        self.locks_out = None
+        # function() → the name of the user if a member of the Design Authority, else None: who approves an ADR
+        self.approver = None
+        # The element was just created («Nuovo…») and its sheet never saved: «Annulla» removes it.
+        self.unsaved_new = False
         self.highlight = None  # frame around the field shown by reveal (removed after a moment)
         self._timer = QTimer(self, singleShot=True, interval=250)
         self._timer.timeout.connect(self._apply)
@@ -376,7 +431,21 @@ class ElementEditor(QScrollArea):
 
     # --- view and edit mode -------------------------------------------------------------------------
 
+    def denied(self):
+        """Why the sheet shown may not be changed by the user, or None."""
+        return self.edit_denied(self.element.kind) if self.edit_denied and self.element is not None else None
+
+    def field_denied(self, name):
+        """Why the field of the sheet shown may not be changed by the user, or None."""
+        if not self.edit_denied or self.element is None:
+            return None
+        return self.edit_denied(self.element.kind, name)
+
     def ask_to_edit(self):
+        reason = self.denied()
+        if reason:
+            QMessageBox.information(self, "Scheda in sola lettura", reason)
+            return
         answer = QMessageBox.question(self, "Scheda in sola lettura",
                                       f"«{self.project.model.label(self.element)}» è in sola lettura. Passare in "
                                       "modalità modifica?")
@@ -384,20 +453,57 @@ class ElementEditor(QScrollArea):
             QTimer.singleShot(0, self.start_editing)  # not while the event of the old page is handled
 
     def start_editing(self):
-        if self.element is not None and not self.editing:
+        if self.element is not None and not self.editing and not self.denied():
             self.editing = True
             self._build()
+
+    def approve(self):
+        """The Design Authority approves the ADR of a new domain: the domain is created (see
+        model.adr.approve_new_domain), after a confirmation that says what changes."""
+        element, model = self.element, self.project.model
+        problems = approval_problems(model, element)
+        if problems:
+            QMessageBox.warning(self, "Approva ADR", "Non è possibile approvare l'ADR:\n" + "\n".join(problems))
+            return
+        sections = [model.get(u) for u in element.get("sections_allocated") or [] if model.get(u) is not None]
+        taken = sections_taken(model, element)
+        team = model.get(element.get("team_proposed"))
+        lines = [f"Nome: {element.get('new_domain_name')} (l'ID DFnn viene assegnato ora)",
+                 f"Sezioni allocate: {len(sections)}",
+                 f"Team: {model.label(team) if team is not None else 'nessuno'}"]
+        if taken:
+            moved = ", ".join(f"{s.get('id')} (da {d.get('id') if d is not None else '?'})" for s, d in taken)
+            lines.append(f"Passano al nuovo dominio come principale, togliendolo al dominio attuale: {moved}")
+        if QMessageBox.question(self, "Approva ADR", "Approvare l'ADR e creare il nuovo dominio funzionale?\n\n"
+                                + "\n".join(lines)) != QMessageBox.Yes:
+            return
+        domain, changed = approve_new_domain(self.project, element)
+        self.draft = element.copy()
+        for e in [domain, *changed, element]:
+            self.element_changed.emit(e)
+        self.elements_created.emit()
+        self.saved.emit()  # the project is saved
+        self._build()
+        QMessageBox.information(self, "Approva ADR", f"ADR approvata: creato il dominio "
+                                f"{model.label(domain)}.")
 
     def save_changes(self):
         """«Salva»: the draft becomes the element in the model; the project is then saved (signal saved)."""
         if self.element is None:
             return
         self.flush()
+        if self.dirty and self.locks_out is not None and self.locks_out(self.draft):
+            from arcadia_tool.ui.team_members import own_id_error
+            own_id_error(self)
+            return  # not saved: the sheet stays in edit mode
         if self.dirty:
             moved = self._single_design_authority()
             if moved is None:
                 return  # not saved: the sheet stays in edit mode
             previous = self.element.copy()
+            for name in list(self.draft.values) + list(self.element.values):  # fields the user may not change
+                if self.field_denied(name) and self.draft.values.get(name) != self.element.values.get(name):
+                    self.draft.set(name, self.element.values.get(name))
             self.element.values = self.draft.copy().values
             # May assign the identifier, once its context is known; may change other elements kept in step
             # (e.g. the team assigned to a domain lists it among its domains).
@@ -405,6 +511,7 @@ class ElementEditor(QScrollArea):
             self.element_changed.emit(self.element)
             for other in [*moved, *kept_in_step]:
                 self.element_changed.emit(other)
+        self.unsaved_new = False
         self._end_editing()
         self.saved.emit()
 
@@ -435,6 +542,10 @@ class ElementEditor(QScrollArea):
         self._timer.stop()
         if ask and self.dirty and QMessageBox.question(
                 self, "Annulla le modifiche", "Scartare le modifiche non salvate della scheda?") != QMessageBox.Yes:
+            return
+        if self.unsaved_new:  # never saved: the element itself goes away
+            self._set_dirty(False)
+            self.abandoned.emit(self.element)
             return
         self._end_editing()
 
@@ -513,7 +624,7 @@ class ElementEditor(QScrollArea):
         self._timer.stop()
         self.project, self.element = project, element
         self.draft = element.copy()
-        self.editing = editing
+        self.editing = editing and not self.denied()
         self._set_dirty(False)
         self._build()
 
@@ -528,6 +639,9 @@ class ElementEditor(QScrollArea):
     def _build_page(self):
         element = self.draft
         self.getters, self.widgets, self.field_labels = {}, {}, {}
+        self._choice_sources = []  # (table field, refresh of a choice among its rows)
+        self._computed = []  # (field, widget) of the fields computed from the others
+        self._dynamic_tables = []  # tables whose lists depend on the element (see Column.choices)
         self.read_only = element.kind in READ_ONLY_KINDS and not self.srs_edit_mode.enabled
         schema = element.schema
         page = QWidget()
@@ -544,17 +658,19 @@ class ElementEditor(QScrollArea):
         status_field = schema.field("status")
         # Sections of the kind's own (e.g. the SA-3 register) come first, with their fields in schema order.
         own = [f.section for f in schema.fields if f.section and f.section not in dict(SECTIONS)]
-        standard = list(SECTIONS)
+        sections = [(title, ()) for title in dict.fromkeys(own)] + list(SECTIONS)
         if element.kind in SECTION_ORDER:  # another order for this kind (e.g. the relations of an ADR first)
             order = SECTION_ORDER[element.kind]
-            standard.sort(key=lambda s: order.index(s[0]) if s[0] in order else len(order))
-        sections = [(title, ()) for title in dict.fromkeys(own)] + standard
+            sections.sort(key=lambda s: order.index(s[0]) if s[0] in order else len(order))
         for title, types in sections:
+            # The fields of this element as it is (e.g. of the type of an ADR: see Field.when).
             fields = [f for f in schema.fields if (f.section == title or (not f.section and f.type in types))
-                      and f is not status_field and not f.hidden]
+                      and f is not status_field and not f.hidden and f.applies(element)
+                      and not (f.by_tool and is_empty(element.values.get(f.name)))]
             if not fields:
                 continue
-            frame, layout = card(title)
+            caption = f"Dettagli: {element.get('adr_type')}" if title == ADR_DETAILS else title
+            frame, layout = card(caption)
             form = QFormLayout()
             form.setRowWrapPolicy(QFormLayout.WrapLongRows)
             form.setFieldGrowthPolicy(QFormLayout.AllNonFixedFieldsGrow)
@@ -569,26 +685,36 @@ class ElementEditor(QScrollArea):
                 if f.analysis:
                     widget.setProperty("keepEnabled", True)  # editable also on a read-only SRS item
                 label = QLabel(f.label, objectName="formLabel")
+                if f.by_tool:  # written by the tool: not changed by hand
+                    widget.setEnabled(False)
+                    widget.setToolTip("Assegnato dal tool")
+                reason = self.field_denied(f.name) if self.editing else None
+                if reason:  # e.g. the team of a domain: only the Design Authority assigns it
+                    widget.setEnabled(False)
+                    widget.setToolTip(reason)
+                    label.setToolTip(reason)
                 self.field_labels[f.name] = label
-                form.addRow(label, widget)
+                if f.type == TABLE:  # a table in a section (e.g. the details of an ADR): the whole width
+                    form.addRow(label)
+                    form.addRow(widget)
+                else:
+                    form.addRow(label, widget)
             layout.addLayout(form)
             outer.addWidget(frame)
             if title == "Descrizione" and element.kind in TRACE_CARDS:
                 trace = self._srs_trace_card()
                 self.widgets[SRS_CARD] = trace
                 outer.addWidget(trace)  # right after the description
+            if title == "Descrizione":
+                for name in AFTER_DESCRIPTION.get(element.kind, ()):  # e.g. the members of a team
+                    outer.addWidget(self._field_card(schema.field(name), element))
         for f in schema.fields:
-            if f.hidden:
+            if f.hidden or f.name in self.widgets or not f.applies(element):
                 continue
             if f.type == IMAGE and not element.values.get(f.name):
                 continue  # no empty image card on items without a figure
             if f.type in (MAP, TABLE, IMAGE):
-                frame, layout = card(f.label)
-                widget, getter = self._make_widget(f, element.values.get(f.name))
-                self.getters[f.name] = getter
-                self.widgets[f.name] = frame  # its card (shown by reveal)
-                layout.addWidget(widget)
-                outer.addWidget(frame)
+                outer.addWidget(self._field_card(f, element))
         outer.addStretch()
         if not self.editing:
             self._guard_view_mode(page)
@@ -597,6 +723,18 @@ class ElementEditor(QScrollArea):
         position = self.verticalScrollBar().value()
         self.setWidget(page)
         self.verticalScrollBar().setValue(position)  # rebuilt in place (edit mode, a choice made…)
+
+    def _field_card(self, f, element):
+        """A field shown in a card of its own (a table, a map, an image)."""
+        frame, layout = card(f.label)
+        widget, getter = self._make_widget(f, element.values.get(f.name))
+        self.getters[f.name] = getter
+        self.widgets[f.name] = frame  # its card (shown by reveal)
+        for name, refresh in self._choice_sources:
+            if name == f.name and hasattr(widget, "changed"):
+                widget.changed.connect(refresh)
+        layout.addWidget(widget)
+        return frame
 
     def _header(self, element):
         schema = element.schema
@@ -646,7 +784,20 @@ class ElementEditor(QScrollArea):
             self.modify_button = QPushButton(icon("mdi6.pencil-outline"), "Modifica")
             self.modify_button.setToolTip("Passa in modalità modifica delle informazioni della scheda")
             self.modify_button.clicked.connect(lambda _=False: self.start_editing())
+            reason = self.denied()
+            if reason:
+                self.modify_button.setEnabled(False)
+                self.modify_button.setToolTip(reason)
             buttons = (self.modify_button,)
+            if can_approve(element) and self.approver is not None and self.approver():
+                self.approve_button = QPushButton(icon("mdi6.check-decagram-outline", "white"),
+                                                  "Approva e crea il dominio")
+                self.approve_button.setProperty("primary", True)
+                self.approve_button.setToolTip("Design Authority: approva l'ADR e crea il nuovo dominio funzionale "
+                                               "(con l'ID assegnato dal tool), la missione, il team e le sezioni "
+                                               "proposti")
+                self.approve_button.clicked.connect(lambda _=False: self.approve())
+                buttons = (self.approve_button, self.modify_button)
         for button in buttons:
             button.setProperty("keepEnabled", True)
             top.addWidget(button)
@@ -655,7 +806,8 @@ class ElementEditor(QScrollArea):
         self.title.setWordWrap(True)
         layout.addWidget(self.title)
         mode = QLabel("In modifica: le modifiche si applicano con «Salva»." if self.editing else
-                      "In sola lettura: premi «Modifica» per cambiare le informazioni.", objectName="muted")
+                      "In sola lettura: solo i membri della Design Authority modificano i team." if self.denied()
+                      else "In sola lettura: premi «Modifica» per cambiare le informazioni.", objectName="muted")
         layout.addWidget(mode)
         if self.read_only and self.editing:
             note = QLabel("Voce importata dalla specifica: è in sola lettura. Attiva la modalità modifica per "
@@ -758,7 +910,7 @@ class ElementEditor(QScrollArea):
     def _renumber(self):
         """New identifier for the current context, in the draft (applied with «Salva»)."""
         self.flush()
-        new_id = compute_id(self.draft, self.project.model, self.project.published_ids)
+        new_id = compute_id(self.draft, self.project.model)
         if new_id and new_id != self.draft.get("id"):
             self.draft.set("id", new_id)
             self._draft_changed()
@@ -970,7 +1122,10 @@ class ElementEditor(QScrollArea):
 
         def options():
             getter = self.getters.get(f.choices_from)
-            return getter() if getter else (self.draft.get(f.choices_from) or [])
+            values = getter() if getter else (self.draft.get(f.choices_from) or [])
+            # rows (the members of a team): their names
+            return [v.get("name") if isinstance(v, dict) else v for v in values if v and
+                    (not isinstance(v, dict) or v.get("name"))]
 
         def refresh(*_):
             selected = w.currentData() if w.count() else value
@@ -986,13 +1141,37 @@ class ElementEditor(QScrollArea):
 
         w.setToolTip(f"Si sceglie tra i «{source_label}» indicati sopra.")
         refresh()
-        if f.choices_from in self.widgets:
-            self.widgets[f.choices_from].textChanged.connect(refresh)
+        source = self.widgets.get(f.choices_from)
+        if source is not None:
+            source.textChanged.connect(refresh)
+        else:  # a table built after (in its own card, e.g. the members of a team): connected then
+            self._choice_sources.append((f.choices_from, refresh))
         w.currentIndexChanged.connect(self._changed)
         return w, w.currentData
 
     def _make_widget(self, f, value):
         model = self.project.model
+        if f.computed:  # computed from the other fields (e.g. the SRS items of the domains merged)
+            from arcadia_tool.model.adr import COMPUTED
+            if f.type == REFS:
+                w = RefsWidget(model, f.ref_kinds)
+                w.set_value(COMPUTED[f.computed](model, self.draft))
+                w.set_read_only("Calcolato dal tool")
+            elif f.type == REF:  # an element (e.g. the principal domain an SRS item has now)
+                uuid = COMPUTED[f.computed](model, self.draft)
+                w = QLineEdit(model.label_of(uuid) if uuid else "", readOnly=True, objectName="readonly")
+                w.setPlaceholderText("Nessuno")
+                w.setToolTip("Letto dal modello")
+                w.setProperty("uuid", uuid)
+                self._computed.append((f, w))
+                return w, lambda: w.property("uuid")
+            else:  # a text (e.g. the mission the domain has now)
+                w = RichTextEdit(COMPUTED[f.computed](model, self.draft))
+                w.setReadOnly(True)
+                w.setProperty("keepEnabled", True)
+                w.setToolTip("Letto dalla scheda del dominio")
+            self._computed.append((f, w))
+            return w, (w.value if f.type == REFS else w.markdown)
         if f.type == STR and f.name == "id" and is_automatic(self.element.kind):
             return self._id_widget()
         if f.derived_from:
@@ -1042,19 +1221,26 @@ class ElementEditor(QScrollArea):
                 w.addItem(model.label_of(value) or f"{value} (inesistente)", value)
             w.setCurrentIndex(max(w.findData(value), 0) if value else 0)
             w.currentIndexChanged.connect(self._changed)
+            if any(o.when and o.when[0] == f.name for o in self.element.schema.fields):
+                # It decides which fields the sheet has (the type of an ADR): the page follows it.
+                w.currentIndexChanged.connect(lambda _i, name=f.name: self._controller_changed(name))
             return w, w.currentData
         if f.type == MULTIENUM:
             w = QWidget()
-            layout = QHBoxLayout(w)
+            layout = QGridLayout(w)
             layout.setContentsMargins(0, 0, 0, 0)
+            layout.setHorizontalSpacing(16)
+            # Short options on one row (or a few), long ones (e.g. the criteria A2) one under the other in two
+            # columns: the sheet never gets wider than the window.
+            per_row = 2 if max((len(o) for o in f.options), default=0) > 20 else 9
             boxes = []
-            for option in f.options:
+            for i, option in enumerate(f.options):
                 box = QCheckBox(option)
                 box.setChecked(option in (value or []))
                 box.toggled.connect(self._changed)
-                layout.addWidget(box)
+                layout.addWidget(box, *divmod(i, per_row))
                 boxes.append(box)
-            layout.addStretch()
+            layout.setColumnStretch(per_row, 1)
             return w, lambda: [b.text() for b in boxes if b.isChecked()]
         if f.type == STRLIST:
             w = QLineEdit(", ".join(value or []))
@@ -1083,10 +1269,32 @@ class ElementEditor(QScrollArea):
             picker = None
             if f.ref_kinds == ("requirement",):  # SRS items: ticks, chapters, search, as elsewhere
                 from arcadia_tool.ui.srs_trace import choose_items
-                picker = lambda uuids, name=f.name: choose_items(self.project, self.draft, name, uuids, self)
+                picker = lambda uuids, name=f.name, only=f.sections_only: choose_items(
+                    self.project, self.draft, name, uuids, self, sections_only=only)
             w = RefsWidget(model, f.ref_kinds, picker)
             w.set_value(value)
             w.changed.connect(self._changed)
+            return w, w.value
+        if f.type == TABLE and self.element.kind == "team" and f.name == MEMBERS:
+            from arcadia_tool.ui.team_members import MembersWidget
+            w = MembersWidget(model)
+            w.set_value(member_rows(self.draft))
+
+            def locks_out(rows):
+                if self.locks_out is None:
+                    return False
+                draft = self.draft.copy()
+                draft.set(MEMBERS, rows)
+                return self.locks_out(draft)
+            w.locks_out = locks_out
+            w.changed.connect(self._changed)
+            return w, w.value
+        if f.type == TABLE and any(c.choices for c in f.columns):
+            from arcadia_tool.model.adr import CHOICES
+            w = TableWidget(model, f, choices=lambda col: CHOICES[col.choices](model, self.draft))
+            w.set_value(value)
+            w.changed.connect(self._changed)
+            self._dynamic_tables.append(w)
             return w, w.value
         if f.type == TABLE:
             w = TableWidget(model, f)
@@ -1112,6 +1320,29 @@ class ElementEditor(QScrollArea):
         self._set_dirty(True)
         self._timer.start()
 
+    def _controller_changed(self, name):
+        """A field that decides which fields the sheet has (the type of an ADR) changed: the fields that no longer
+        apply are emptied, after a confirmation if they have values, and the page is built again."""
+        if self._building or not self.editing:
+            return
+        before = self.draft.copy()
+        self._apply()
+        lost = [f for f in self.draft.schema.fields if f.when and f.when[0] == name and not f.applies(self.draft)
+                and not is_empty(self.draft.values.get(f.name))]
+        if lost:
+            labels = ", ".join(f"«{f.label}»" for f in lost)
+            answer = QMessageBox.question(self, "Cambio di tipo",
+                                          f"Con il nuovo tipo questi campi non servono più e vengono svuotati: "
+                                          f"{labels}. Continuare?")
+            if answer != QMessageBox.Yes:
+                self.draft = before
+                self._build()
+                return
+            for f in lost:
+                self.draft.set(f.name, None)
+        self._set_dirty(True)
+        self._build()
+
     def _draft_changed(self):
         """A choice made in a window (voce madre, funzione…) changed the draft: show it."""
         self._set_dirty(True)
@@ -1135,7 +1366,20 @@ class ElementEditor(QScrollArea):
         schema = self.draft.schema
         names = [n for n in self.getters if not self.read_only or (schema.field(n) and schema.field(n).analysis)]
         for name in names:
-            self.draft.set(name, self.getters[name]())
+            if not schema.field(name) or not schema.field(name).computed:
+                self.draft.set(name, self.getters[name]())
+        for f, widget in getattr(self, "_computed", []):  # follow the fields they are computed from
+            from arcadia_tool.model.adr import COMPUTED
+            value = COMPUTED[f.computed](self.project.model, self.draft)
+            if f.type == REFS:
+                widget.set_value(value)
+            elif f.type == REF:
+                widget.setText(self.project.model.label_of(value) if value else "")
+                widget.setProperty("uuid", value)
+            elif value != widget.markdown():
+                widget.set_markdown(value)
+        for table in getattr(self, "_dynamic_tables", []):  # the lists of their cells follow the element
+            table.refresh_choices()
         if is_automatic(self.draft.kind) and hasattr(self, "id_edit"):
             self._refresh_id()
         self.title.setText(self.project.model.choice_label(self.draft))

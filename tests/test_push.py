@@ -106,7 +106,10 @@ def test_versions_of_a_colleague_must_be_received_first(app, tmp_path):
     for _ in range(50):
         app.processEvents()
     assert not dialog.sent and "non hai ancora ricevuto" in dialog.status.text()
-    assert not dialog.retry.isHidden() and [v.title for v in mine.unsent_versions()] == ["mia"]  # kept here
+    assert dialog.retry.isHidden() and not dialog.receive_button.isHidden()  # «Ricevi ora», not «Riprova»
+    assert [v.title for v in mine.unsent_versions()] == ["mia"]  # kept here
+    dialog.receive_button.click()
+    assert dialog.receive_requested
     mine.close()
 
 

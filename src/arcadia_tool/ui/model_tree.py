@@ -49,11 +49,15 @@ class ModelTree(QFrame):
     model_changed = Signal()
     srs_reader_requested = Signal()
     srs_window_requested = Signal()  # the SRS catalogue in a separate window
+    import_requested = Signal()  # «Importa SRS…»: the SRS items from the PDFs of the SUBSET-026
+    element_created = Signal(str)  # «Nuovo…»: the uuid of the element just created (its sheet opens next)
     list_requested = Signal(str)  # a kind whose elements are shown as a table in a tab (e.g. X-2)
 
     def __init__(self, srs_edit_mode=None):
         super().__init__(objectName="panel")
         self.project = None
+        self.edit_denied = None  # function(kind) → why the user may not create or delete it, or None
+        self.locks_out = None  # function(team without members) → True if deleting it leaves the user outside
         self.srs_edit_mode = srs_edit_mode or SrsEditMode()
         caption = QLabel("MODELLO", objectName="sectionCaption")
         self.filter = QLineEdit(placeholderText="Cerca per ID o nome", objectName="search")
@@ -239,6 +243,9 @@ class ModelTree(QFrame):
         menu = QMenu(self)
         locked = kind == "requirement" and not self.srs_edit_mode.enabled
         if kind == "requirement" and not uuid:
+            menu.addAction(icon("mdi6.file-import-outline"), "Importa SRS…",
+                           lambda _=False: self.import_requested.emit())
+            menu.addSeparator()
             menu.addAction(icon("mdi6.book-open-page-variant-outline"), "Consulta il SUBSET-026",
                            lambda _=False: self.srs_reader_requested.emit())
             menu.addAction(icon("mdi6.open-in-new"), "Apri in altra finestra",
@@ -252,9 +259,13 @@ class ModelTree(QFrame):
             # Enabled also in read-only mode: it offers to switch to edit mode (a greyed entry looked broken).
             delete_all.setEnabled(bool(self.project.model.of_kind("requirement")))
             menu.addSeparator()
+        denied = self.edit_denied(kind) if self.edit_denied else None
+        if denied:
+            menu.setToolTipsVisible(True)
         new = menu.addAction(icon("mdi6.plus"), f"Nuovo: {KINDS_BY_NAME[kind].label}",
                              lambda _=False: self.create(kind))
-        new.setEnabled(not locked)
+        new.setEnabled(not locked and not denied)
+        new.setToolTip(denied or "")
         if uuid:
             element = self.project.model.get(uuid)
             for child_kind, field in CREATION_CONTEXT.items():
@@ -264,7 +275,8 @@ class ModelTree(QFrame):
                                    lambda _=False, ck=child_kind, f=field: self.create(ck, {f: uuid}))
             menu.addSeparator()
             delete = menu.addAction(icon("mdi6.trash-can-outline"), "Elimina", lambda _=False: self._delete_selected())
-            delete.setEnabled(not locked)
+            delete.setEnabled(not locked and not denied)
+            delete.setToolTip(denied or "")
         menu.exec(self.tree.viewport().mapToGlobal(pos))
 
     def _new_from_selection(self):
@@ -301,7 +313,12 @@ class ModelTree(QFrame):
         return {field.name: picker.selected()[0]}
 
     def _locked(self, kind):
-        """Imported SRS items can be created or deleted only in edit mode."""
+        """Imported SRS items can be created or deleted only in edit mode; the teams only by the members of the
+        Design Authority (see edit_denied)."""
+        denied = self.edit_denied(kind) if self.edit_denied else None
+        if denied:
+            QMessageBox.information(self, "Team", denied)
+            return True
         if kind == "requirement" and not self.srs_edit_mode.enabled:
             QMessageBox.information(self, "Voci SRS in sola lettura",
                                     "Le voci SRS importate sono in sola lettura. Attiva la modalità modifica "
@@ -312,11 +329,21 @@ class ModelTree(QFrame):
     def create(self, kind, context=None):
         if self._locked(kind):
             return
+        if kind == "adr" and not (context or {}).get("adr_type"):
+            # The type first: it gives the template of the sheet (filled from the element selected, if any).
+            from arcadia_tool.model.adr import adr_defaults, suggested_type
+            from arcadia_tool.ui.adr_types import AdrTypeDialog
+            dialog = AdrTypeDialog(self, preselect=suggested_type(self.current_element()))
+            if not dialog.exec():
+                return
+            context = {**adr_defaults(self.project.model, dialog.adr_type, self.current_element()),
+                       **(context or {})}
         if context is None and kind in CREATION_CONTEXT:
             context = self._ask_context(kind)
             if context is None:
                 return
         element = self.project.new_element(kind, **(context or {}))
+        self.element_created.emit(element.uuid)  # before its sheet opens (with the selection)
         self.reload(select_uuid=element.uuid)
         self.model_changed.emit()
 
@@ -343,6 +370,13 @@ class ModelTree(QFrame):
         """Delete an element of the model, after a confirmation (also from the table of a kind, e.g. X-2)."""
         if element is None or self._locked(element.kind):
             return False
+        if element.kind == "team" and self.locks_out is not None:
+            gone = element.copy()
+            gone.set("members", [])
+            if self.locks_out(gone):  # the team with the ID of the user (e.g. the DA): they would be left outside
+                from arcadia_tool.ui.team_members import own_id_error
+                own_id_error(self)
+                return False
         answer = QMessageBox.question(self, "Elimina", f"Eliminare «{self.project.model.label(element)}»?")
         if answer != QMessageBox.Yes:
             return False

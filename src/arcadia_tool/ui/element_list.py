@@ -3,18 +3,19 @@ clarification): their main fields, a button to open and one to delete each of th
 Opened with a double click on the kind in the model tree."""
 from PySide6.QtCore import Qt, Signal
 from PySide6.QtGui import QBrush, QColor
-from PySide6.QtWidgets import (QAbstractItemView, QFrame, QHBoxLayout, QHeaderView, QLabel, QLineEdit, QPushButton,
-                               QStackedWidget, QTableWidget, QTableWidgetItem, QVBoxLayout, QWidget)
+from PySide6.QtWidgets import (QAbstractItemView, QFileDialog, QFrame, QHBoxLayout, QHeaderView, QLabel, QLineEdit,
+                               QMessageBox, QPushButton, QStackedWidget, QTableWidget, QTableWidgetItem, QVBoxLayout,
+                               QWidget)
 
 from arcadia_tool.model.element import natural_key
-from arcadia_tool.model.schema import KINDS_BY_NAME
+from arcadia_tool.model.schema import ADR_AREAS, KINDS_BY_NAME, adr_area
 from arcadia_tool.ui.theme import BORDER, icon, kind_icon, status_colors
 
 UUID_ROLE = Qt.UserRole
 # The kinds shown as a table: their columns (fields of the schema); the first wide one takes the free space.
 LIST_COLUMNS = {
     "clarification": ("id", "recipient", "status"),
-    "adr": ("id", "title", "date_decider", "status"),
+    "adr": ("id", "title", "adr_area", "adr_type", "decision_date", "status"),
 }
 WIDE = ("recipient", "title")
 # How an element is called: one, many, the button to create one, the empty list, the search.
@@ -22,9 +23,10 @@ NAMES = {
     "clarification": ("richiesta", "richieste", "Nuova richiesta", "Nessuna richiesta di chiarimento",
                       "Cerca per ID, destinatario o stato", "Nuova richiesta di chiarimento"),
     "adr": ("ADR", "ADR", "Nuova ADR", "Nessuna decisione architetturale",
-            "Cerca per ID, titolo, decisore o stato", "Nuova decisione architetturale (ADR)"),
+            "Cerca per ID, titolo, tipo, data o stato", "Nuova decisione architetturale (ADR)"),
 }
-COLUMN_LABELS = {"id": "ID", "recipient": "Destinatario della richiesta"}
+COLUMN_LABELS = {"id": "ID", "recipient": "Destinatario della richiesta", "adr_type": "Tipo",
+                 "adr_area": "Ambito"}
 TOOLTIP_FIELDS = {"clarification": "problem", "adr": "context"}
 
 
@@ -51,6 +53,12 @@ class ElementListPage(QWidget):
         self.new_button.clicked.connect(lambda: self.create_requested.emit(self.kind))
         top = QHBoxLayout()
         top.addWidget(QLabel(title, objectName="elementTitle"), 1)
+        if kind == "adr":
+            self.export_button = QPushButton(icon("mdi6.microsoft-excel"), "Esporta ADR aperte…")
+            self.export_button.setToolTip("Salva in un file Excel le ADR non ancora decise: ID, descrizione, team "
+                                          "proponente e stato")
+            self.export_button.clicked.connect(self.export_open)
+            top.addWidget(self.export_button)
         top.addWidget(self.new_button)
         header_layout.addLayout(top)
         self.search = QLineEdit(placeholderText=search_label, objectName="search")
@@ -125,6 +133,8 @@ class ElementListPage(QWidget):
         """What a cell shows: the label of a referenced element (the team recipient of a request), else the
         value; a recipient written as text by earlier versions."""
         model = self.project.model
+        if column == "adr_area":  # where the type of the ADR applies (SA, LA, generali)
+            return adr_area(element.get("adr_type"))
         value = element.get(column)
         field = self.schema.field(column)
         if field is not None and field.type == "ref":
@@ -155,6 +165,10 @@ class ElementListPage(QWidget):
         """The elements of the kind, from the model (after a change, a creation or a deletion)."""
         model = self.project.model
         elements = sorted(model.of_kind(self.kind), key=lambda e: natural_key(e.get("id") or ""))
+        if self.kind == "adr":  # grouped by area, in the order of the method (the ADR without a type last)
+            areas = [area for area, _ in ADR_AREAS]
+            elements.sort(key=lambda e: areas.index(adr_area(e.get("adr_type")))
+                          if adr_area(e.get("adr_type")) else len(areas))
         self.table.setRowCount(0)
         actions_width = 0
         for e in elements:
@@ -195,6 +209,26 @@ class ElementListPage(QWidget):
             shown += not hidden
         total = self.table.rowCount()
         self.count.setText(f"{shown} di {total}" if words else f"1 {self.one}" if total == 1 else f"{total} {self.many}")
+
+    def export_open(self, path=None):
+        """The open ADR in an Excel file, chosen by the user (path: given, without asking)."""
+        from datetime import date
+
+        from arcadia_tool.storage.adr_register import write_open_adrs
+
+        if path is None:
+            suggested = str(self.project.path.parent / f"ADR_aperte_{date.today():%Y-%m-%d}.xlsx")
+            path, _ = QFileDialog.getSaveFileName(self, "Esporta le ADR aperte", suggested, "Excel (*.xlsx)")
+            if not path:
+                return None
+        try:
+            count = write_open_adrs(self.project.model, path, self.project.name)
+        except OSError as exc:
+            QMessageBox.critical(self, "Esporta le ADR aperte", f"Il file non è stato salvato: {exc}")
+            return None
+        QMessageBox.information(self, "Esporta le ADR aperte",
+                                f"{'Nessuna ADR aperta' if not count else f'{count} ADR aperte'} salvate in:\n{path}")
+        return count
 
     def _double_clicked(self, row, _column):
         item = self.table.item(row, 0)

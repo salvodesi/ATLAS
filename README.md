@@ -5,7 +5,7 @@
 <p align="center">
   <b>Arcadia Traceability, Logical Architecture Software</b><br>
   Strumento desktop di modellazione ARCADIA per l'EVC ERTMS di bordo<br>
-  <sub>RFI - Ricerca e Sviluppo - Sviluppo Sistemi · versione 0.3.0</sub>
+  <sub>RFI - Ricerca e Sviluppo - Sviluppo Sistemi · versione 0.4.0</sub>
 </p>
 
 > [!WARNING]
@@ -30,13 +30,27 @@ repository serve solo per scaricare e pubblicare le versioni.
 - **Logical Architecture**: funzioni logiche (LA-2), componenti logici (LA-1), component exchange (LA-3) e
   realizzazioni delle chain (LA-4).
 - **Elementi trasversali**:
-  - team (EPBS-1), con membri e referente. Un solo team può essere la **Design Authority**: i suoi membri sono
-    riconosciuti da nome e cognome dell'account e il ruolo è indicato nella barra di stato;
+  - team (EPBS-1), con referente e membri. Un solo team può essere la **Design Authority**: solo i suoi membri
+    creano e modificano i team e assegnano i domini ai team. La DA aggiunge ogni membro con l'**ID del suo
+    account locale**, che la persona le comunica: ATLAS la riconosce come membro, anche nelle versioni che
+    pubblica. Il progetto si apre solo agli account che sono tra i membri dei team;
   - decisioni architetturali (X-1) e richieste di chiarimento (X-2), ciascuna con un elenco in tabella (doppio
     clic sul nodo dell'albero) da cui crearle, aprirle ed eliminarle.
 - Le richieste di chiarimento sono indirizzate alla Design Authority o a un team, scelto alla creazione. La clausola
   si sceglie con una finestra a spunta.
 - Negli ADR le voci SRS interessate si scelgono a spunta e «Superata da» da un elenco con ricerca.
+- Le ADR hanno un **tipo** (nuovo dominio, fusione, scissione, eliminazione, ridefinizione dello scopo,
+  riallocazione di una sezione, spostamento di una funzione, deroga…), scelto alla creazione: la scheda ha i campi
+  propri di quel tipo, già compilati con ciò che si sa dall'elemento selezionato. Per ogni tipo c'è anche il
+  template Excel corrispondente in `Templates/` (`Template_X-1.nn_ADR_<tipo>.xlsx`), con gli stessi campi della
+  scheda; si rigenerano con `scripts/make_adr_templates.py` quando i campi cambiano.
+- I tipi di ADR sono raggruppati per ambito (domini SA; voci SRS, funzioni e scambi SA; LA; generali). I dati che
+  ATLAS conosce già (la missione attuale, i domini di una voce, il dominio di una funzione, i produttori di
+  un'informazione) sono letti dal modello e non si riscrivono. La data della decisione la imposta ATLAS.
+- La Design Authority approva un'ADR di nuovo dominio con «Approva e crea il dominio»: ATLAS crea il dominio con
+  il primo ID libero e gli alloca le sezioni indicate.
+- «Esporta ADR aperte…» nell'elenco X-1 salva in Excel le ADR non ancora decise (ID, descrizione, team
+  proponente, stato); lo stesso registro è anche un template (`Template_X-1.00_Registro_ADR_aperte.xlsx`).
 - I campi collegati tra schede diverse restano allineati: per esempio il team assegnato a un dominio compare tra i
   domini del team, e viceversa.
 - Campi di testo libero con editor formattato (grassetto, corsivo, elenchi), salvati in Markdown, che si
@@ -61,8 +75,14 @@ repository serve solo per scaricare e pubblicare le versioni.
 - Pubblicazione delle versioni su un repository Git remoto, via HTTPS o SSH. Va bene qualsiasi servizio (GitLab,
   GitHub, server interno…).
 - Download di un progetto esistente, con scelta del ramo di sviluppo, e invio delle versioni locali.
-- Cronologia e dettaglio di ogni versione pubblicata.
-- Confronto semantico tra versioni.
+- Ricezione delle versioni dei colleghi, con integrazione semantica a tre vie: le schede e i campi cambiati da
+  una sola parte si integrano da soli, quelli cambiati in modo diverso si scelgono nella finestra di ricezione.
+  Gli identificativi automatici in conflitto vengono rinumerati.
+- Rami: elenco dei rami di questo PC e del repository, nuovo ramo da una versione scelta, cambio di ramo. Si può
+  pubblicare sul ramo attuale o su un nuovo ramo creato al momento della pubblicazione.
+- Cronologia e dettaglio di ogni versione pubblicata, di qualsiasi ramo.
+- Confronto semantico tra versioni e tra rami (anche del repository e con lo stato attuale), anche limitato a ciò
+  che un ramo ha cambiato dal punto di partenza comune.
 - Migrazione della storia del progetto da un server Git a un altro.
 - Account locali obbligatori: ogni modifica pubblicata è associata a un utente. Le credenziali Git restano
   nell'account sul PC (Gestione credenziali di Windows), mai nel progetto o nel repository.
@@ -103,11 +123,10 @@ repository serve solo per scaricare e pubblicare le versioni.
   - diagrammi di Logical Architecture per funzioni logiche, componenti, allocazioni e component exchange;
   - diagrammi a ogni livello di scomposizione, generati dal modello e coerenti con esso.
 - **Generazione dei documenti** di progetto dal modello, ad esempio registri di tracciamento e schede delle fasi.
-- **Aggiornamento da Git**: ricezione delle versioni pubblicate dagli altri team e gestione delle modifiche in
-  conflitto.
-- **Rami di attività**: rami brevi per le singole attività, confronto tra rami e integrazione in `main` fatta
-  dalla Design Authority direttamente in ATLAS.
-- **Cambio del ramo di sviluppo** in un progetto già scaricato.
+- **Integrazione dei rami di attività in `main`** fatta dalla Design Authority direttamente in ATLAS, con le
+  verifiche del modello.
+- **Effetti delle altre ADR all'approvazione** (fusione, scissione, spostamento di funzione…), come già per il
+  nuovo dominio.
 
 ## Il progetto su disco
 

@@ -172,6 +172,7 @@ class _TraceDialog(QDialog):
     OWNER_HEADER = ""   # last column: the element that owns the row besides the one being edited
     HINT = ""
     WITH_DERIVED = False  # derived requirements (SA-4) listed under their clause
+    CHOOSABLE = TRACEABLE  # the kinds of item that can be chosen (e.g. only the sections, see TraceSectionsDialog)
 
     def __init__(self, project, owner, parent=None):
         super().__init__(parent)
@@ -193,7 +194,7 @@ class _TraceDialog(QDialog):
                 self.sub_items.setdefault(e.get("parent"), []).append(e)
                 continue
             self.by_chapter.setdefault(chapter_of(e), []).append(e)
-            if e.get("item_type") in TRACEABLE:
+            if e.get("item_type") in self.CHOOSABLE:
                 self.state[e.uuid] = self.initial_state(e)
         if self.WITH_DERIVED:
             for d in model.of_kind("derived_requirement"):
@@ -356,7 +357,7 @@ class _TraceDialog(QDialog):
     def _context_menu(self, pos):
         item = self.tree.itemAt(pos)
         e = self.project.model.get(item.data(0, UUID_ROLE)) if item else None
-        if e is None or e.kind != "requirement" or e.get("item_type") not in TRACEABLE:
+        if e is None or e.kind != "requirement" or e.get("item_type") not in self.CHOOSABLE:
             return
         menu = QMenu(self)
         menu.addAction(icon("mdi6.call-split"), f"Deriva requisito da {e.get('id')}…",
@@ -750,8 +751,27 @@ class TraceClauseDialog(TraceParentDialog):
             "spuntarne un'altra sposta la scelta. Doppio clic su una riga per leggerne il testo completo.")
 
 
+class TraceReallocItemDialog(TraceParentDialog):
+    """ADR of a reallocation (X-1): the SRS section or clause to reallocate, one only."""
+    FIELD = "realloc_item"
+    COLUMNS = ((PARENT, "Voce"),)
+    TITLE = "sezione o clausola da riallocare"
+    HINT = ("Spunta la sezione (es. 3.4.1) o la clausola (es. 3.4.1.3) da riallocare: una sola, spuntarne un'altra "
+            "sposta la scelta. Doppio clic su una riga per leggerne il testo completo.")
+
+
+class TraceImplItemDialog(TraceParentDialog):
+    """ADR of a choice left to the implementation (X-1): the SRS section or clause leaving it, one only."""
+    FIELD = "impl_item"
+    COLUMNS = ((PARENT, "Voce"),)
+    TITLE = "sezione o clausola che lascia la scelta"
+    HINT = ("Spunta la sezione (es. 3.4.1) o la clausola (es. 3.4.1.3) che lascia la scelta all'implementazione: "
+            "una sola, spuntarne un'altra sposta la scelta. Doppio clic su una riga per leggerne il testo completo.")
+
+
 # The window to choose an SRS item, for each reference field to the specification chosen with ticks.
-ITEM_DIALOGS = {"requirement": TraceItemDialog, "clause": TraceClauseDialog, "parent": TraceParentDialog}
+ITEM_DIALOGS = {"requirement": TraceItemDialog, "clause": TraceClauseDialog, "parent": TraceParentDialog,
+                "realloc_item": TraceReallocItemDialog, "impl_item": TraceImplItemDialog}
 
 
 class TraceItemsDialog(_TraceDialog):
@@ -804,11 +824,27 @@ class TraceItemsDialog(_TraceDialog):
         return [self.owner]
 
 
-def choose_items(project, element, field, current, parent=None):
-    """SRS items of a list field of a sheet (its draft), chosen with ticks: the new list, or None if cancelled."""
+class TraceSectionsDialog(TraceItemsDialog):
+    """Only the sections (three numbers, e.g. 3.4.1), with ticks: e.g. those allocated to a new domain."""
+    CHOOSABLE = ("Sezione",)
+
+    def __init__(self, project, owner, field, parent=None):
+        super().__init__(project, owner, field, parent)
+        label = owner.schema.field(field).label
+        self.HINT = (f"Spunta le sezioni (tre numeri, es. 3.4.1) di «{label}»: quante servono, un clic sulla spunta "
+                     "la toglie. Doppio clic su una riga per leggerne il testo completo.")
+
+    def count_text(self):
+        n = len(self.chosen(PARENT))
+        return "Nessuna sezione scelta" if not n else "1 sezione scelta" if n == 1 else f"{n} sezioni scelte"
+
+
+def choose_items(project, element, field, current, parent=None, sections_only=False):
+    """SRS items of a list field of a sheet (its draft), chosen with ticks: the new list, or None if cancelled.
+    sections_only: only the sections (three numbers) can be chosen."""
     probe = element.copy()  # the window works on a copy: the sheet applies the choice with its «Salva»
     probe.set(field, list(current))
-    dialog = TraceItemsDialog(project, probe, field, parent)
+    dialog = (TraceSectionsDialog if sections_only else TraceItemsDialog)(project, probe, field, parent)
     return dialog.selected if dialog.exec() else None
 
 

@@ -6,6 +6,7 @@ from arcadia_tool.checks import ERROR, WARNING, check, issue
 from arcadia_tool.checks.context import sentences
 from arcadia_tool.checks.sa import _at_most, _name_checks
 from arcadia_tool.model.element import natural_key
+from arcadia_tool.model.teams import member_names, person_key
 
 
 def _cycle(ctx, element, field):
@@ -516,7 +517,7 @@ def epbs_no_domains(ctx):
 @check("EPBS-02", "Referente non tra i membri del team", "E", "EPBS-1")
 def epbs_referent(ctx):
     for t in ctx.of("team"):
-        if t.get("referent") and t.get("referent") not in (t.get("members") or []):
+        if t.get("referent") and t.get("referent") not in member_names(t):
             yield issue(t, f"Il referente {t.get('referent')} non è tra i membri del team.")
 
 
@@ -526,7 +527,7 @@ def epbs_verifier(ctx):
         verifier = (t.get("independent_verifier") or "").strip()
         if not verifier:
             yield issue(t, "Verificatore indipendente non indicato.")
-        elif verifier.casefold() in {m.casefold() for m in t.get("members") or []}:
+        elif person_key(verifier) in {person_key(m) for m in member_names(t)}:
             yield issue(t, f"Il verificatore indipendente {verifier} è membro del team: manca l'indipendenza.")
 
 
@@ -554,7 +555,7 @@ def epbs_no_da(ctx):
     if teams and not da:
         yield issue(None, "Nessun team è indicato come Design Authority: nessuno può integrare i rami in main.")
     for t in da:
-        if not t.get("members"):
+        if not member_names(t):
             yield issue(t, "Il team della Design Authority non ha membri: nessun utente è riconosciuto come DA.")
 
 

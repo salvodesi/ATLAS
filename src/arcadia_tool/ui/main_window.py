@@ -18,11 +18,13 @@ from arcadia_tool.ui.accounts import AccountDialog, account_store, require_login
 from arcadia_tool.ui.branding import FittedImage, logo_size, vertical_logo
 from arcadia_tool.checks import problems as check_problems
 from arcadia_tool.model.schema import KINDS_BY_NAME
-from arcadia_tool.model.teams import design_authority, is_da_member
+from arcadia_tool.model.teams import (access_denied, design_authority, edit_denied, is_da_member, locks_out,
+                                      memberships)
 from arcadia_tool.ui.checks_panel import ChecksDock, ChecksPanel, summary
 from arcadia_tool.ui.clone import CloneDialog
 from arcadia_tool.ui.migrate import MigrationDialog, ReloadDialog
 from arcadia_tool.ui.push import PushDialog
+from arcadia_tool.ui.receive import ReceiveDialog
 from arcadia_tool.ui.element_editor import ElementEditor, ElementWindow, resolve_unsaved
 from arcadia_tool.ui.element_list import ElementListPage
 from arcadia_tool.ui.project_settings import ProjectSettingsDialog, recovery_minutes
@@ -33,6 +35,7 @@ from arcadia_tool.ui.srs_edit_mode import SrsEditMode
 from arcadia_tool.ui.srs_reader import SrsReader, SrsReaderWindow
 from arcadia_tool.ui.start_page import StartPage
 from arcadia_tool.ui.theme import ACCENT, CHANGE_COLORS, TEXT, icon, kind_icon
+from arcadia_tool.ui.branches import BranchesDialog
 from arcadia_tool.ui.versions import CompareDialog, HistoryDialog, PublishDialog
 
 MAX_RECENT = 8
@@ -48,6 +51,21 @@ def show_check_problems(parent, problems):
     box.setDefaultButton(open_settings)
     box.exec()
     return box.clickedButton() is open_settings
+
+
+def show_access_denied(parent, reason, user):
+    """The project is not opened: the user is not among the members of its teams. Their ID can be copied, to send
+    it to the Design Authority."""
+    box = QMessageBox(QMessageBox.Warning, "Apri progetto", "Non puoi accedere a questo progetto.", parent=parent)
+    ident = getattr(user, "id", "") if user is not None else ""
+    box.setInformativeText(reason + (f"\n\nID del tuo account: {ident}" if ident else ""))
+    copy = box.addButton("Copia l'ID e chiudi", QMessageBox.AcceptRole) if ident else None
+    box.addButton("Chiudi", QMessageBox.RejectRole)
+    box.exec()
+    if copy is not None and box.clickedButton() is copy:
+        QApplication.clipboard().setText(ident)
+
+
 SAVE_PROGRESS_THRESHOLD = 300
 
 
@@ -99,10 +117,15 @@ class MainWindow(QMainWindow):
         self.stack.addWidget(workspace)
         self.setCentralWidget(self.stack)
 
+        self.tree.edit_denied = self.edit_denied
+        self._just_created = set()  # elements created with «Nuovo…» whose sheet has not opened yet
+        self.tree.element_created.connect(self._just_created.add)
+        self.tree.locks_out = self.locks_out
         self.tree.element_selected.connect(self._select)
         self.tree.model_changed.connect(self._model_changed)
         self.tree.srs_reader_requested.connect(self.open_srs_reader)
         self.tree.srs_window_requested.connect(self.open_srs_window)
+        self.tree.import_requested.connect(self.import_srs)
         self.tree.list_requested.connect(self.open_element_list)
         self.list_pages = {}  # kind → tab with its elements as a table (e.g. X-2, the requests for clarification)
         self.reader_window = None  # the SRS catalogue in its own window («Apri in altra finestra»)
@@ -149,6 +172,9 @@ class MainWindow(QMainWindow):
                                            "Confronta due versioni del modello")
         self.history_action = self._action("Cronologia", "mdi6.history", self.history, None,
                                            "Cronologia delle pubblicazioni")
+        self.branches_action = self._action("Rami…", "mdi6.source-branch", self.show_branches, None,
+                                            "Rami del progetto e del repository: nuovo ramo, cambio di ramo, "
+                                            "cronologia e confronto")
         self.close_action = self._action("Chiudi progetto", "mdi6.close", self.close_project)
         self.import_action = self._action("Importa SRS…", "mdi6.file-import-outline", self.import_srs, None,
                                           "Importa le voci SRS dai PDF del SUBSET-026")
@@ -160,6 +186,9 @@ class MainWindow(QMainWindow):
                                         "Invia al repository remoto le versioni pubblicate e non ancora inviate")
         self.clone_action = self._action("Scarica progetto da Git…", "mdi6.source-branch", self.clone_project_dialog,
                                          None, "Scarica un progetto da un repository Git remoto e lo apre")
+        self.receive_action = self._action("Ricevi dal repository…", "mdi6.cloud-download", self.receive_versions,
+                                           None, "Riceve le versioni pubblicate dai colleghi sul ramo di lavoro e le "
+                                           "integra con le tue")
         self.reload_action = self._action("Ricarica dal repository…", "mdi6.cloud-download-outline",
                                           self.reload_from_remote, None,
                                           "Sostituisce il contenuto locale con il ramo di lavoro del repository")
@@ -182,9 +211,7 @@ class MainWindow(QMainWindow):
         bar.setToolButtonStyle(Qt.ToolButtonTextBesideIcon)
         for a in (self.new_action, self.open_action, self.save_action):
             bar.addAction(a)
-        bar.addSeparator()
-        bar.addAction(self.import_action)
-        bar.addSeparator()
+        bar.addSeparator()  # «Importa SRS…» is in the menu of «Voci SRS» in the tree (and in File)
         bar.addAction(self.check_action)
         # The profile of checks «Verifica modello» runs (the profiles are in the settings of the checks).
         self.profile_combo = QComboBox()
@@ -196,7 +223,8 @@ class MainWindow(QMainWindow):
         self.profile_action = bar.addWidget(self.profile_combo)
         bar.addAction(self.check_settings_action)
         bar.addSeparator()
-        for a in (self.publish_action, self.compare_action, self.history_action):
+        for a in (self.branches_action, self.publish_action, self.receive_action, self.compare_action,
+                  self.history_action):
             bar.addAction(a)
         self.addToolBar(bar)
 
@@ -225,7 +253,8 @@ class MainWindow(QMainWindow):
         project_menu.addSeparator()
         project_menu.addAction(self.settings_action)
         versions_menu = self.menuBar().addMenu("&Versioni")
-        for a in (self.publish_action, self.send_action, self.compare_action, self.history_action):
+        for a in (self.publish_action, self.send_action, self.receive_action, self.compare_action,
+                  self.history_action, self.branches_action):
             versions_menu.addAction(a)
         user_menu = self.menuBar().addMenu("&Utente")
         user_menu.addAction(self.account_action)
@@ -243,13 +272,33 @@ class MainWindow(QMainWindow):
 
     def set_user(self, account):
         self.user = account
+        denied = access_denied(self.project.model, account) if self.project is not None else None
+        if denied is not None and self._confirm_discard():  # another user, not a member: the project closes
+            self._set_project(None)
+            show_access_denied(self, denied, account)
         self._refresh_state()
+        for editor in self.editors.values():  # who may change the teams depends on the user
+            if editor.element is not None and not editor.editing:
+                editor._build()
+
+    def da_name(self):
+        """The name of the logged-in user if a member of the Design Authority (who approves the ADR), else None."""
+        return self.user.full_name if self.user_is_da else None
+
+    def locks_out(self, draft):
+        """Saving the sheet (a team) would leave the logged-in user outside the project."""
+        return draft.kind == "team" and self.project is not None and locks_out(self.project.model, draft, self.user)
+
+    def edit_denied(self, kind, field=None):
+        """Why the logged-in user may not change sheets of this kind, or that field of them (the teams and the
+        team of a domain: only the DA), or None."""
+        return edit_denied(self.project.model, self.user, kind, field) if self.project is not None else None
 
     @property
     def user_is_da(self):
-        """The logged-in user is a member of the Design Authority team of the open project (by name and surname):
-        the only one who integrates the branches into main."""
-        return bool(self.project and self.user and is_da_member(self.project.model, self.user.full_name))
+        """The logged-in user is a member of the Design Authority team of the open project (by member code, else
+        by name and surname): the only one who integrates the branches into main."""
+        return bool(self.project and self.user and is_da_member(self.project.model, self.user))
 
     def edit_account(self):
         if self.user is None:
@@ -401,19 +450,28 @@ class MainWindow(QMainWindow):
             self._recovery_pending = True  # written by the timer
         for a in (self.save_action, self.publish_action, self.compare_action, self.history_action,
                   self.close_action, self.import_action, self.settings_action, self.send_action,
-                  self.reload_action, self.migrate_action, self.check_action, self.check_settings_action):
+                  self.reload_action, self.migrate_action, self.check_action, self.check_settings_action,
+                  self.receive_action, self.branches_action):
             a.setEnabled(has_project)
         user = self.user.full_name if self.user else "nessuno"
         da = design_authority(self.project.model) if has_project else None
+        teams = memberships(self.project.model, self.user) if has_project and self.user else []
         role = (f" <span style='color:{ACCENT}; font-weight:600'>· Design Authority</span>"
-                if self.user_is_da else "")
+                if self.user_is_da else
+                f" · {', '.join(self.project.model.label(t) for t, _row in teams)}" if teams else "")
         self.status_user.setText(f"Utente: <b>{user}</b>{role}   ·")
         tip = f"Utente collegato: {self.user.username} · {self.user.email}" if self.user else "Nessun utente collegato"
         if has_project:
             tip += ("\nMembro della Design Authority" if self.user_is_da else
                     "\nNessun team è indicato come Design Authority" if da is None else
                     f"\nNon è tra i membri della Design Authority ({self.project.model.label(da)})")
-            tip += "\n(riconosciuto da nome e cognome dell'account tra i membri del team DA)"
+            for t, row in teams:
+                tip += f"\nMembro di {self.project.model.label(t)}" + (
+                    "" if row.get("account") else " (riconosciuto dal nome: la DA non ha ancora indicato il tuo ID)")
+            if not teams:
+                tip += "\nNon sei tra i membri di nessun team del progetto"
+            tip += ("\n(riconosciuto dall'ID del tuo account, che la DA indica aggiungendoti al team: lo trovi in "
+                    "Utente › Modifica account)")
         self.status_user.setToolTip(tip)
         self.save_action.setEnabled(modified)
         found = check_problems(self.project.checks, self.project.model) if has_project else []
@@ -429,8 +487,9 @@ class MainWindow(QMainWindow):
         self.setWindowTitle(f"{'● ' if modified else ''}{APP_NAME} {__version__}{name}")
         self.stack.setCurrentIndex(1 if has_project else 0)
         if has_project:
-            self.status_project.setText(f"{self.project.name}   ·   {self.project.baseline}   ·   "
-                                        f"{len(self.project.model)} elementi   ·   {self.project.path}")
+            self.status_project.setText(f"{self.project.name}   ·   ramo «{self.project.current_branch()}»   ·   "
+                                        f"{self.project.baseline}   ·   {len(self.project.model)} elementi   ·   "
+                                        f"{self.project.path}")
             color = CHANGE_COLORS["modified"] if modified else CHANGE_COLORS["added"]
             text = "● Modifiche non salvate" if modified else "✓ Salvato"
             self.status_modified.setText(f"<span style='color:{color}; font-weight:600'>{text}</span>")
@@ -509,7 +568,14 @@ class MainWindow(QMainWindow):
                 self._show_editor(editor)
             if not resolve_unsaved(editor, self):
                 return False
-        if not self.project or not self.project.is_modified:
+        for editor in [e for e in self.editors.values() if e.unsaved_new and e.element is not None]:
+            self._abandon_new(editor.element)  # created and never saved: not saved with the project either
+        if not self.project:
+            return True
+        if not self.project.is_modified:
+            # Nothing to save: a copy for the recovery written earlier (edits undone since, e.g. a new element
+            # cancelled) is not left behind, or the next start would offer it as an interrupted session.
+            self.project.discard_recovery()
             return True
         answer = QMessageBox.question(
             self, "Modifiche non salvate", f"Salvare le modifiche a «{self.project.name}»?",
@@ -554,11 +620,22 @@ class MainWindow(QMainWindow):
     def open_project(self, path, confirmed=False, restore=None):
         if not confirmed and not self._confirm_discard():
             return
-        loading = LoadingDialog(path, self._set_project, self)
-        if loading.exec():
+        self._denied = None
+        loading = LoadingDialog(path, self._open_loaded, self)
+        if loading.exec() and self._denied is None:
             self.offer_recovery(restore)
+        elif self._denied is not None:
+            show_access_denied(self, self._denied, self.user)
         elif loading.error:
             QMessageBox.critical(self, "Apri progetto", loading.error)
+
+    def _open_loaded(self, project):
+        """A project loaded: opened only if the user is among the members of its teams (see access_denied)."""
+        self._denied = access_denied(project.model, self.user)
+        if self._denied is None:
+            self._set_project(project)
+        else:
+            project.close()
 
     # --- recovery after an unexpected interruption ---------------------------------------------------
 
@@ -702,7 +779,11 @@ class MainWindow(QMainWindow):
         editor.elements_created.connect(self._model_changed)
         editor.dirty_changed.connect(lambda _dirty, e=editor: self._show_editor(e, activate=False))
         editor.saved.connect(self._sheet_saved)
+        editor.abandoned.connect(self._abandon_new)
         editor.findings_for = self.checks.findings_for
+        editor.edit_denied = self.edit_denied
+        editor.locks_out = self.locks_out
+        editor.approver = self.da_name
         return editor
 
     def _sheet_saved(self):
@@ -730,6 +811,9 @@ class MainWindow(QMainWindow):
             # saved yet) read-only.
             new = self.project.is_new(element) and element.kind != "requirement"
             editor.edit(self.project, element, editing=new)
+            # Created with «Nuovo…»: if its sheet is never saved, the element goes away (see _abandon_new).
+            editor.unsaved_new = new and element.uuid in self._just_created
+            self._just_created.discard(element.uuid)
             self.editors[element.uuid] = editor
         elif editor.back_label:
             editor.set_back(None)  # opened again from the model tree: nothing to go back to
@@ -890,6 +974,9 @@ class MainWindow(QMainWindow):
             self.item_window.editor.element_changed.connect(self._window_element_changed)
             self.item_window.editor.saved.connect(self._sheet_saved)
             self.item_window.editor.findings_for = self.checks.findings_for
+            self.item_window.editor.edit_denied = self.edit_denied
+            self.item_window.editor.locks_out = self.locks_out
+            self.item_window.editor.approver = self.da_name
         self.item_window.show_element(self.project, element)
 
     def _reader_changed(self, elements):
@@ -939,10 +1026,26 @@ class MainWindow(QMainWindow):
             editor = self.pages.widget(index)
             if not resolve_unsaved(editor, self):  # changes in progress: save or discard them
                 return
+            if editor.unsaved_new and editor.element is not None:  # created, never saved: it goes away
+                self._abandon_new(editor.element)
+                return
             current = self.tree.current_element()
             if current is not None and current is editor.element:
                 self.tree.clear_selection()  # a click on the same element opens it again
             self._hide_editor(editor)
+
+    def _abandon_new(self, element):
+        """An element created with «Nuovo…» whose sheet was not saved («Annulla», or its tab closed): removed
+        from the model and from the tree, as if it had never been created."""
+        editor = self.editors.get(element.uuid)
+        if editor is not None:
+            editor.unsaved_new = False
+            self._hide_editor(editor)
+        if self.project is not None and self.project.discard_new(element.uuid):
+            self._model_changed()  # the tree, the lists
+            if not self.project.is_modified:
+                self.project.discard_recovery()  # its copy for the recovery, if written meanwhile
+        self._refresh_state()
 
     def _close_reader(self):
         if self.reader_window is not None:  # closed from its own window, or with the project
@@ -1044,7 +1147,7 @@ class MainWindow(QMainWindow):
             QMessageBox.information(self, "Invia al repository", "Nessun repository remoto: indica l'URL in "
                                     "Progetto › Impostazioni › Repository Git.")
             return
-        if not self.project.unsent_versions():
+        if not self.project.unsent_versions() and self.project.branch_on_remote():
             QMessageBox.information(self, "Invia al repository", "Tutte le versioni pubblicate sono già state "
                                     "inviate al repository.")
             return
@@ -1052,16 +1155,119 @@ class MainWindow(QMainWindow):
         dialog.exec()
         if dialog.sent:
             self.statusBar().showMessage(f"Versioni inviate al ramo «{self.project.push_branch()}»", 5000)
+        elif dialog.receive_requested:  # the remote has versions of the others: received first
+            self.receive_versions()
+
+    def receive_versions(self):
+        """Versioni › Ricevi dal repository: the versions of the others on the working branch, merged with those
+        of this PC; the project is then opened again. A merge is a new version: it is offered to send it."""
+        if not self.project:
+            return
+        if not self.project.remote():
+            QMessageBox.information(self, "Ricevi dal repository", "Nessun repository remoto: indica l'URL in "
+                                    "Progetto › Impostazioni › Repository Git.")
+            return
+        self._flush_editors()
+        if self.project.is_modified:
+            self.save()
+        author = f"{self.user.full_name} <{self.user.email}>" if self.user else None
+        dialog = ReceiveDialog(self.project, git_credentials(self.user, self.project.remote()), author, self)
+        dialog.exec()
+        if dialog.publish_first:
+            self.publish()
+            return
+        if not dialog.applied:
+            return
+        path, result = self.project.path, dialog.result
+        self._set_project(None)  # its files changed
+        self.open_project(str(path), confirmed=True)
+        if self.project is None:
+            return
+        if result.renumbered:
+            lines = "\n".join(f"• {old} → {new}" for _uuid, old, new in result.renumbered)
+            QMessageBox.information(self, "Ricevi dal repository",
+                                    "Alcuni identificativi dati qui erano già usati nelle versioni ricevute e sono "
+                                    f"stati rinumerati:\n\n{lines}")
+        self.statusBar().showMessage(f"Versioni ricevute dal ramo «{self.project.push_branch()}»", 6000)
+        if dialog.merged and QMessageBox.question(
+                self, "Ricevi dal repository", "Le versioni sono state integrate in una nuova versione. Inviarla "
+                "ora al repository?") == QMessageBox.Yes:
+            self.send_versions()
 
     def compare(self):
         if self.project:
             self._flush_editors()
-            CompareDialog(self.project, parent=self).exec()
+            credentials = git_credentials(self.user, self.project.remote()) if self.project.remote() else None
+            CompareDialog(self.project, parent=self, credentials=credentials).exec()
 
     def history(self):
         if self.project:
             self._flush_editors()
-            HistoryDialog(self.project, self).exec()
+            dialog = HistoryDialog(self.project, self, user=self.user)
+            dialog.exec()
+            if dialog.request is not None:
+                self.branch_request(dialog.request)
+
+    def show_branches(self):
+        """Versioni › Rami: the branches of the project; a new one, or another one, is then taken here."""
+        if not self.project:
+            return
+        self._flush_editors()
+        credentials = git_credentials(self.user, self.project.remote()) if self.project.remote() else {}
+        dialog = BranchesDialog(self.project, credentials, self.user, self)
+        dialog.exec()
+        if dialog.request is not None:
+            self.branch_request(dialog.request)
+
+    def branch_request(self, request):
+        """("switch", name) or ("create", name, sha, send): the project moves to that branch and is opened
+        again. The changes not yet published are published first, or discarded, if the user wants."""
+        if not self._ready_to_leave_branch():
+            return
+        path = self.project.path
+        try:
+            if request[0] == "create":
+                _kind, name, sha, send = request
+                self.project.switch_branch(name, sha)
+            else:
+                _kind, name = request
+                send = False
+                self.project.switch_branch(name)
+        except Exception as exc:
+            QMessageBox.critical(self, "Rami", f"Cambio di ramo non riuscito: {exc}")
+            return
+        self._set_project(None)  # its files changed
+        self.open_project(str(path), confirmed=True)
+        if self.project is None:
+            return
+        self.statusBar().showMessage(f"Ora lavori sul ramo «{name}»", 6000)
+        if send:
+            dialog = PushDialog(self.project, git_credentials(self.user, self.project.remote()), self)
+            dialog.exec()
+
+    def _ready_to_leave_branch(self):
+        """The edits are saved; the changes not yet published are published, or discarded, or the user cancels."""
+        self._flush_editors()
+        for editor in self._unsaved_editors():
+            if not resolve_unsaved(editor, self):
+                return False
+        if self.project.is_modified:
+            self.save()
+        if not self.project.has_unpublished_changes():
+            return True
+        box = QMessageBox(QMessageBox.Question, "Cambio di ramo",
+                          "Ci sono modifiche salvate ma non ancora pubblicate su questo ramo.", parent=self)
+        box.setInformativeText("Pubblicale prima di cambiare ramo, oppure scartale: il nuovo ramo riparte dalla "
+                               "sua versione.")
+        publish = box.addButton("Pubblica…", QMessageBox.AcceptRole)
+        discard = box.addButton("Scarta le modifiche", QMessageBox.DestructiveRole)
+        box.addButton("Annulla", QMessageBox.RejectRole)
+        box.setDefaultButton(publish)
+        box.exec()
+        if box.clickedButton() is publish:
+            self.publish()
+            return not self.project.has_unpublished_changes()
+        return box.clickedButton() is discard
 
     def closeEvent(self, event):
         if not self._confirm_discard():

@@ -304,3 +304,30 @@ def test_tree_menu_offers_the_separate_window(app, tmp_path, monkeypatch):
     item = tree._kind_items["requirement"]
     tree._context_menu(tree.tree.visualItemRect(item).center())
     assert "Apri in altra finestra" in shown[0]
+
+
+def test_import_srs_is_in_the_menu_of_the_srs_items_not_in_the_toolbar(app, tmp_path, monkeypatch):
+    from PySide6.QtWidgets import QToolBar
+    from arcadia_tool.ui.main_window import MainWindow
+
+    p, _ = build(tmp_path)
+    window = MainWindow()
+    window._set_project(p)
+    assert "Importa SRS…" not in [a.text() for a in window.findChildren(QToolBar)[0].actions()]
+    menus = []
+
+    class RecordedMenu(model_tree.QMenu):
+        def exec(self, *args):
+            menus.append({a.text(): a for a in self.actions()})
+    monkeypatch.setattr(model_tree, "QMenu", RecordedMenu)
+    opened = []
+    monkeypatch.setattr(window, "import_srs", lambda: opened.append(True))
+    window.tree.import_requested.disconnect()
+    window.tree.import_requested.connect(window.import_srs)
+    tree = window.tree
+    tree._context_menu(tree.tree.visualItemRect(tree._kind_items["requirement"]).center())
+    assert list(menus[0])[0] == "Importa SRS…"
+    menus[0]["Importa SRS…"].trigger()
+    assert opened == [True]
+    window._set_project(None)
+    window.close()

@@ -26,6 +26,66 @@ FUNCTIONS = ("system_function", "logical_function")
 EXCHANGE_ENDS = ("system_function", "logical_function", "external_actor")
 
 
+# Types of architectural decision (X-1): each a template with its own fields (see the ADR kind).
+ADR_NEW_DOMAIN = "Nuovo dominio funzionale"
+ADR_DELETE_DOMAIN = "Eliminazione di dominio"
+ADR_MERGE_DOMAINS = "Fusione di domini"
+ADR_SPLIT_DOMAIN = "Scissione di dominio"
+ADR_DOMAIN_SCOPE = "Ridefinizione dello scopo del dominio"
+ADR_SECTION = "Riallocazione di sezione o clausola"
+ADR_FUNCTION = "Spostamento di una funzione tra domini"
+ADR_OWNER = "Proprietà di un'informazione / confine tra domini"
+ADR_IMPLEMENTATION = "Scelta lasciata all'implementazione"
+ADR_PRODUCT_OPTION = "Opzione di prodotto"
+ADR_LOGICAL = "Decisione di architettura logica"
+ADR_WAIVER = "Deroga a una regola della metodologia"
+ADR_OTHER = "Altro / decisione trasversale"
+# (type, when it is used: shown when the type is chosen)
+ADR_TYPES = (
+    (ADR_NEW_DOMAIN, "Un'area della specifica non ha un dominio adatto: si propone un nuovo dominio (A2, A6)."),
+    (ADR_DELETE_DOMAIN, "Il dominio non ha più uno scopo proprio: sezioni, funzioni e informazioni passano ad altri."),
+    (ADR_MERGE_DOMAINS, "Due o più domini separati da un confine artificiale (catene che rimbalzano, scambi densi)."),
+    (ADR_SPLIT_DOMAIN, "Lo scopo del dominio non sta in una frase o la dimensione è eccessiva: si divide."),
+    (ADR_DOMAIN_SCOPE, "Il perimetro di un dominio cambia: estensione, riduzione o cambio totale di scopo."),
+    (ADR_SECTION, "Dubbio sul dominio principale o sui contributori di una sezione o clausola (A4)."),
+    (ADR_FUNCTION, "Una funzione di sistema appartiene allo scopo di un altro dominio."),
+    (ADR_OWNER, "Chi produce un'informazione non è evidente (B4, D10), o una catena rimbalza ma il confine resta "
+                "(A5)."),
+    (ADR_IMPLEMENTATION, "La voce SRS lascia una scelta all'implementazione (B5, domanda 1)."),
+    (ADR_PRODUCT_OPTION, "Una funzione è opzionale («O» nella disponibilità nei modi): decisione di prodotto."),
+    (ADR_LOGICAL, "Architettura logica: allocazione di funzioni, scissione o fusione di componenti, interfacce."),
+    (ADR_WAIVER, "Una regola della metodologia non viene rispettata, consapevolmente e con una motivazione."),
+    (ADR_OTHER, "Una scelta non ovvia che vincola le altre fasi e non rientra nei tipi precedenti."),
+)
+ADR_TYPE_LABELS = tuple(name for name, _ in ADR_TYPES)
+DOMAIN_ADR_TYPES = (ADR_NEW_DOMAIN, ADR_DELETE_DOMAIN, ADR_MERGE_DOMAINS, ADR_SPLIT_DOMAIN, ADR_DOMAIN_SCOPE)
+# Where the types apply: the phase of the method (SA, LA) or the whole of it.
+ADR_AREAS = (
+    ("Domini funzionali (SA)", DOMAIN_ADR_TYPES),
+    ("Voci SRS, funzioni e scambi (SA)", (ADR_SECTION, ADR_FUNCTION, ADR_OWNER, ADR_IMPLEMENTATION,
+                                          ADR_PRODUCT_OPTION)),
+    ("Architettura logica (LA)", (ADR_LOGICAL,)),
+    ("Generali", (ADR_WAIVER, ADR_OTHER)),
+)
+
+
+def adr_area(adr_type):
+    """The area a type of ADR applies to («Domini funzionali (SA)»…), or "" (an ADR without a type)."""
+    return next((area for area, types in ADR_AREAS if adr_type in types), "")
+ADR_DETAILS = "Dettagli del tipo di decisione"
+
+
+def _adr(field, *types):
+    """A field of the given types of ADR, in the section of the details of the type."""
+    return Field(**{**field.__dict__, "when": ("adr_type", types), "section": ADR_DETAILS})
+
+
+def _adr_except(field, *types):
+    """A common field of the ADR, but not of the given types (an ADR without a type has it)."""
+    others = tuple(name for name in ADR_TYPE_LABELS if name not in types) + (None,)
+    return Field(**{**field.__dict__, "when": ("adr_type", others)})
+
+
 @dataclass(frozen=True)
 class Column:
     name: str
@@ -33,6 +93,9 @@ class Column:
     type: str = STR
     ref_kinds: tuple = ()
     options: tuple = ()
+    # Chosen in a list computed from the element (the name of the function in model.adr.CHOICES): e.g. the SRS
+    # items of the domain split by an ADR, or the resulting domains written above.
+    choices: str = ""
 
 
 @dataclass(frozen=True)
@@ -61,6 +124,20 @@ class Field:
     stored: bool = True
     # REF chosen in a window with search and ticks (one element) instead of a drop-down list.
     picker: bool = False
+    # REFS of SRS items: only the sections (three numbers) can be chosen in the window with ticks.
+    sections_only: bool = False
+    # Written by the tool (e.g. the domain created by the approval of an ADR): shown read-only, once it has a value.
+    by_tool: bool = False
+    # Computed from the other fields of the element, shown read-only and not saved: the name of the function in
+    # model.adr.COMPUTED (e.g. the SRS items of the domains merged by an ADR).
+    computed: str = ""
+    # Shown only when another field of the element has one of these values: (field, (values…)), e.g. the fields
+    # of a type of ADR.
+    when: tuple = ()
+
+    def applies(self, element):
+        """The field belongs to the element as it is (see `when`)."""
+        return not self.when or element.get(self.when[0]) in self.when[1]
 
 
 @dataclass(frozen=True)
@@ -330,7 +407,10 @@ KINDS = (
         Field("design_authority", "Design Authority (DA)", BOOL, significant=True),
         Field("domains", "Domini", REFS, ref_kinds=("domain",), significant=True),
         Field("components", "Componenti LC", REFS, ref_kinds=("logical_component",), significant=True),
-        Field("members", "Membri del team", STRLIST),
+        # Each member with the ID of their local account, written by the DA (see model.teams).
+        Field("members", "Membri del team", TABLE, columns=(
+            Column("name", "Nome e cognome"), Column("email", "E-mail"), Column("role", "Ruolo"),
+            Column("account", "ID account"))),
         Field("referent", "Referente", choices_from="members"),
         Field("independent_verifier", "Verificatore indipendente"),
         Field("notes", "Note", TEXT),
@@ -339,21 +419,134 @@ KINDS = (
          "ADR-nnn", (
         Field("id", "ID"),
         Field("title", "Titolo"),
+        # The type gives the template: the fields of its details (chosen when the ADR is created).
+        Field("adr_type", "Tipo di decisione", ENUM, ADR_TYPE_LABELS, significant=True),
+        # The deletion of a domain: the domain right under the type.
+        Field("deleted_domain", "Dominio interessato", REF, ref_kinds=("domain",), section="Identificazione",
+              when=("adr_type", (ADR_DELETE_DOMAIN,))),
         Field("status", "Stato", ENUM, ("Proposta", "Decisa", "Superata"), significant=True),
         # The ADR can be many: chosen in a window with search and ticks, not in a drop-down list.
-        Field("superseded_by", "Superata da", REF, ref_kinds=("adr",), picker=True),
-        Field("date_decider", "Data e decisore"),
-        Field("context", "Contesto", TEXT),
+        Field("superseded_by", "Superata da", REF, ref_kinds=("adr",), picker=True, section="Identificazione"),
+        Field("proposer", "Proponente (team)", REF, ref_kinds=("team",), section="Identificazione"),
+        # Set by the tool when the ADR is decided (the decider is always the Design Authority).
+        Field("decision_date", "Data della decisione", by_tool=True),
+        # Description, relations and options: not in a new domain, whose details say it all (its sections); the
+        # deletion of a domain has only the motivation and the observations of the DA (and its domain, above).
+        _adr_except(Field("context", "Contesto", TEXT), ADR_NEW_DOMAIN, ADR_DELETE_DOMAIN, ADR_MERGE_DOMAINS, ADR_SPLIT_DOMAIN, ADR_DOMAIN_SCOPE, ADR_SECTION, ADR_FUNCTION, ADR_OWNER, ADR_IMPLEMENTATION, ADR_PRODUCT_OPTION),
         # The SRS sections and clauses the decision is about, chosen with ticks; the other elements in a text.
-        Field("srs_items", "Voci SRS interessate", REFS, ref_kinds=("requirement",)),
-        Field("affected", "Altri elementi del modello interessati", TEXT),
-        Field("options", "Opzioni", TABLE, columns=(
+        _adr_except(Field("srs_items", "Voci SRS interessate", REFS, ref_kinds=("requirement",)), ADR_NEW_DOMAIN,
+                    ADR_DELETE_DOMAIN, ADR_MERGE_DOMAINS, ADR_SPLIT_DOMAIN, ADR_DOMAIN_SCOPE, ADR_SECTION, ADR_FUNCTION, ADR_OWNER, ADR_IMPLEMENTATION, ADR_PRODUCT_OPTION),
+        _adr_except(Field("affected", "Altri elementi del modello interessati", TEXT), ADR_NEW_DOMAIN,
+                    ADR_DELETE_DOMAIN, ADR_MERGE_DOMAINS, ADR_SPLIT_DOMAIN, ADR_DOMAIN_SCOPE, ADR_SECTION, ADR_FUNCTION, ADR_OWNER, ADR_IMPLEMENTATION, ADR_PRODUCT_OPTION),
+        _adr_except(Field("options", "Opzioni", TABLE, columns=(
             Column("option", "Opzione"), Column("description", "Descrizione"),
-            Column("pros", "Vantaggi"), Column("cons", "Svantaggi e rischi"))),
-        Field("decision", "Decisione", TEXT),
-        Field("rationale", "Motivazione", TEXT),
-        Field("consequences", "Conseguenze", TEXT),
-        Field("review_when", "Da rivedere quando", TEXT),
+            Column("pros", "Vantaggi"), Column("cons", "Svantaggi e rischi"))), ADR_NEW_DOMAIN, ADR_DELETE_DOMAIN, ADR_MERGE_DOMAINS, ADR_SPLIT_DOMAIN, ADR_DOMAIN_SCOPE, ADR_SECTION, ADR_FUNCTION, ADR_OWNER, ADR_IMPLEMENTATION, ADR_PRODUCT_OPTION),
+        _adr_except(Field("decision", "Decisione", TEXT), ADR_NEW_DOMAIN, ADR_DELETE_DOMAIN, ADR_MERGE_DOMAINS, ADR_SPLIT_DOMAIN, ADR_DOMAIN_SCOPE, ADR_SECTION, ADR_FUNCTION, ADR_OWNER, ADR_IMPLEMENTATION, ADR_PRODUCT_OPTION),
+        _adr_except(Field("rationale", "Motivazione", TEXT), ADR_NEW_DOMAIN, ADR_MERGE_DOMAINS, ADR_SPLIT_DOMAIN, ADR_DOMAIN_SCOPE, ADR_SECTION, ADR_FUNCTION, ADR_OWNER, ADR_IMPLEMENTATION, ADR_PRODUCT_OPTION),
+        Field("da_notes", "Osservazioni DA", TEXT, when=("adr_type", (ADR_DELETE_DOMAIN,))),
+        _adr_except(Field("consequences", "Conseguenze", TEXT), ADR_NEW_DOMAIN, ADR_DELETE_DOMAIN, ADR_MERGE_DOMAINS, ADR_SPLIT_DOMAIN, ADR_DOMAIN_SCOPE, ADR_SECTION, ADR_FUNCTION, ADR_OWNER, ADR_IMPLEMENTATION, ADR_PRODUCT_OPTION),
+        _adr_except(Field("review_when", "Da rivedere quando", TEXT), ADR_NEW_DOMAIN, ADR_DELETE_DOMAIN, ADR_MERGE_DOMAINS, ADR_SPLIT_DOMAIN, ADR_DOMAIN_SCOPE, ADR_SECTION, ADR_FUNCTION, ADR_OWNER, ADR_IMPLEMENTATION, ADR_PRODUCT_OPTION),
+        # --- details of the type (see ADR_TYPES) ---------------------------------------------------------
+        _adr(Field("domain", "Dominio interessato", REF, ref_kinds=("domain",)), ADR_DOMAIN_SCOPE),
+        _adr(Field("merged_domains", "Domini da fondere", REFS, ref_kinds=("domain",)), ADR_MERGE_DOMAINS),
+        # The split is the dual of the merge: one domain, several resulting ones, its SRS items shared among them.
+        _adr(Field("split_domain", "Dominio da scindere", REF, ref_kinds=("domain",)), ADR_SPLIT_DOMAIN),
+        # The name only: the ID (DFnn) is given by the tool when the Design Authority approves the ADR.
+        _adr(Field("new_domain_name", "Nome del dominio proposto"), ADR_NEW_DOMAIN),
+        # The name only: the ID is the one of the domain that is kept, or given by the tool after the merge.
+        _adr(Field("proposed_domain", "Nome del dominio risultante"), ADR_MERGE_DOMAINS),
+        _adr(Field("kept_domain", "Dominio che resta (se è uno di quelli fusi)", REF, ref_kinds=("domain",)),
+             ADR_MERGE_DOMAINS),
+        _adr(Field("scope_change", "Natura della modifica", ENUM,
+                   ("Estensione", "Riduzione", "Cambio totale di scopo")), ADR_DOMAIN_SCOPE),
+        # Read from the sheet of the domain: always the mission it has now.
+        _adr(Field("mission_current", "Missione attuale", TEXT, stored=False, computed="current_mission"),
+             ADR_DOMAIN_SCOPE),
+        _adr(Field("mission_proposed", "Missione proposta (una o due frasi)", TEXT), ADR_NEW_DOMAIN,
+             ADR_MERGE_DOMAINS, ADR_DOMAIN_SCOPE),
+        _adr(Field("proposal_reason", "Perché si propone il nuovo dominio", TEXT), ADR_NEW_DOMAIN),
+        _adr(Field("proposal_benefits", "Vantaggi della proposta", TEXT), ADR_NEW_DOMAIN),
+        _adr(Field("scope_reason", "Motivazione della modifica", TEXT), ADR_DOMAIN_SCOPE),
+        # The sections the domain takes from other domains, or gives to them, chosen with ticks.
+        _adr(Field("sections_acquired", "Sezioni acquisite dal dominio", REFS, ref_kinds=("requirement",),
+                   sections_only=True), ADR_DOMAIN_SCOPE),
+        _adr(Field("sections_ceded", "Sezioni cedute dal dominio", REFS, ref_kinds=("requirement",),
+                   sections_only=True), ADR_DOMAIN_SCOPE),
+        # The names only: the IDs are given by the tool, one of them keeps the ID of the domain split.
+        _adr(Field("new_domains", "Domini risultanti", TABLE, columns=(
+            Column("name", "Nome del dominio risultante"), Column("mission", "Missione proposta"),
+            Column("team", "Team proposto", REF, ref_kinds=("team",)),
+            Column("keeps_id", "Mantiene l'ID", ENUM, options=("Sì",)))), ADR_SPLIT_DOMAIN),
+        # The SRS items of the domains merged (principal or contributing): those of the resulting domain.
+        _adr(Field("merged_srs_items", "Voci SRS attribuite al dominio risultante", REFS, ref_kinds=("requirement",),
+                   stored=False, computed="merged_srs_items"), ADR_MERGE_DOMAINS),
+        # The sections (three numbers) of a new domain, chosen with ticks.
+        _adr(Field("sections_allocated", "Sezioni allocate al dominio", REFS, ref_kinds=("requirement",),
+                   sections_only=True), ADR_NEW_DOMAIN),
+        # Each SRS item of the domain split, to one of the resulting domains written above.
+        _adr(Field("split_allocation", "Ripartizione delle voci SRS tra i domini risultanti", TABLE, columns=(
+            Column("item", "Voce SRS del dominio da scindere", choices="split_domain_items"),
+            Column("destination", "Dominio risultante", choices="split_destinations"))), ADR_SPLIT_DOMAIN),
+        # The reallocation of an SRS item: the item (chosen with ticks), its domains now (read from it) and those
+        # proposed, with the motivation.
+        _adr(Field("realloc_item", "Sezione o clausola da riallocare", REF, ref_kinds=("requirement",),
+                   picker=True), ADR_SECTION),
+        _adr(Field("primary_current", "Dominio principale attuale", REF, ref_kinds=("domain",), stored=False,
+                   computed="item_primary"), ADR_SECTION),
+        _adr(Field("contributors_current", "Contributori attuali", REFS, ref_kinds=("domain",), stored=False,
+                   computed="item_contributors"), ADR_SECTION),
+        _adr(Field("primary_proposed", "Dominio principale proposto", REF, ref_kinds=("domain",)), ADR_SECTION),
+        _adr(Field("contributors_proposed", "Contributori proposti", REFS, ref_kinds=("domain",)), ADR_SECTION),
+        _adr(Field("realloc_reason", "Motivazione della riallocazione", TEXT), ADR_SECTION),
+
+        _adr(Field("function", "Funzione di sistema", REF, ref_kinds=("system_function",)), ADR_FUNCTION,
+             ADR_PRODUCT_OPTION),
+        # The move of a function: its domain now (read from it), the one proposed, the motivation.
+        _adr(Field("function_domain", "Dominio attuale", REF, ref_kinds=("domain",), stored=False,
+                   computed="function_domain"), ADR_FUNCTION, ADR_PRODUCT_OPTION),
+        _adr(Field("to_domain", "Dominio proposto", REF, ref_kinds=("domain",)), ADR_FUNCTION),
+        _adr(Field("move_reason", "Motivazione dello spostamento", TEXT), ADR_FUNCTION),
+        # The owner of an information: who produces it now (read from the exchanges), the candidates, the one
+        # chosen and why.
+        _adr(Field("exchange_item", "Informazione (Exchange Item)", REF, ref_kinds=("exchange_item",)),
+             ADR_OWNER),
+        _adr(Field("item_producers", "Produttori attuali", REFS, ref_kinds=EXCHANGE_ENDS, stored=False,
+                   computed="item_producers"), ADR_OWNER),
+        _adr(Field("candidate_producers", "Produttori candidati", TABLE, columns=(
+            Column("function", "Funzione", REF, ref_kinds=FUNCTIONS), Column("arguments", "Argomenti"))),
+             ADR_OWNER),
+        _adr(Field("chosen_producer", "Produttore scelto", REF, ref_kinds=FUNCTIONS), ADR_OWNER),
+        _adr(Field("evidence_chains", "Catene funzionali usate come prova", REFS, ref_kinds=("functional_chain",)),
+             ADR_OWNER),
+        _adr(Field("owner_reason", "Motivazione della scelta", TEXT), ADR_OWNER),
+        _adr(Field("team_proposed", "Team proposto o risultante", REF, ref_kinds=("team",)), ADR_NEW_DOMAIN,
+             ADR_MERGE_DOMAINS),
+        # Written by the approval of the Design Authority (see model.adr.approve_new_domain).
+        _adr(Field("created_domain", "Dominio creato all'approvazione", REF, ref_kinds=("domain",), by_tool=True),
+             ADR_NEW_DOMAIN),
+        # A choice left to the implementation: the SRS item (chosen with ticks), its domain (read from it), the
+        # choice left open, the one adopted and why.
+        _adr(Field("impl_item", "Sezione o clausola", REF, ref_kinds=("requirement",), picker=True),
+             ADR_IMPLEMENTATION),
+        _adr(Field("impl_domain", "Dominio principale", REF, ref_kinds=("domain",), stored=False,
+                   computed="item_primary"), ADR_IMPLEMENTATION),
+        _adr(Field("open_choice", "Scelta lasciata all'implementazione", TEXT), ADR_IMPLEMENTATION),
+        _adr(Field("adopted_choice", "Scelta adottata", TEXT), ADR_IMPLEMENTATION),
+        _adr(Field("test_case", "Caso di prova (se la voce è un esempio)"), ADR_IMPLEMENTATION),
+        _adr(Field("impl_reason", "Motivazione della scelta", TEXT), ADR_IMPLEMENTATION),
+        _adr(Field("modes", "Modi interessati", MULTIENUM, ETCS_MODES), ADR_PRODUCT_OPTION),
+        _adr(Field("product_choice", "Scelta", ENUM, ("Inclusa", "Esclusa", "Configurabile")),
+             ADR_PRODUCT_OPTION),
+        _adr(Field("parameter", "Parametro di configurazione (se configurabile)"), ADR_PRODUCT_OPTION),
+        _adr(Field("option_reason", "Motivazione della scelta", TEXT), ADR_PRODUCT_OPTION),
+        _adr(Field("la_operation", "Operazione", ENUM, ("Allocazione di funzioni", "Scissione di componente",
+                                                       "Fusione di componenti", "Interfaccia tra componenti")),
+             ADR_LOGICAL),
+        _adr(Field("la_elements", "Elementi coinvolti", REFS, ref_kinds=("logical_function", "logical_component")),
+             ADR_LOGICAL),
+        _adr(Field("indicators", "Indicatori considerati (fan-in/out, scambi densi, dipendenze cicliche)", TEXT),
+             ADR_LOGICAL),
+        _adr(Field("rule", "Regola o controllo derogato (es. SA2-07)"), ADR_WAIVER),
     )),
     Kind("clarification", "Richiesta di chiarimento", "Richieste di chiarimento (CQ)", "x/cq", "Trasversali", "X-2",
          "CQ-nn", (

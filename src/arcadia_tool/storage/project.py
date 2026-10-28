@@ -14,10 +14,11 @@ from dulwich import porcelain
 from arcadia_tool.model.element import Element, Model, natural_key
 from arcadia_tool.model.identifiers import compute_id, is_automatic, matches_context
 from arcadia_tool.model.links import keep_in_step
+from arcadia_tool.model.teams import member_rows
 from arcadia_tool.model.schema import B5_QUESTIONS, KINDS, KINDS_BY_NAME, derived_value
 from arcadia_tool.model.serialization import dumps, loads
 from arcadia_tool.storage.repository import (CHECKS_FILE, MODEL_DIR, PROJECT_FILE, TRACKED_FILES, Repository,
-                                             remote_branches_and_default)
+                                             keep_line_endings, remote_branches_and_default)
 
 FORMAT_VERSION = 1
 ASSETS_DIR = "assets"
@@ -128,8 +129,12 @@ def clone_project(url, target, branch=None, **credentials):
         raise ProjectError(f"La cartella {target} non è vuota.")
     created = not target.exists()
     try:
-        porcelain.clone(url, str(target), checkout=True, branch=branch or None, errstream=io.BytesIO(),
-                        **credentials).close()
+        # The files are written after the configuration of the line endings (see keep_line_endings).
+        with porcelain.clone(url, str(target), checkout=False, branch=branch or None, errstream=io.BytesIO(),
+                             **credentials) as cloned:
+            keep_line_endings(cloned)
+            if b"HEAD" in cloned.refs:
+                porcelain.reset(cloned, "hard", cloned.head())
         if not (target / PROJECT_FILE).exists():
             raise ProjectError("Il repository non contiene un progetto ARCADIA (manca project.yaml): verifica "
                                "l'URL e il ramo.")
@@ -256,6 +261,58 @@ class ModelCache:
             tmp.unlink(missing_ok=True)
 
 
+MAIN_BRANCHES = ("main", "master")
+BRANCH_NAME = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._/-]*$")
+
+
+class Branch:
+    """A branch of the project: its last version on this PC (local) and on the remote (as last downloaded)."""
+
+    def __init__(self, name, local=None, remote=None, current=False, main=False):
+        self.name, self.local, self.remote, self.current, self.main = name, local, remote, current, main
+        self.last = None  # the Version of its head
+        self.ahead = self.behind = None  # versions it has that main has not, and the other way round
+
+    @property
+    def head(self):
+        return self.local or self.remote
+
+    @property
+    def where(self):
+        if self.local and self.remote:
+            return "su questo PC e nel repository" if self.local == self.remote else (
+                "su questo PC e nel repository (diversi)")
+        return "solo su questo PC" if self.local else "solo nel repository"
+
+
+class Receive:
+    """How the versions of the working branch of the remote are received (Versioni › Ricevi dal repository).
+
+    - UP_TO_DATE: nothing new on the remote; NO_BRANCH: the branch is not on the remote yet.
+    - FAST_FORWARD: only the remote has new versions: the project takes them, and the changes saved here but not
+      yet published are merged on top of them (still to publish).
+    - MERGE: both have published versions: they are merged into a new version, to send then.
+    - PUBLISH_FIRST: both have published versions, and there are changes here not yet published: they are
+      published first (the merge is a version, it must not publish them unasked).
+    """
+    UP_TO_DATE, NO_BRANCH, FAST_FORWARD, MERGE, PUBLISH_FIRST = (
+        "up_to_date", "no_branch", "fast_forward", "merge", "publish_first")
+
+    def __init__(self, state, branch, theirs=None, incoming=(), base=None, ours=None, theirs_files=None):
+        self.state, self.branch, self.theirs = state, branch, theirs
+        self.incoming = list(incoming)  # the versions received, newest first
+        self.base, self.ours, self.theirs_files = base or {}, ours or {}, theirs_files or {}
+        self.result = None
+
+    def merge(self, choices=None):
+        from arcadia_tool.storage.merge import merge_files, renumber_ids
+
+        result = merge_files(self.base, self.ours, self.theirs_files, choices)
+        if result.resolved:
+            renumber_ids(result, self.base, self.theirs_files)
+        return result
+
+
 class Project:
     """Edits are kept in memory until save(); publish() saves and records a version in the history."""
 
@@ -267,7 +324,6 @@ class Project:
         self.checks = self._read_checks()
         self._modified = set()
         self._deleted = {}
-        self._published_ids = None
         # Content of the model files as saved on disk ({relative path: bytes}), so that publishing does
         # not have to read thousands of files back.
         self._saved = saved or {}
@@ -345,9 +401,17 @@ class Project:
 
     def unsent_versions(self):
         """Published versions not yet sent to the remote: those after the last one sent from here, or after the
-        last one Git knows is on the remote (e.g. a downloaded project); all of them if neither is known."""
+        last one Git knows is on the remote (e.g. a downloaded project); else (e.g. a new branch) those that are on
+        no branch of the remote; all of them if the remote is not known."""
         sent = self.local_settings().get("sent") or self.repository.remote_branch_head(self.push_branch())
-        return _unsent(self.versions(), sent)
+        if sent:
+            return _unsent(self.versions(), sent)
+        head = self.repository.head()
+        return self.repository.versions_between(list(self.repository.remote_heads().values()), head) if head else []
+
+    def branch_on_remote(self):
+        """The working branch is on the remote (as last known): a new branch is not, until it is sent."""
+        return self.push_branch() in self.repository.remote_heads()
 
     def push(self, **credentials):
         """Send the published versions to the working branch of the remote. Returns the branch."""
@@ -400,7 +464,11 @@ class Project:
           team. A text naming a team (its ID or name, or «DA»/«Design Authority») becomes that team; another one
           is kept as «Destinatario (testo)».
         - The SRS items an ADR is about were written in its text «Voci SRS ed elementi interessati»: the items
-          cited by number become «Voci SRS interessate» (chosen with ticks); the text stays as it is."""
+          cited by number become «Voci SRS interessate» (chosen with ticks); the text stays as it is.
+        - The members of a team were a list of names: each becomes a member (a row) without the ID of the
+          account, recognized by name until the DA writes it (see model.teams).
+        - An ADR had «Data e decisore» (a text): its date becomes «Data della decisione»; the decider is always
+          the Design Authority."""
         by_id = {}
         for item in self.model.of_kind("requirement"):
             by_id.setdefault(item.get("id"), item.uuid)
@@ -412,7 +480,21 @@ class Project:
             if cited:
                 adr.set("srs_items", list(dict.fromkeys(cited)))
                 self.update(adr)
+        for adr in self.model.of_kind("adr"):  # «Data e decisore» (a text): its date, the decider is the DA
+            text = adr.values.get("date_decider")
+            if text is None:
+                continue
+            found = re.search(r"\b(\d{1,2})[/.-](\d{1,2})[/.-](\d{4})\b", str(text))
+            if found and not adr.values.get("decision_date"):
+                adr.values["decision_date"] = f"{int(found[1]):02d}/{int(found[2]):02d}/{found[3]}"
+            adr.values.pop("date_decider")
+            self.update(adr)
         teams = self.model.of_kind("team")
+        for team in teams:  # members of the first versions (only names): rows, to which the DA adds the ID
+            members = team.values.get("members") or []
+            if any(not isinstance(m, dict) or "code" in m for m in members):
+                team.set("members", [{k: v for k, v in m.items() if k != "code"} for m in member_rows(team)])
+                self.update(team)
         for request in self.model.of_kind("clarification"):
             text = request.values.get("recipient")
             if not text or self.model.get(text) is not None:
@@ -499,8 +581,11 @@ class Project:
         self.model.add(element)
         self._modified.add(element.uuid)
         self._deleted.pop(element.uuid, None)
+        if element.kind == "adr":  # the date of the decision: set when it is decided (see model.adr)
+            from arcadia_tool.model.adr import decision_date_of
+            element.set("decision_date", decision_date_of(element))
         if is_automatic(element.kind) and not element.get("id"):
-            element.set("id", compute_id(element, self.model, self.published_ids))
+            element.set("id", compute_id(element, self.model))
         changed = {}
         for other in keep_in_step(self.model, element, previous):
             self._modified.add(other.uuid)
@@ -635,19 +720,12 @@ class Project:
         """Reassign the identifier if it no longer matches the element's context. Returns True if changed."""
         if not is_automatic(element.kind) or matches_context(element, self.model):
             return False
-        new_id = compute_id(element, self.model, self.published_ids)
+        new_id = compute_id(element, self.model)
         if not new_id or new_id == element.get("id"):
             return False
         element.set("id", new_id)
         self.update(element)
         return True
-
-    @property
-    def published_ids(self):
-        """Identifiers used in the last published version: never reassigned to other elements."""
-        if self._published_ids is None:
-            self._published_ids = {e.get("id") for e in self.published_model() if e.get("id")}
-        return self._published_ids
 
     def delete_element(self, uuid):
         element = self.model.get(uuid)
@@ -656,6 +734,17 @@ class Project:
         self.model.remove(uuid)
         self._modified.discard(uuid)
         self._deleted[uuid] = self.element_file(element)
+
+    def discard_new(self, uuid):
+        """Forget an element created and never saved (e.g. «Nuovo» in the tree, then «Annulla»): unlike a deletion
+        there is no file to remove, so nothing is left to save."""
+        element = self.model.get(uuid)
+        if element is None or not self.is_new(element):
+            return False
+        self.model.remove(uuid)
+        self._modified.discard(uuid)
+        self._deleted.pop(uuid, None)
+        return True
 
     def delete_elements(self, uuids):
         for uuid in list(uuids):
@@ -783,8 +872,166 @@ class Project:
         """Save to disk and record a published version (a Git commit)."""
         self.save()
         sha = self.repository.save_version(message, author, self._version_files())
-        self._published_ids = None
         return sha
+
+    # --- branches --------------------------------------------------------------------------------------
+
+    def current_branch(self):
+        return self.repository.local_branch()
+
+    def fetch_branches(self, **credentials):
+        """Download every branch of the remote (the project is not changed). Returns {branch: last version}."""
+        url = self.remote()
+        if not url:
+            raise ProjectError("Nessun repository remoto: indicalo in Progetto › Impostazioni › Repository Git.")
+        heads = self.repository.fetch(url, **credentials)
+        self.repository.set_remote_heads(heads)
+        self.set_local_settings(fetched=datetime.now().isoformat(timespec="minutes"))
+        return heads
+
+    def fetched_at(self):
+        """When the branches of the remote were downloaded the last time (text, e.g. «2026-10-26T10:30»), or ""."""
+        return self.local_settings().get("fetched", "")
+
+    def main_branch(self):
+        """The branch the Design Authority integrates into: «main» (or «master»), on this PC or on the remote."""
+        names = set(self.repository.local_heads()) | set(self.repository.remote_heads())
+        return next((n for n in MAIN_BRANCHES if n in names), None)
+
+    def branches(self):
+        """The branches of this PC and of the remote (as last downloaded): Branch, the main one first."""
+        local, remote = self.repository.local_heads(), self.repository.remote_heads()
+        current, main = self.current_branch(), self.main_branch()
+        main_sha = remote.get(main) or local.get(main) if main else None
+        result = []
+        for name in sorted(set(local) | set(remote), key=lambda n: (n != main, n.lower())):
+            b = Branch(name, local.get(name), remote.get(name), name == current, name == main)
+            head = b.head
+            b.last = self.repository.version(head)
+            if main_sha and not b.main:
+                b.ahead = len(self.repository.versions_between(main_sha, head))
+                b.behind = len(self.repository.versions_between(head, main_sha))
+            result.append(b)
+        return result
+
+    def branch_versions(self, sha, limit=None):
+        """The versions of a branch, from its last one (`sha`), newest first."""
+        return self.repository.history(limit, start=sha)
+
+    def check_branch_name(self, name):
+        """What is wrong in the name of a new branch, or None."""
+        name = (name or "").strip()
+        if not name:
+            return "Indica il nome del ramo."
+        if not BRANCH_NAME.match(name) or ".." in name or name.endswith((".", "/", ".lock")) or "//" in name:
+            return ("Il nome può contenere lettere, cifre, «-», «_», «.» e «/» (es. att/T2-odometria), senza spazi "
+                    "e senza iniziare o finire con «/» o «.».")
+        if name in self.repository.local_heads() or name in self.repository.remote_heads():
+            return f"Il ramo «{name}» esiste già."
+        return None
+
+    def publish_on_new_branch(self, name, message, author):
+        """Publish the changes as the first version of a new branch, which starts from the current version and
+        becomes the one in use (to send then)."""
+        problem = self.check_branch_name(name)
+        if problem:
+            raise ProjectError(problem)
+        self.save()
+        previous, settings = self.current_branch(), self.local_settings()
+        self.repository.start_branch(name)
+        self.set_local_settings(branch=name, sent="")
+        try:
+            return self.publish(message, author)
+        except Exception:  # not published: back on the branch it was on
+            self.repository.start_branch(previous)
+            self.repository.delete_branch(name)
+            self.set_local_settings(branch=settings.get("branch", ""), sent=settings.get("sent", ""))
+            raise
+
+    def switch_branch(self, name, sha=None):
+        """The project moves to the branch `name`: created at the version `sha` if given (a new branch, still to
+        send), else at its last version on this PC, or on the remote if it is not here yet. The changes saved and
+        not published are lost (published first, or discarded, by the caller). The project must then be opened
+        again."""
+        self.save()
+        local, remote = self.repository.local_heads(), self.repository.remote_heads()
+        target = sha or local.get(name) or remote.get(name)
+        if target is None:
+            raise ProjectError(f"Il ramo «{name}» non esiste né su questo PC né nel repository.")
+        working = self._version_files()
+        files = self.repository.files_at(target)
+        self._write_files(files, working)
+        self.repository.checkout(name, target, files)
+        self.set_local_settings(branch=name, sent=remote.get(name) or "")
+        self.discard_recovery()
+        return target
+
+    # --- receiving the versions of the others ----------------------------------------------------------
+
+    def prepare_receive(self, **credentials):
+        """Download the working branch of the remote and work out how to receive it (see Receive). Saves the
+        edits first. Nothing changes in the project until apply_receive."""
+        self.save()
+        branch, url = self.push_branch(), self.remote()
+        if not url:
+            raise ProjectError("Nessun repository remoto: indicalo in Progetto › Impostazioni › Repository Git.")
+        heads = self.repository.fetch(url, **credentials)
+        theirs = heads.get(branch)
+        if theirs is None:
+            return Receive(Receive.NO_BRANCH, branch)
+        self.repository.set_remote_head(branch, theirs)
+        head = self.repository.head()
+        if head is not None and self.repository.is_ancestor(theirs, head):
+            return Receive(Receive.UP_TO_DATE, branch, theirs)
+        incoming = self.repository.versions_between(head, theirs)
+        working = self._version_files()
+        theirs_files = self.repository.files_at(theirs)
+        if head is None or self.repository.is_ancestor(head, theirs):
+            # Only the remote has new versions: they are received, the changes not yet published stay on top.
+            receive = Receive(Receive.FAST_FORWARD, branch, theirs, incoming=incoming,
+                              base=self.repository.files_at(head), ours=working, theirs_files=theirs_files)
+        else:
+            # Both have published versions: they are merged into a new version (then sent).
+            head_files = self.repository.files_at(head)
+            if working != head_files:
+                return Receive(Receive.PUBLISH_FIRST, branch, theirs, incoming=incoming)
+            base = self.repository.merge_base(head, theirs)
+            receive = Receive(Receive.MERGE, branch, theirs, incoming=incoming,
+                              base=self.repository.files_at(base), ours=head_files, theirs_files=theirs_files)
+        receive.result = receive.merge()
+        return receive
+
+    def apply_receive(self, receive, choices=None, author=None):
+        """Receive the versions as prepared, with the choices for the conflicts ({conflict key: ours/theirs}).
+        Writes the project on disk: the project must then be opened again. Returns the MergeResult (with the
+        conflicts still unresolved if the choices miss some: then nothing is written)."""
+        result = receive.merge(choices)
+        if not result.resolved:
+            return result
+        self._write_files(result.files, receive.ours)
+        if receive.state == Receive.FAST_FORWARD:
+            self.repository.move_to(receive.theirs, result.files)
+        else:
+            count = len(receive.incoming)
+            message = (f"Integrazione di {count} {'versione ricevuta' if count == 1 else 'versioni ricevute'} "
+                       f"dal ramo «{receive.branch}»")
+            self.repository.save_version(message, author or "ATLAS <atlas@localhost>", result.files,
+                                         merged=receive.theirs)
+        self.set_local_settings(sent=receive.theirs, branch=receive.branch)
+        self.discard_recovery()
+        return result
+
+    def _write_files(self, files, current):
+        """The project on disk becomes `files` (current: what is on disk now)."""
+        for rel, data in files.items():
+            if current.get(rel) != data:
+                target = self.path / rel
+                target.parent.mkdir(parents=True, exist_ok=True)
+                tmp = target.with_name(target.name + ".tmp")
+                tmp.write_bytes(data)
+                os.replace(tmp, target)
+        for rel in set(current) - set(files):
+            (self.path / rel).unlink(missing_ok=True)
 
     def versions(self):
         return self.repository.history()

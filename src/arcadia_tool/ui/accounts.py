@@ -4,7 +4,7 @@ import copy
 from pathlib import Path
 
 from PySide6.QtCore import Qt, QTimer, Signal
-from PySide6.QtWidgets import (QButtonGroup, QComboBox, QDialog, QFileDialog, QFormLayout, QFrame, QHBoxLayout,
+from PySide6.QtWidgets import (QApplication, QButtonGroup, QComboBox, QDialog, QFileDialog, QFormLayout, QFrame, QHBoxLayout,
                                QLabel, QLineEdit, QMessageBox, QPushButton, QRadioButton, QStackedWidget,
                                QVBoxLayout, QWidget)
 
@@ -27,9 +27,19 @@ class _Centered(QDialog):
 
     def showEvent(self, event):
         super().showEvent(event)
+        self._fit()
         # Right away, and again once the system has added the title bar to the frame (a few pixels).
         QTimer.singleShot(0, self._center)
         QTimer.singleShot(60, self._center)
+
+    def _fit(self):
+        """As tall as its content once shown (the style, applied then, makes some rows taller)."""
+        layout = self.layout()
+        if layout is not None:
+            layout.activate()
+            needed = max(layout.totalMinimumSize().height(), self.sizeHint().height())
+            if self.height() < needed:
+                self.resize(self.width(), needed)
 
     def _center(self):
         parent = self.parentWidget()
@@ -68,12 +78,22 @@ class AccountDialog(_Centered):
 
         intro = QLabel(
             "Prima di usare il tool crea il tuo account locale: ogni modifica pubblicata è associata a un utente." if first
-            else "Dati del tuo account locale.", objectName="muted")
+            else "Dati del tuo account locale. Per essere riconosciuto come membro di un team, comunica l'ID alla "
+                 "Design Authority del progetto.", objectName="muted")
         intro.setWordWrap(True)
         person, form = _card("Utente")
         self.ident = QLineEdit(self.account.id, readOnly=True, objectName="readonly")
-        self.ident.setToolTip("Identificativo univoco dell'account, assegnato alla creazione")
+        self.ident.setToolTip("Identificativo univoco dell'account, assegnato alla creazione: comunicalo alla "
+                              "Design Authority, che lo indica aggiungendoti a un team")
         self.ident.setFocusPolicy(Qt.NoFocus)
+        copy_id = QPushButton(icon("mdi6.content-copy"), "")
+        copy_id.setToolTip("Copia l'ID dell'account, da inviare alla Design Authority")
+        copy_id.clicked.connect(lambda: QApplication.clipboard().setText(self.account.id))
+        ident_row = QWidget()
+        ident_layout = QHBoxLayout(ident_row)
+        ident_layout.setContentsMargins(0, 0, 0, 0)
+        ident_layout.addWidget(self.ident, 1)
+        ident_layout.addWidget(copy_id)
         self.first_name = QLineEdit(self.account.first_name)
         self.last_name = QLineEdit(self.account.last_name)
         self.username = QLineEdit(self.account.username)
@@ -85,7 +105,7 @@ class AccountDialog(_Centered):
         if not self.new:
             self.password.setPlaceholderText("lascia vuoto per non cambiarla")
             self.confirm.setPlaceholderText("lascia vuoto per non cambiarla")
-        for label, widget in (("ID", self.ident), ("Nome", self.first_name), ("Cognome", self.last_name),
+        for label, widget in (("ID", ident_row), ("Nome", self.first_name), ("Cognome", self.last_name),
                               ("Username", self.username), ("E-mail", self.email),
                               ("Password", self.password), ("Conferma password", self.confirm)):
             form.addRow(label, widget)

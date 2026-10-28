@@ -8,8 +8,6 @@ from PySide6.QtGui import QBrush, QColor
 from PySide6.QtWidgets import (QCheckBox, QDialog, QFrame, QHBoxLayout, QHeaderView, QLabel, QPushButton,
                                QTableWidget, QTableWidgetItem, QTreeWidget, QTreeWidgetItem, QVBoxLayout)
 
-from arcadia_tool.model.element import Element
-from arcadia_tool.model.identifiers import compute_id
 from arcadia_tool.ui.rich_text import RichTextEdit, to_markdown
 from arcadia_tool.ui.srs_trace import ROW_COLORS, TickPickerDialog, function_group
 from arcadia_tool.ui.theme import ACCENT, BORDER, MUTED, SURFACE, icon
@@ -162,7 +160,7 @@ class DeriveDialog(QDialog):
         self.text = RichTextEdit(height=110)  # with styles, as the obligation in the sheet
         self.text.setPlaceholderText("L'obbligo del requisito derivato, in una frase.")
         self.text.changed.connect(self._text_changed)
-        self.first_number = self._first_number()
+        self.free_numbers = self._free_numbers()
         self.add_row()  # one row; more with «Aggiungi riga»
         add = QPushButton(icon("mdi6.plus"), "Aggiungi riga")
         add.clicked.connect(self.add_row)
@@ -200,13 +198,25 @@ class DeriveDialog(QDialog):
         layout.addLayout(buttons)
         self.created, self.changed = [], []
 
-    def _first_number(self):
-        """n of the first free «<voce>-Dn»: after those in the model and in the published versions (never reused),
-        as the project assigns them."""
-        probe = Element("derived_requirement", values={"parent": self.item.uuid})
-        ident = compute_id(probe, self.project.model, self.project.published_ids) or ""
-        number = ident.rsplit("-D", 1)[-1]
-        return int(number) if number.isdigit() else 1
+    def _free_numbers(self):
+        """The n of the free «<voce>-Dn», in order, as the project assigns them (the first free each time)."""
+        prefix = f"{self.item.get('id')}-D"
+        used = {int(i[len(prefix):]) for i in (e.get("id") or "" for e in self.project.model)
+                if i.startswith(prefix) and i[len(prefix):].isdigit()}
+
+        def numbers():
+            n = 0
+            while True:
+                n += 1
+                if n not in used:
+                    yield n
+        return numbers
+
+    def _number(self, row):
+        numbers = self.free_numbers()
+        for _ in range(row):
+            next(numbers)
+        return next(numbers)
 
     def add_row(self):
         """A new derived requirement: its row, with its ID at once, selected to write its obligation."""
@@ -241,7 +251,7 @@ class DeriveDialog(QDialog):
     def _number_rows(self):
         """The ID of each row, in order: the IDs the requirements will have."""
         for row in range(self.table.rowCount()):
-            self.table.item(row, ID_COLUMN).setText(f"{self.item.get('id')}-D{self.first_number + row}")
+            self.table.item(row, ID_COLUMN).setText(f"{self.item.get('id')}-D{self._number(row)}")
 
     def _row_changed(self, row, *_):
         """Another row selected: the box shows (and edits) its obligation."""

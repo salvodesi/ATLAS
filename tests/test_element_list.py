@@ -5,6 +5,7 @@ import os
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 import pytest
+from PySide6.QtCore import Qt
 from PySide6.QtWidgets import QApplication, QMessageBox, QPushButton
 
 import arcadia_tool.ui.model_tree as model_tree
@@ -176,24 +177,37 @@ def test_recipients_written_as_text_become_teams(tmp_path):
 
 def test_x1_lists_the_architectural_decisions(app, tmp_path, monkeypatch):
     p = Project.create(tmp_path / "p", "Prova")
-    adr = p.new_element("adr", title="MRSP in un dominio autonomo", date_decider="12/10/2026 · DA",
-                        status="Decisa", context="La catena rimbalza tra DF03 e DF04.")
+    adr = p.new_element("adr", title="MRSP in un dominio autonomo", status="Decisa",
+                        context="La catena rimbalza tra DF03 e DF04.")
+    adr.set("decision_date", "12/10/2026")
+    p.update(adr)
     window = MainWindow()
     window.show()
     window._set_project(p)
     window.tree._double_clicked(window.tree._kind_items["adr"], 0)
     page = window.list_pages["adr"]
     table = page.table
-    assert [table.horizontalHeaderItem(c).text() for c in range(4)] == ["ID", "Titolo", "Data e decisore", "Stato"]
-    assert [table.item(0, c).text() for c in range(4)] == ["ADR-001", "MRSP in un dominio autonomo",
-                                                           "12/10/2026 · DA", "Decisa"]
+    assert [table.horizontalHeaderItem(c).text() for c in range(6)] == ["ID", "Titolo", "Ambito", "Tipo",
+                                                                        "Data della decisione", "Stato"]
+    assert [table.item(0, c).text() for c in range(6)] == ["ADR-001", "MRSP in un dominio autonomo", "", "",
+                                                           "12/10/2026", "Decisa"]
     assert "rimbalza" in table.item(0, 0).toolTip() and page.count.text() == "1 ADR"
-    page.new_button.click()  # created (no context to ask) and opened
+    import arcadia_tool.ui.adr_types as adr_types
+
+    def choose(dialog):  # the type of the new ADR, chosen in its window
+        dialog.adr_type = "Fusione di domini"
+        return True
+    monkeypatch.setattr(adr_types.AdrTypeDialog, "exec", choose)
+    page.new_button.click()  # the type asked, then created and opened
     new = next(e for e in p.model.of_kind("adr") if e.uuid != adr.uuid)
     assert new.get("id") == "ADR-002" and window.editors[new.uuid].editing
+    assert new.get("adr_type") == "Fusione di domini" and new.get("status") == "Proposta"
     window.pages.setCurrentWidget(page)
     monkeypatch.setattr(QMessageBox, "question", lambda *a, **k: QMessageBox.Yes)
-    buttons(page, 1)["Elimina"].click()
+    rows = {page.table.item(r, 0).text(): r for r in range(page.table.rowCount())}
+    assert list(rows) == ["ADR-002", "ADR-001"]  # grouped by area: the one without a type last
+    assert page.table.item(rows["ADR-002"], 2).text() == "Domini funzionali (SA)"
+    buttons(page, rows["ADR-002"])["Elimina"].click()
     assert [e.get("id") for e in p.model.of_kind("adr")] == ["ADR-001"]
     window.close()
 
@@ -204,3 +218,97 @@ def test_empty_list(app, tmp_path, kind, text):
     page = ElementListPage(p, kind)
     assert page.table.rowCount() == 0 and page.body.currentWidget() is page.empty
     assert page.count.text() == text
+
+
+def test_a_new_element_never_saved_goes_away(app, tmp_path, monkeypatch):
+    import arcadia_tool.ui.adr_types as adr_types
+    from arcadia_tool.ui.model_tree import UUID_ROLE
+
+    p = Project.create(tmp_path / "p", "Prova")
+    kept = p.new_element("domain", name="Protezione")
+    p.save()
+    window = MainWindow()
+    window._set_project(p)
+
+    def tree_uuids():
+        found, stack = set(), [window.tree.tree.topLevelItem(i) for i in range(window.tree.tree.topLevelItemCount())]
+        while stack:
+            item = stack.pop()
+            if item.data(0, UUID_ROLE):
+                found.add(item.data(0, UUID_ROLE))
+            stack.extend(item.child(i) for i in range(item.childCount()))
+        return found
+
+    # «Nuovo» then «Annulla»: the domain is not there any more, nothing to save
+    window.tree.create("domain")
+    new = next(d for d in p.model.of_kind("domain") if d is not kept)
+    editor = window.editors[new.uuid]
+    assert editor.editing and editor.unsaved_new and new.uuid in tree_uuids()
+    editor.cancel_changes(ask=False)
+    assert p.model.get(new.uuid) is None and new.uuid not in tree_uuids() and new.uuid not in window.editors
+    assert not p.is_modified
+
+    # an ADR: its tab closed without saving
+    monkeypatch.setattr(adr_types.AdrTypeDialog, "exec", lambda dialog: dialog._accept() or True)
+    window.tree.create("adr")
+    adr = p.model.of_kind("adr")[0]
+    window._close_page(window.pages.indexOf(window.editors[adr.uuid]))
+    assert p.model.of_kind("adr") == [] and adr.uuid not in tree_uuids()
+
+    # saved: it stays, also after «Modifica» and «Annulla»
+    window.tree.create("domain")
+    saved = next(d for d in p.model.of_kind("domain") if d is not kept)
+    editor = window.editors[saved.uuid]
+    editor.save_changes()
+    editor.start_editing()
+    editor.cancel_changes(ask=False)
+    assert p.model.get(saved.uuid) is saved and saved.uuid in tree_uuids()
+    window._set_project(None)
+    window.close()
+
+
+def test_no_recovery_is_left_when_the_edits_were_undone(app, tmp_path):
+    from arcadia_tool.storage.project import recovery_file
+
+    p = Project.create(tmp_path / "p", "Prova")
+    window = MainWindow()
+    window._set_project(p)
+    window.tree.create("domain")  # a new element: the project is modified, its copy for the recovery written
+    new = p.model.of_kind("domain")[0]
+    p.write_recovery()
+    assert recovery_file(p.path).exists()
+    window.editors[new.uuid].cancel_changes(ask=False)  # cancelled: nothing changed any more
+    assert not p.is_modified and not recovery_file(p.path).exists()
+
+    p.new_element("team", name="Radio")  # modified, copy written, then the edit undone in another way
+    p.write_recovery()
+    p.discard_new(p.model.of_kind("team")[0].uuid)
+    assert window._confirm_discard()  # a normal close: no recovery at the next start
+    assert not recovery_file(p.path).exists()
+    window._set_project(None)
+    window.close()
+
+
+def test_the_open_adr_are_exported_to_excel(app, tmp_path, monkeypatch):
+    from openpyxl import load_workbook
+
+    from arcadia_tool.storage.adr_register import open_adrs
+
+    p = Project.create(tmp_path / "p", "EVC")
+    team = p.new_element("team", id="T5", name="Odometria")
+    p.new_element("adr", title="Stimare la velocità in DF07", status="Proposta", proposer=team.uuid)
+    p.new_element("adr", title="Senza stato")
+    p.new_element("adr", title="Già decisa", status="Decisa")
+    p.new_element("adr", title="Superata", status="Superata")
+    assert [(r[1], r[2], r[3]) for r in open_adrs(p.model)] == [
+        ("Stimare la velocità in DF07", p.model.label(team), "Proposta"), ("Senza stato", "", "Proposta")]
+    page = ElementListPage(p, "adr")
+    out = tmp_path / "aperte.xlsx"
+    monkeypatch.setattr(QMessageBox, "information", lambda *a, **k: None)
+    assert page.export_open(str(out)) == 2
+    ws = load_workbook(out).active
+    assert [ws.cell(4, c).value for c in range(1, 5)] == ["ID", "Descrizione", "Team proponente", "Stato"]
+    assert [ws.cell(5, c).value for c in range(2, 5)] == ["Stimare la velocità in DF07", p.model.label(team),
+                                                          "Proposta"]
+    assert ws.cell(5, 1).value.startswith("ADR-") and ws.max_row == 6
+    p.close()

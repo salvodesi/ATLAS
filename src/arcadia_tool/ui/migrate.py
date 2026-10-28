@@ -165,6 +165,7 @@ class MigrationDialog(_Centered):
         form = QFormLayout()
         form.setLabelAlignment(Qt.AlignRight)
         edit = QLineEdit(url)
+        edit.setCursorPosition(0)  # the URL shown from its start (the server), also when the field is narrow
         edit.setPlaceholderText("git@server:gruppo/progetto.git  o  https://server/gruppo/progetto.git")
         form.addRow("URL", edit)
         box_layout.addLayout(form)

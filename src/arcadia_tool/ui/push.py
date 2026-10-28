@@ -7,7 +7,8 @@ from arcadia_tool.ui.accounts import _Centered
 from arcadia_tool.ui.theme import MUTED, icon
 
 DIVERGED = ("Il ramo «{branch}» del repository contiene versioni che non hai ancora ricevuto (pubblicate da un "
-            "collega): ricevile prima di inviare le tue. Le tue versioni restano registrate su questo PC.")
+            "collega): ricevile prima di inviare le tue, con «Ricevi ora». Le tue versioni restano registrate su "
+            "questo PC.")
 
 
 class PushWorker(QThread):
@@ -16,6 +17,7 @@ class PushWorker(QThread):
 
     def __init__(self, project, credentials):
         super().__init__()
+        self.diverged = False
         self.project, self.credentials = project, credentials
 
     def run(self):
@@ -24,6 +26,7 @@ class PushWorker(QThread):
         except Exception as exc:
             name = exc.__class__.__name__
             if name in ("DivergedBranches", "PushRefused") or "non-fast-forward" in str(exc).lower():
+                self.diverged = True
                 self.failed.emit(DIVERGED.format(branch=self.project.push_branch()))
             else:
                 self.failed.emit(f"Invio non riuscito: {exc or name}\n\nLe versioni restano registrate su questo "
@@ -36,6 +39,7 @@ class PushDialog(_Centered):
     def __init__(self, project, credentials, parent=None):
         super().__init__(parent)
         self.project, self.credentials, self.sent, self.worker = project, credentials, False, None
+        self.receive_requested = False  # «Ricevi ora»: the remote has versions not received yet
         self.setWindowTitle("Invio al repository")
         self.resize(560, 0)
         url, branch = project.remote(), project.push_branch()
@@ -50,12 +54,17 @@ class PushDialog(_Centered):
         self.retry = QPushButton(icon("mdi6.refresh"), "Riprova")
         self.retry.clicked.connect(self.start)
         self.retry.setVisible(False)
+        self.receive_button = QPushButton(icon("mdi6.cloud-download"), "Ricevi ora")
+        self.receive_button.setToolTip("Riceve le versioni dei colleghi e le integra con le tue; poi puoi inviare")
+        self.receive_button.clicked.connect(self._receive)
+        self.receive_button.setVisible(False)
         self.close_button = QPushButton("Chiudi")
         self.close_button.clicked.connect(self.accept)
         self.close_button.setEnabled(False)
         buttons = QHBoxLayout()
         buttons.addStretch()
         buttons.addWidget(self.retry)
+        buttons.addWidget(self.receive_button)
         buttons.addWidget(self.close_button)
         layout = QVBoxLayout(self)
         layout.setContentsMargins(20, 16, 20, 16)
@@ -95,8 +104,13 @@ class PushDialog(_Centered):
         self.bar.setVisible(False)
         self.status.setStyleSheet("color: #B42318;")
         self.status.setText(message)
-        self.retry.setVisible(True)
+        self.retry.setVisible(not self.worker.diverged)
+        self.receive_button.setVisible(self.worker.diverged)
         self.close_button.setEnabled(True)
+
+    def _receive(self):
+        self.receive_requested = True
+        self.accept()
 
     def reject(self):
         if self.worker is not None and self.worker.isRunning():

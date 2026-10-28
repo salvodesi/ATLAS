@@ -113,15 +113,17 @@ def _taken(model, reserved, element):
 
 
 def compute_id(element, model, reserved=()):
-    """Next free identifier for the element; `reserved` holds ids of published elements (never reused)."""
+    """First free identifier for the element: the lowest number not used by the other elements of the model (a
+    number left free by a deleted element is given again); `reserved`: identifiers not to give anyway."""
     r = rule(element, model)
     if r is None:
         return None
     taken = _taken(model, reserved, element)
     if r[0] == "number":
         _, prefix, width = r
-        used = [int(i[len(prefix):]) for i in taken if i.startswith(prefix) and i[len(prefix):].isdigit()]
-        return f"{prefix}{max(used, default=0) + 1:0{width}d}"
+        used = {int(i[len(prefix):]) for i in taken if i.startswith(prefix) and i[len(prefix):].isdigit()}
+        n = next(n for n in range(1, len(used) + 2) if n not in used)
+        return f"{prefix}{n:0{width}d}"
     _, prefix, name = r
     candidate, n = f"{prefix}{name}", 2
     while candidate in taken:

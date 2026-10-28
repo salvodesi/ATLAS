@@ -39,6 +39,7 @@ def _ordered_values(element):
             value = [
                 {**{c: row[c] for c in order if not is_empty(row.get(c))},
                  **{k: row[k] for k in sorted(row) if k not in order and not is_empty(row[k])}}
+                if isinstance(row, dict) else row  # a value of an earlier format (e.g. a member as a name)
                 for row in value
             ]
         out[f.name] = value
