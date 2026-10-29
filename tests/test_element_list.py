@@ -312,3 +312,64 @@ def test_the_open_adr_are_exported_to_excel(app, tmp_path, monkeypatch):
                                                           "Proposta"]
     assert ws.cell(5, 1).value.startswith("ADR-") and ws.max_row == 6
     p.close()
+
+
+def test_ctrl_s_saves_the_changes_of_the_sheet_shown(app, tmp_path):
+    p = Project.create(tmp_path / "p", "Prova")
+    window = MainWindow()
+    window._set_project(p)
+    window.tree.create("domain")
+    domain = p.model.of_kind("domain")[0]
+    editor = window.editors[domain.uuid]
+    editor.save_changes()
+    assert not p.is_modified and not window.save_action.isEnabled()
+    editor.start_editing()
+    editor.widgets["name"].setText("Odometria")
+    editor.flush()
+    assert editor.dirty and window.save_action.isEnabled()  # only the sheet has changes: Ctrl+S works
+    window.save_action.trigger()
+    assert not editor.dirty and p.model.get(domain.uuid).get("name") == "Odometria" and not p.is_modified
+    window._set_project(None)
+    window.close()
+
+
+def test_double_click_on_sa1_opens_the_table_of_the_domains_with_their_status_on_the_rows(app, tmp_path):
+    from PySide6.QtWidgets import QComboBox
+
+    p = Project.create(tmp_path / "p", "Prova")
+    da, t2 = teams(p)
+    t2.set("referent", "Mario Rossi")
+    second = p.new_element("domain", id="DF02", name="Odometria", team=t2.uuid, status="Bozza")
+    first = p.new_element("domain", id="DF01", name="Supervisione", mission="Proteggere il treno")
+    p.save()
+    window = MainWindow()
+    window.show()
+    window._set_project(p)
+    kind_item = window.tree._kind_items["domain"]
+    window.tree._double_clicked(kind_item, 0)
+    page = window.list_pages["domain"]
+    assert window.pages.currentWidget() is page and not kind_item.isExpanded()  # a tab, not the branch
+    table = page.table
+    headers = [table.horizontalHeaderItem(c).text() for c in range(table.columnCount())]
+    assert headers == ["ID", "Nome del dominio", "Team assegnatario", "Responsabile", "Stato", ""]
+    rows = [[table.item(r, c).text() for c in range(4)] for r in range(table.rowCount())]
+    assert rows == [["DF01", "Supervisione", "", ""], ["DF02", "Odometria", f"{t2.get('id')} Odometria", "Mario Rossi"]]
+    assert "Proteggere il treno" in table.item(0, 0).toolTip()
+    assert list(buttons(page, 0)) == ["Apri"]  # only the button to its sheet
+    buttons(page, 1)["Apri"].click()
+    assert window.pages.currentWidget() is window.editors[second.uuid]
+    # The status chosen on the row: in its colour, in the model and on disk at once (only it).
+    choice = table.cellWidget(1, 4)
+    assert isinstance(choice, QComboBox) and choice.currentText() == "Bozza"
+    from arcadia_tool.ui.theme import status_colors
+    assert status_colors("Bozza")[0] in choice.styleSheet()
+    other = p.new_element("team", name="Radio")  # a change made elsewhere, not saved
+    choice.setCurrentText("Approvato")
+    app.processEvents()
+    assert second.get("status") == "Approvato" and second.uuid not in p.changes_since(0)
+    assert other.uuid in p.changes_since(0)
+    choice = table.cellWidget(1, 4)  # the table drawn again
+    assert choice.currentText() == "Approvato" and status_colors("Approvato")[0] in choice.styleSheet()
+    assert window.editors[second.uuid].element.get("status") == "Approvato"
+    window._set_project(None)
+    window.close()

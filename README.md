@@ -5,7 +5,7 @@
 <p align="center">
   <b>Arcadia Traceability, Logical Architecture Software</b><br>
   Strumento desktop di modellazione ARCADIA per l'EVC ERTMS di bordo<br>
-  <sub>RFI - Ricerca e Sviluppo - Sviluppo Sistemi · versione 0.4.0</sub>
+  <sub>RFI - Ricerca e Sviluppo - Sviluppo Sistemi · versione 0.5.0</sub>
 </p>
 
 > [!WARNING]
@@ -35,7 +35,10 @@ repository serve solo per scaricare e pubblicare le versioni.
     account locale**, che la persona le comunica: ATLAS la riconosce come membro, anche nelle versioni che
     pubblica. Il progetto si apre solo agli account che sono tra i membri dei team;
   - decisioni architetturali (X-1) e richieste di chiarimento (X-2), ciascuna con un elenco in tabella (doppio
-    clic sul nodo dell'albero) da cui crearle, aprirle ed eliminarle.
+    clic sul nodo dell'albero) da cui crearle, aprirle ed eliminarle;
+  - domini funzionali (SA-1): il doppio clic sul nodo dell'albero apre una tab con ID, nome, team assegnatario,
+    responsabile e stato di ogni dominio, il pulsante «Apri» della scheda e lo stato modificabile su ogni riga da un
+    menu a tendina (colorato secondo lo stato; salvato subito, solo quel dominio).
 - Le richieste di chiarimento sono indirizzate alla Design Authority o a un team, scelto alla creazione. La clausola
   si sceglie con una finestra a spunta.
 - Negli ADR le voci SRS interessate si scelgono a spunta e «Superata da» da un elenco con ricerca.
@@ -56,15 +59,89 @@ repository serve solo per scaricare e pubblicare le versioni.
 - Campi di testo libero con editor formattato (grassetto, corsivo, elenchi), salvati in Markdown, che si
   allungano con il contenuto.
 - Identificativi automatici, una tab per ogni elemento aperto, schede in sola lettura finché non si passa in
-  modalità modifica, con salvataggio o annullamento esplicito.
+  modalità modifica, con salvataggio o annullamento esplicito. Il clic destro su una tab la chiude, chiude le altre o
+  tutte.
+- Due salvataggi: **Salva** nella barra in alto (Ctrl+Maiusc+S) salva tutte le modifiche del modello, comprese
+  quelle delle schede e delle viste aperte; il «Salva» di una scheda o di una vista, e **Ctrl+S** sulla tab
+  corrente, scrivono solo le modifiche fatte da quella pagina.
+
+**Viste grafiche della System Analysis**
+- Il pannello a sinistra ha due schede, scelte dalla **barra di icone** sempre visibile sul bordo sinistro:
+  **Modello**, con l'albero degli elementi, e **Viste grafiche**, con i diagrammi raggruppati per tipo e per SA
+  (SA-1 domini funzionali, SA-2 funzioni per dominio, SA-5 dataflow, SA-7 catene e scenari). Un clic sull'icona
+  della scheda aperta chiude il pannello, un clic su un'icona lo riapre su quella scheda (anche Ctrl+Maiusc+B, o
+  trascinando il divisore fino al bordo). Un clic su un diagramma lo apre in una tab.
+- **Vista complessiva** di SA-1 e di SA-2, prima in ciascun gruppo: un blocco per ogni dominio, con l'ID e il nome
+  nella barra del titolo. In SA-1 i blocchi riportano solo il dominio; in SA-2 sono aperti sulle funzioni di
+  sistema e sulle clausole tracciate, e un clic sul titolo (o sulla spunta a destra) li chiude e li riapre. Le
+  funzioni con segnalazioni delle verifiche sono in rosso.
+- Viste create dagli utenti, quante ne servono, con «Nuova vista…» o con il clic destro su un gruppo:
+  - **domini funzionali** (SA-1) e **funzioni per dominio** (SA-2): solo i domini e le funzioni scelti; un dominio
+    aggiunto mostra tutte le sue funzioni, le funzioni aggiunte da sole stanno nel blocco del loro dominio;
+  - **dataflow funzionale** (SA-5): domini, funzioni di sistema e attori esterni; gli scambi tra gli elementi della
+    vista compaiono da soli, con il dato scambiato e l'ID (linea continua per i FLOW, tratteggiata per gli EVENT,
+    tratto e punto per le OPERATION), e ogni elemento conta i suoi scambi con elementi non aggiunti;
+  - **catena funzionale** (SA-7): i passi di una functional chain, per dominio o per funzione, con i rimbalzi su un
+    dominio già percorso in giallo (regola D4);
+  - **scenario di scambio** (SA-7): la stessa catena come diagramma di sequenza, con una linea di vita per dominio
+    (o funzione) e attore esterno e i messaggi raggruppati per ciclo.
+- La vista si compone con gli elementi già presenti nel modello, dalla scheda **Elementi** del pannello a destra
+  (trascinati o con doppio clic); «Riordina» li dispone in automatico. Il pannello a destra si apre e si chiude
+  dalla sua barra di icone, come quello di sinistra (Ctrl+Alt+B); nei dataflow ha anche la scheda **Strumenti**.
+- **Modifica del modello dalle viste**:
+  - dalle viste di SA-1 (anche dalla vista complessiva) si creano **domini funzionali** con «Nuovo dominio…», da
+    quelle di SA-2 **funzioni di sistema** con «Nuova funzione…»: ATLAS dà l'ID e l'elemento entra nel modello, tra
+    gli elementi di tutte le viste e nella vista da cui è stato creato;
+  - il **clic destro su un dominio**, in tutte le viste, mostra tutto quello che si può fare su di esso: aprirne la
+    scheda, aprirlo o chiuderlo, mostrarne o aggiungerne alla vista le funzioni, nuova funzione, nuovo dominio,
+    elimina. Il clic destro su una funzione la apre o la elimina;
+  - l'**eliminazione chiede sempre** se togliere l'elemento solo dalla vista o anche dal modello (per una funzione,
+    dal catalogo delle funzioni di sistema; per un dominio, a scelta anche con le sue funzioni), e la stessa finestra
+    elenca gli elementi impattati: quelli che vi fanno riferimento e le viste da cui sparirà. Vale anche per Canc
+    sugli elementi selezionati;
+  - con i **connettori** del dataflow (FLOW, EVENT, OPERATION, nella scheda Strumenti) si traccia uno scambio da un
+    **punto di attacco** di una funzione di sistema a quello di un'altra, o di un attore esterno: ATLAS crea lo
+    scambio funzionale e il suo dato di interfaccia (un Exchange Item del dizionario o uno nuovo), con gli ID. I
+    punti sono dodici per elemento, tre per lato, e se ne aggiungono quando un lato è pieno; il connettore scelto è
+    evidenziato e gli elementi collegabili si illuminano al passaggio del mouse. Uno scambio con lo stesso
+    produttore, utilizzatore e dato di uno già presente non si crea; un EVENT è prodotto sempre «Su evento»,
+    un'OPERATION di norma «Su richiesta». Le maniglie alle estremità di una freccia portano l'estremità su un altro
+    punto dello stesso elemento. Canc o clic destro sulla freccia eliminano lo scambio; se il dato non è più usato,
+    ATLAS chiede se toglierlo dal dizionario, e se resta viene riproposto quando si ricollegano le stesse funzioni.
+- **Disegno**:
+  - nel dataflow le frecce sono a tratti orizzontali e verticali, girano intorno agli altri elementi e si
+    ricalcolano quando si spostano le funzioni o i blocchi; le etichette si dispongono dove non si coprono;
+  - un blocco trascinato si allinea a quelli vicini (bordi con bordi, centro con centro), con linee guida
+    tratteggiate; altrimenti si posa sui puntini della griglia (ogni 20 px), che compaiono sulla tela bianca solo
+    durante lo spostamento. Gli elementi si selezionano con un clic, Ctrl+clic o il riquadro (Maiusc + trascina su
+    uno spazio vuoto), e trascinandone uno si sposta tutta la selezione;
+  - la tela va oltre l'area visibile: con la mano si trascina uno spazio vuoto (o si usa il tasto centrale) per
+    spostarsi, e un elemento portato verso il bordo fa scorrere la vista e allarga la tela;
+  - il clic destro su uno spazio vuoto della tela offre lo **zoom** (avanti e indietro attorno al punto cliccato,
+    dimensione reale, adatta alla finestra; anche Ctrl + rotella, Ctrl++, Ctrl+- e Ctrl+0), «Seleziona tutto» e,
+    nei dataflow, la scelta di mostrare le maniglie su tutte le frecce o solo su quella selezionata;
+  - **Ctrl+Z** annulla le ultime operazioni (spostamenti, elementi aggiunti o tolti, domini aperti, «Riordina»,
+    elementi creati o eliminati dalla vista) e **Ctrl+Y** le ripete; **Ctrl+A** seleziona tutti gli elementi.
+- Le modifiche al disegno restano nella tab (●) finché non si preme **Salva vista** (o Ctrl+S); chiudendo la vista
+  con modifiche non salvate, ATLAS chiede se salvarle. Gli elementi creati o eliminati dalla vista si scrivono
+  subito. Le viste sono schede del modello (`model/sa/views/`) e si pubblicano e si integrano come le altre; ogni
+  vista si esporta come immagine PNG o SVG.
 
 **Requisiti e tracciabilità**
 - Import delle voci SRS dai PDF del SUBSET-026, con testo, tabelle e figure, e lettore delle voci diviso per
   capitolo.
 - Registro di tracciamento (SA-3) e requisiti derivati (SA-4), con motivazione della derivazione e domanda B5.
+- **Report di copertura** (pulsante nella pagina delle voci SRS): le clausole di bordo e di definizione coperte e
+  scoperte e la copertura del subset, **per sezione** e **per clausola** (albero sezione → clausole fino all'ultima,
+  con la categoria del cap. 9). Una voce è coperta se ha un dominio (suo o della sezione che la contiene, A4); il
+  report indica anche le funzioni di sistema (SA-2) e i requisiti derivati (SA-4) che la coprono, con la
+  percentuale di ciascun livello, filtri e ricerca; si esporta in Excel.
 - Finestre di tracciatura a spunta, con ricerca, filtro per categoria (bordo, terra, definizioni, informative) e
   testo completo della voce con doppio clic:
-  - domini → sezioni e clausole, come principale o contributore;
+  - domini → sezioni e clausole, come principale o contributore; le sezioni principali si importano anche dalla
+    riga «Sezioni SRS principali» del foglio del dominio in un Excel SA-1 («Importa clausole principali…»:
+    singole, gruppi come 4.8.1–4.8.5, riferimenti ad altri documenti segnalati; riepilogo prima di importare, con
+    la colonna «Importa» per scegliere voce per voce e le voci allocate a più di un dominio indicate);
   - funzioni di sistema → sezioni e clausole;
   - funzioni logiche → sezioni, clausole e requisiti derivati.
 - Il catalogo delle voci SRS si apre anche in una finestra separata (pulsante o menu contestuale dell'albero).
@@ -118,10 +195,9 @@ repository serve solo per scaricare e pubblicare le versioni.
 
 ## Prossimi sviluppi
 
-- **Diagrammi delle fasi SA e LA a ogni livello**:
-  - diagrammi di System Analysis per domini, funzioni di sistema, attori, scambi funzionali e functional chain;
-  - diagrammi di Logical Architecture per funzioni logiche, componenti, allocazioni e component exchange;
-  - diagrammi a ogni livello di scomposizione, generati dal modello e coerenti con esso.
+- **Viste grafiche**: modifica del modello anche dalle catene e dagli scenari, ridimensionamento dei blocchi dei
+  domini e diagrammi della Logical Architecture (funzioni logiche, componenti, allocazioni, component exchange).
+- **Notifiche** delle ADR e delle CQ: nel tool e via e-mail.
 - **Generazione dei documenti** di progetto dal modello, ad esempio registri di tracciamento e schede delle fasi.
 - **Integrazione dei rami di attività in `main`** fatta dalla Design Authority direttamente in ATLAS, con le
   verifiche del modello.

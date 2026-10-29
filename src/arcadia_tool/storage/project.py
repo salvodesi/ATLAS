@@ -187,6 +187,38 @@ LOCAL_SETTINGS = ".arcadia/local.json"
 RECOVERY_INFO = "recovery.json"
 
 
+def local_change(method):
+    """A method of a page (a sheet, a view: it has project) that changes the model: what it changes is added to
+    the changes of the page (local_changes), which the «Salva» of the page writes alone."""
+    import functools
+
+    @functools.wraps(method)
+    def wrapper(self, *args, **kwargs):
+        project = getattr(self, "project", None)
+        outer = getattr(self, "_local_mark", None) is None
+        if outer and project is not None:
+            self._local_mark = project.change_mark()
+        try:
+            return method(self, *args, **kwargs)
+        finally:
+            if outer:
+                if project is not None and self._local_mark is not None:
+                    self._local_changes = getattr(self, "_local_changes", set()) |                         project.changes_since(self._local_mark)
+                self._local_mark = None
+    return wrapper
+
+
+def local_changes(page, project):
+    """The changes of a page not saved yet: those of its operations, the one under way included."""
+    mark = getattr(page, "_local_mark", None)
+    done = getattr(page, "_local_changes", set())
+    return (done | (project.changes_since(mark) if mark is not None else set())) & project.pending()
+
+
+def forget_local_changes(page):
+    page._local_changes = set()
+
+
 def recovery_file(path):
     return Path(path) / RECOVERY_NAME
 
@@ -324,6 +356,10 @@ class Project:
         self.checks = self._read_checks()
         self._modified = set()
         self._deleted = {}
+        # Which change touched each element last (a counter): what a page changed since it started an operation,
+        # saved alone by the «Salva» of the page (see local_change).
+        self._changes = 0
+        self._stamps = {}
         # Content of the model files as saved on disk ({relative path: bytes}), so that publishing does
         # not have to read thousands of files back.
         self._saved = saved or {}
@@ -579,7 +615,7 @@ class Project:
         elements changed with it: the fields of other sheets kept in step (see model.links, e.g. the domains of a
         team when its team is assigned in a domain sheet) and those copied from it (e.g. the referent)."""
         self.model.add(element)
-        self._modified.add(element.uuid)
+        self._touch(element.uuid)
         self._deleted.pop(element.uuid, None)
         if element.kind == "adr":  # the date of the decision: set when it is decided (see model.adr)
             from arcadia_tool.model.adr import decision_date_of
@@ -588,7 +624,7 @@ class Project:
             element.set("id", compute_id(element, self.model))
         changed = {}
         for other in keep_in_step(self.model, element, previous):
-            self._modified.add(other.uuid)
+            self._touch(other.uuid)
             changed[other.uuid] = other
         for source in [element, *list(changed.values())]:
             for other in self._sync_derived(source):
@@ -612,7 +648,7 @@ class Project:
                         value = derived_value(self.model, other, f)
                         if (other.get(f.name) or None) != (value or None):
                             other.set(f.name, value)
-                            self._modified.add(other.uuid)
+                            self._touch(other.uuid)
                             changed.append(other)
         return changed
 
@@ -734,6 +770,27 @@ class Project:
         self.model.remove(uuid)
         self._modified.discard(uuid)
         self._deleted[uuid] = self.element_file(element)
+        self._stamp(uuid)
+
+    def _touch(self, uuid):
+        self._modified.add(uuid)
+        self._stamp(uuid)
+
+    def _stamp(self, uuid):
+        self._changes += 1
+        self._stamps[uuid] = self._changes
+
+    def pending(self):
+        """The elements changed or deleted, not saved yet."""
+        return set(self._modified) | set(self._deleted)
+
+    def change_mark(self):
+        """Where the changes are now: changes_since(mark) are those made after."""
+        return self._changes
+
+    def changes_since(self, mark):
+        """The elements changed or deleted after mark and not saved yet."""
+        return {u for u, n in self._stamps.items() if n > mark and (u in self._modified or u in self._deleted)}
 
     def discard_new(self, uuid):
         """Forget an element created and never saved (e.g. «Nuovo» in the tree, then «Annulla»): unlike a deletion
@@ -790,9 +847,13 @@ class Project:
             if self._relative(file) not in referenced:
                 file.unlink()
 
-    def save(self, progress=None):
-        total = len(self._modified)
-        for i, uuid in enumerate(self._modified, 1):
+    def save(self, progress=None, only=None):
+        """Write the changes to disk; only: just those of these elements (the «Salva» of a sheet or of a view), the
+        others stay to be saved."""
+        modified = self._modified if only is None else self._modified & set(only)
+        deleted = self._deleted if only is None else {u: f for u, f in self._deleted.items() if u in set(only)}
+        total = len(modified)
+        for i, uuid in enumerate(list(modified), 1):
             if progress and i % 50 == 0:
                 progress(i, total)
             element = self.model.get(uuid)
@@ -801,16 +862,20 @@ class Project:
                 text = dumps(element)
                 _write_text(file, text)
                 self._saved[self._relative(file)] = text.encode("utf-8")
-        for file in self._deleted.values():
+        for file in deleted.values():
             file.unlink(missing_ok=True)
             self._saved.pop(self._relative(file), None)
-        changed = bool(self._modified or self._deleted)
-        self._modified.clear()
-        self._deleted.clear()
+        changed = bool(modified or deleted)
+        self._modified -= set(modified)
+        for uuid in list(deleted):
+            self._deleted.pop(uuid, None)
         self._save_assets()
         if changed:
             ModelCache.write(self.path, self._saved)
-        self.discard_recovery()
+        if self.is_modified:
+            self.write_recovery()  # the changes still to be saved
+        else:
+            self.discard_recovery()
 
     # --- recovery after an unexpected interruption ------------------------------------------------------
 
@@ -846,7 +911,7 @@ class Project:
             for name in names:
                 if name.startswith("elements/"):
                     self.model.add(loads(z.read(name).decode("utf-8")))
-                    self._modified.add(name.removeprefix("elements/").removesuffix(".yaml"))
+                    self._touch(name.removeprefix("elements/").removesuffix(".yaml"))
                 elif name.startswith("assets/"):
                     self._pending_assets[name.removeprefix("assets/")] = z.read(name)
         for uuid in info.get("deleted", []):

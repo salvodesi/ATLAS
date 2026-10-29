@@ -4,6 +4,94 @@ Le modifiche rilevanti di ogni versione di ATLAS. Le versioni seguono il [versio
 finché ATLAS è in sviluppo (versioni 0.x), il formato dei progetti e l'interfaccia possono cambiare tra una versione e
 l'altra.
 
+## [Non rilasciato]
+
+## [0.5.0] - 2026-10-29
+
+### Aggiunto
+- **Viste grafiche della System Analysis**, dal pannello a sinistra, separate dagli elementi: il pannello ha le
+  schede «Modello» e «Viste grafiche», con i diagrammi raggruppati per tipo e per SA.
+  - **Vista complessiva** di SA-1 (un blocco con il nome di ogni dominio) e di SA-2 (i domini aperti sulle loro
+    funzioni di sistema e sulle clausole tracciate; si chiudono e si riaprono con un clic sulla barra del titolo o
+    sulla spunta).
+  - Viste dei **domini funzionali** (SA-1) e delle **funzioni per dominio** (SA-2) create dagli utenti, con i soli
+    domini e funzioni scelti; la vista ricorda quali domini sono aperti.
+  - **Dataflow funzionale** (SA-5), **catena funzionale** e **scenario di scambio** (SA-7), creati con «Nuova vista…»
+    o con il clic destro su un gruppo, quanti ne servono. Si compongono con gli elementi già presenti nel modello
+    (trascinati dall'elenco a lato o con doppio clic); ATLAS disegna da solo gli scambi tra gli elementi della vista,
+    i dati scambiati, i rimbalzi della catena (D4) e i messaggi dello scenario per ciclo.
+  - «Salva vista» (o Ctrl+S) salva la vista nel modello; fino ad allora le modifiche restano nella tab (●). Le viste
+    si pubblicano e si integrano come le altre schede ed esportano come immagine PNG o SVG.
+- **Modifica del modello dalle viste**:
+  - dalle viste di SA-1 si creano **domini funzionali** («Nuovo dominio…»), da quelle di SA-2 **funzioni di
+    sistema** («Nuova funzione…»; in entrambe anche con il clic destro su un dominio), con l'ID dato da ATLAS;
+  - **connettori nel dataflow** (FLOW, EVENT, OPERATION, nella scheda Strumenti): tracciati da una funzione di
+    sistema a un'altra (o con un attore esterno) creano lo scambio funzionale e il suo dato di interfaccia, nuovo o
+    del dizionario. Partono e arrivano su punti di attacco (dodici per elemento, di più quando un lato è pieno),
+    mostrati al passaggio del mouse; le estremità di una freccia si spostano su altri punti trascinandone le
+    maniglie. Un connettore con lo stesso dato tra gli stessi elementi è rifiutato con un avviso; un EVENT è prodotto
+    «Su evento». Canc o clic destro su una freccia elimina lo scambio e chiede se togliere dal dizionario il dato non
+    più usato (tenuto, viene riproposto per primo);
+  - il **clic destro su un dominio**, in tutte le viste, mostra le azioni sul dominio: scheda, apri/chiudi, funzioni
+    da mostrare o aggiungere alla vista, nuova funzione, nuovo dominio, elimina. Il clic destro su una funzione la
+    apre o la elimina;
+  - l'**eliminazione chiede sempre** se togliere l'elemento solo dalla vista o anche dal modello (per una funzione,
+    dal catalogo delle funzioni) ed elenca nella stessa finestra gli elementi impattati: riferimenti che resteranno
+    senza destinazione e viste da cui sparirà. Per un dominio si può scegliere di eliminare anche le sue funzioni.
+    Vale anche per Canc sugli elementi selezionati.
+- **Disegno delle viste**:
+  - frecce del dataflow **instradate in automatico** a tratti orizzontali e verticali intorno agli altri elementi,
+    ricalcolate quando si spostano funzioni o blocchi; le etichette non si coprono;
+  - i blocchi dei domini trascinati si **allineano** a quelli vicini (bordi con bordi, centro con centro), con linee
+    guida; altrimenti si posano sulla griglia di puntini (20 px) della tela bianca, che compare solo durante lo
+    spostamento. Più elementi selezionati (clic, Ctrl+clic, Maiusc + riquadro) si spostano insieme;
+  - la tela va **oltre l'area visibile** e si allarga con gli elementi; con la mano si trascina uno spazio vuoto (o si
+    usa il tasto centrale) per spostarsi; un elemento portato verso il bordo fa scorrere la vista;
+  - **zoom** dal menu del clic destro sulla tela (avanti, indietro, dimensione reale, adatta alla finestra), con
+    Ctrl + rotella attorno al puntatore e con Ctrl++, Ctrl+-, Ctrl+0 (dal 20% al 400%). Dallo stesso menu si sceglie
+    se mostrare le maniglie dei connettori su tutte le frecce o solo su quella selezionata;
+  - **Ctrl+Z / Ctrl+Y** in tutte le viste annullano e ripetono le ultime operazioni sul disegno e sugli elementi del
+    modello creati o eliminati dalla vista; **Ctrl+A** seleziona tutti gli elementi.
+- **Pannelli laterali in stile VS Code**: a sinistra una barra di icone sempre visibile sceglie la scheda («Modello»,
+  «Viste grafiche»); un clic sull'icona della scheda aperta chiude il pannello, un clic su un'icona lo riapre
+  (anche Ctrl+Maiusc+B o trascinando il divisore). Lo stesso per il pannello a destra delle viste, con le schede
+  **Strumenti** (la mano «Sposta» e i connettori) ed **Elementi** del modello da aggiungere (Ctrl+Alt+B). Stato e
+  larghezza restano tra le sessioni.
+- **Tabella dei domini funzionali**: il doppio clic su «SA-1 · Domini funzionali» nell'albero apre una tab con ID,
+  nome, team assegnatario, responsabile e stato di ogni dominio e il pulsante per aprirne la scheda; lo stato si
+  cambia su ogni riga da un menu a tendina, nel colore dello stato, e si salva subito (solo quel dominio).
+- **Importa clausole principali…** nella scheda di un dominio, accanto a «Traccia sezioni e clausole SRS…»: legge la
+  riga «Sezioni SRS principali» del foglio del dominio in un file Excel SA-1 (riconosciuto dall'ID o dal nome, o
+  scelto a mano; i gruppi come 4.8.1–4.8.5 valgono da 4.8.1 a 4.8.5) e mostra un riepilogo delle voci con titolo,
+  tipo e categoria: da importare, già principali, non trovate, riferimenti ad altri documenti (SUBSET-027,
+  ERA_ERTMS_015560). Ogni voce da importare ha la spunta nella colonna «Importa»; quelle allocate anche ad altri
+  domini (nel modello o in altri fogli dell'Excel) sono indicate. I contributi del dominio restano.
+- **Report di copertura** delle voci SRS, dal pulsante della pagina delle voci SRS: la copertura del subset e una
+  scheda per le clausole di **bordo** e una per quelle di **definizione**, coperte e scoperte. La copertura è prima
+  di tutto a livello di dominio (della voce o della sezione che la contiene, A4); per ogni voce sono indicate anche
+  le funzioni di sistema (SA-2) e i requisiti derivati (SA-4) che la coprono, con la percentuale di ogni livello.
+  Due viste: **Per sezione** e **Per clausola** (le sezioni con le loro clausole fino all'ultima, con la categoria
+  del cap. 9). Filtri, ricerca, esportazione in Excel; il doppio clic mostra il testo della voce in una finestra a
+  parte, con il pulsante «Apri la scheda della voce».
+- **Tab**: il clic destro su una tab offre **Chiudi**, **Chiudi le altre**, **Chiudi tutte** (per quelle con
+  modifiche non salvate ATLAS chiede se salvarle).
+
+### Modificato
+- **Due salvataggi distinti**: «Salva» nella barra in alto (ora **Ctrl+Maiusc+S**) salva tutte le modifiche del
+  modello, comprese quelle delle schede e delle viste aperte; il «Salva» di una scheda, «Salva vista» e **Ctrl+S**
+  (la tab corrente) scrivono solo le modifiche fatte da quella pagina. Gli elementi creati o eliminati da una vista e
+  le voci SRS tracciate o importate da una scheda si scrivono da soli.
+- Le schede, la tela delle viste e le barre di icone arrivano fino al pannello «Analisi del modello» in fondo alla
+  finestra.
+
+### Corretto
+- **Import delle voci SRS**: le sezioni che nel SUBSET-026 non hanno un'intestazione propria (le clausole seguono
+  direttamente il capitolo: 3.20.1, 3.5.1, 4.11.1, 5.13.1, 6.3.1, i gruppi di variabili 7.5.0 e 7.5.1) vengono
+  aggiunte con il titolo del capitolo e una nota d'import, e le loro clausole vi sono agganciate; le sezioni
+  dell'appendice (A.3.1…A.3.11) sono classificate come Sezione e non come Capitolo (le intestazioni A.3.4.1,
+  A.3.6.1… come Titolo); un punto ripetuto negli ID del capitolo 9 («7..4.2.20.1») non crea più una voce a parte.
+  Nei progetti già importati basta reimportare i capitoli: le allocazioni ai domini restano.
+
 ## [0.4.0] - 2026-10-28
 
 ### Aggiunto
@@ -263,6 +351,8 @@ Prima versione pubblicata su GitLab.
 - Nome ATLAS (Arcadia Traceability, Logical Architecture Software), icona e logo.
 - Installer Windows e archivio Linux. La pipeline GitLab esegue i test e compila la versione Linux.
 
+[Non rilasciato]: https://github.com/salvodesi/ATLAS/compare/v0.5.0...main
+[0.5.0]: https://github.com/salvodesi/ATLAS/compare/v0.4.0...v0.5.0
 [0.4.0]: https://github.com/salvodesi/ATLAS/compare/v0.3.0...v0.4.0
 [0.3.0]: https://github.com/salvodesi/ATLAS/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/salvodesi/ATLAS/releases/tag/v0.2.0

@@ -160,6 +160,16 @@ class Kind:
 
 GROUPS = ("Requisiti", "System Analysis", "Logical Architecture", "Trasversali")
 
+# Graphic views of the SA (the «diagram» kind), created by the users, as many as they need (the functional
+# breakdown of the whole model, under SA-1 and SA-2, is computed and not stored).
+DIAGRAM_BREAKDOWN = "Domini funzionali"  # SA-1: the domains, opened one by one
+DIAGRAM_FUNCTIONS = "Funzioni per dominio"  # SA-2: the same drawing, the domains open on their functions
+DIAGRAM_DATAFLOW = "Dataflow funzionale"
+DIAGRAM_CHAIN = "Catena funzionale"
+DIAGRAM_SCENARIO = "Scenario di scambio"
+DIAGRAM_TYPES = (DIAGRAM_BREAKDOWN, DIAGRAM_FUNCTIONS, DIAGRAM_DATAFLOW, DIAGRAM_CHAIN, DIAGRAM_SCENARIO)
+DIAGRAM_LEVELS = ("Per dominio", "Per funzione")
+
 
 # Decision questions of activity B5 and schemes of B6, worded as in the templates (SA-3 and SA-4). Projects
 # created before stored only the number: the editor shows the option that starts with it.
@@ -561,6 +571,25 @@ KINDS = (
         # A recipient written as text by earlier versions, that is not a team of the model (shown in the table).
         Field("recipient_text", "Destinatario (testo)", hidden=True),
         Field("status", "Stato", ENUM, ("Aperta", "Chiusa"), significant=True),
+    )),
+    # A graphic view of the SA, composed by the user with elements of the model (see model.diagrams): shown in the
+    # model tree under the SA it belongs to, not as a kind of its own.
+    Kind("diagram", "Vista grafica", "Viste grafiche", "sa/views", "System Analysis", "", "", (
+        Field("name", "Nome"),
+        Field("diagram_type", "Tipo di vista", ENUM, DIAGRAM_TYPES, significant=True),
+        Field("description", "Descrizione", TEXT),
+        # Catena funzionale and scenario: the chain whose steps are shown.
+        Field("chain", "Functional chain", REF, ref_kinds=("functional_chain",)),
+        Field("level", "Livello", ENUM, DIAGRAM_LEVELS),
+        # What the view shows and where: {uuid of an element (or «step:n» of the chain): "x,y"}. A text and not a
+        # pair of numbers: the three-way merge takes a position as a whole.
+        Field("layout", "Elementi e posizioni", MAP, hidden=True),
+        # Domini funzionali: the domains shown open, on their functions (uuids, not references: deleting a
+        # domain does not warn about the views).
+        Field("opened", "Domini aperti", STRLIST, hidden=True),
+        # Dataflow: where the arrow of an exchange drawn with a connector leaves and reaches its elements, {uuid of
+        # the exchange: "R500 L250"} (side and thousandths along it, see ui.diagrams.anchor_point).
+        Field("anchors", "Punti di attacco", MAP, hidden=True),
     )),
 )
 

@@ -50,6 +50,7 @@ KIND_ICONS = {
     "team": "mdi6.account-group-outline",
     "adr": "mdi6.gavel",
     "clarification": "mdi6.help-circle-outline",
+    "diagram": "mdi6.vector-polyline",
 }
 
 GROUP_ICONS = {
@@ -90,6 +91,7 @@ QToolBar::separator {{ background: {BORDER}; width: 1px; margin: 4px 6px; }}
 QStatusBar {{ background: {SURFACE}; border-top: 1px solid {BORDER}; color: {MUTED}; }}
 QStatusBar QLabel {{ color: {MUTED}; padding: 0 6px; }}
 QSplitter::handle {{ background: {BORDER}; }}
+QMainWindow::separator {{ background: {BORDER}; width: 1px; height: 1px; }}  /* the panels down to the dock */
 QSplitter::handle:horizontal {{ width: 1px; }}
 
 QFrame#panel {{ background: {SURFACE}; border: none; }}
@@ -98,6 +100,7 @@ QLabel#cardTitle {{ font-weight: 600; color: {TEXT}; font-size: 10.5pt; }}
 QLabel#sectionCaption {{ color: {MUTED}; font-size: 8.5pt; font-weight: 600; letter-spacing: 0.5px; }}
 QLabel#muted {{ color: {MUTED}; }}
 QLabel#elementTitle {{ font-size: 15pt; font-weight: 600; }}
+QLabel#viewTitle {{ font-size: 15pt; font-weight: 600; color: {TEXT}; }}  /* the name of a graphic view */
 QLabel#kindLabel {{ color: {ACCENT}; font-weight: 600; }}
 QLabel#badge {{ background: {ACCENT_SOFT}; color: {ACCENT}; border-radius: 9px; padding: 1px 8px; font-size: 8.5pt; font-weight: 600; }}
 QLabel#heroTitle {{ font-size: 20pt; font-weight: 600; }}

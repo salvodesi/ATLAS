@@ -129,7 +129,8 @@ def test_verify_button_below_the_tree_needs_valid_settings(app, tmp_path, proble
     window = MainWindow()
     window._set_project(project)
     texts = [b.text() for b in window.tree.findChildren(QPushButton)]
-    assert texts == ["Verifica modello"]  # in place of «Nuovo» and «Elimina» (still in the context menu)
+    # In place of «Nuovo» and «Elimina» (still in the context menu); «Nuova vista…» is in «Viste grafiche».
+    assert texts == ["Nuova vista…", "Verifica modello"]
     button = window.verify_button
     assert button.property("primary") and not button.isEnabled()
     assert "Nessuna verifica selezionata" in button.toolTip()

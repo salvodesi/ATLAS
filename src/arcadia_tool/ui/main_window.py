@@ -1,14 +1,15 @@
 from pathlib import Path
 
 from PySide6.QtCore import QSize, Qt, QTimer
-from PySide6.QtGui import QAction, QKeySequence
-from PySide6.QtWidgets import (QApplication, QComboBox, QFileDialog, QLabel, QMainWindow, QMessageBox,
+from PySide6.QtGui import QAction, QKeySequence, QShortcut
+from PySide6.QtWidgets import (QApplication, QComboBox, QFileDialog, QHBoxLayout, QLabel, QMainWindow, QMenu,
+                               QMessageBox,
                                QProgressDialog, QPushButton, QSplitter, QStackedWidget, QTabWidget, QToolBar, QVBoxLayout, QWidget)
 
 from arcadia_tool import APP_NAME, __version__
 from arcadia_tool.accounts import git_credentials
-from arcadia_tool.storage.project import (Project, ProjectError, describe_project, read_recovery_info,
-                                          recovery_file)
+from arcadia_tool.storage.project import (Project, ProjectError, describe_project, forget_local_changes,
+                                          local_changes, read_recovery_info, recovery_file)
 from arcadia_tool.storage.repository import PROJECT_FILE
 from arcadia_tool.storage.trash import move_to_trash
 
@@ -22,6 +23,7 @@ from arcadia_tool.model.teams import (access_denied, design_authority, edit_deni
                                       memberships)
 from arcadia_tool.ui.checks_panel import ChecksDock, ChecksPanel, summary
 from arcadia_tool.ui.clone import CloneDialog
+from arcadia_tool.ui.diagrams import BreakdownPage, DiagramPage, resolve_unsaved_view
 from arcadia_tool.ui.migrate import MigrationDialog, ReloadDialog
 from arcadia_tool.ui.push import PushDialog
 from arcadia_tool.ui.receive import ReceiveDialog
@@ -30,7 +32,8 @@ from arcadia_tool.ui.element_list import ElementListPage
 from arcadia_tool.ui.project_settings import ProjectSettingsDialog, recovery_minutes
 from arcadia_tool.ui.import_srs import ImportSrsDialog
 from arcadia_tool.ui.loading import LoadingDialog
-from arcadia_tool.ui.model_tree import ModelTree
+from arcadia_tool.ui.activity_bar import ActivityBar
+from arcadia_tool.ui.model_tree import TAB_ICONS, ModelTree
 from arcadia_tool.ui.srs_edit_mode import SrsEditMode
 from arcadia_tool.ui.srs_reader import SrsReader, SrsReaderWindow
 from arcadia_tool.ui.start_page import StartPage
@@ -99,6 +102,8 @@ class MainWindow(QMainWindow):
         self.pages.setTabsClosable(True)
         # No tab until an element is opened: its tab is named after it (see _show_editor).
         self.pages.tabCloseRequested.connect(self._close_page)
+        self.pages.tabBar().setContextMenuPolicy(Qt.CustomContextMenu)  # close this tab, the others, all of them
+        self.pages.tabBar().customContextMenuRequested.connect(self._tab_menu)
         self.pages.currentChanged.connect(self._page_changed)
         # With no tab open the vertical logo (it has the name too) is shown in place of the empty tab area.
         self.no_pages = QWidget()
@@ -107,11 +112,20 @@ class MainWindow(QMainWindow):
         self.work_area = QStackedWidget()
         self.work_area.addWidget(self.no_pages)
         self.work_area.addWidget(self.pages)
-        workspace = QSplitter()
-        workspace.addWidget(self.tree)
-        workspace.addWidget(self.work_area)
-        workspace.setStretchFactor(1, 1)
-        workspace.setSizes([340, 1100])
+        splitter = QSplitter()
+        splitter.addWidget(self.tree)
+        splitter.addWidget(self.work_area)
+        splitter.setStretchFactor(1, 1)
+        splitter.setSizes([340, 1100])
+        # At its left the bar of icons: the tabs of the panel, and the panel closed to the left and opened again.
+        self.activity = ActivityBar(self.tree, self.tree.tabs, splitter, TAB_ICONS, settings())
+        workspace = QWidget()
+        row = QHBoxLayout(workspace)
+        row.setContentsMargins(0, 0, 0, 0)
+        row.setSpacing(0)
+        row.addWidget(self.activity)
+        row.addWidget(splitter, 1)
+        QShortcut(QKeySequence("Ctrl+Shift+B"), self, activated=self.activity.toggle)
         self.stack = QStackedWidget()
         self.stack.addWidget(self.start)
         self.stack.addWidget(workspace)
@@ -127,7 +141,11 @@ class MainWindow(QMainWindow):
         self.tree.srs_window_requested.connect(self.open_srs_window)
         self.tree.import_requested.connect(self.import_srs)
         self.tree.list_requested.connect(self.open_element_list)
+        self.tree.breakdown_requested.connect(self.open_breakdown)
+        self.tree.view_created.connect(lambda _uuid: self._diagram_saved("Vista creata"))
         self.list_pages = {}  # kind → tab with its elements as a table (e.g. X-2, the requests for clarification)
+        # Graphic views in a tab: uuid of a view → DiagramPage; «breakdown:<kind>» → the functional breakdown.
+        self.diagram_pages = {}
         self.reader_window = None  # the SRS catalogue in its own window («Apri in altra finestra»)
         self.item_window = None  # separate window for an element linked to the page (e.g. a traced SRS item)
 
@@ -164,8 +182,11 @@ class MainWindow(QMainWindow):
                                        "Nuovo progetto")
         self.open_action = self._action("Apri", "mdi6.folder-open-outline", self.open_project_dialog,
                                         QKeySequence.Open, "Apri progetto")
-        self.save_action = self._action("Salva", "mdi6.content-save-outline", self.save, QKeySequence.Save,
-                                        "Salva le modifiche su disco")
+        self.save_action = self._action("Salva", "mdi6.content-save-outline", self.save,
+                                        QKeySequence("Ctrl+Shift+S"), "Salva tutte le modifiche del modello, "
+                                        "anche quelle delle schede e delle viste aperte")
+        # Ctrl+S: only the tab shown, as its own «Salva».
+        QShortcut(QKeySequence.Save, self, activated=self.save_tab)
         self.publish_action = self._action("Pubblica…", "mdi6.cloud-upload-outline", self.publish,
                                            QKeySequence("Ctrl+Shift+P"), "Pubblica una nuova versione del modello")
         self.compare_action = self._action("Confronta…", "mdi6.compare-horizontal", self.compare, None,
@@ -473,7 +494,7 @@ class MainWindow(QMainWindow):
             tip += ("\n(riconosciuto dall'ID del tuo account, che la DA indica aggiungendoti al team: lo trovi in "
                     "Utente › Modifica account)")
         self.status_user.setToolTip(tip)
-        self.save_action.setEnabled(modified)
+        self._update_save()
         found = check_problems(self.project.checks, self.project.model) if has_project else []
         self._refresh_profiles()
         self.verify_button.setEnabled(has_project and not found)
@@ -560,8 +581,18 @@ class MainWindow(QMainWindow):
 
     # --- project lifecycle ---------------------------------------------------------------------
 
+    def _resolve_unsaved_views(self):
+        """Graphic views with changes not saved: saved or discarded. False if the user cancels."""
+        for page in [p for p in self.diagram_pages.values() if isinstance(p, DiagramPage) and p.dirty]:
+            self.pages.setCurrentWidget(page)
+            if not resolve_unsaved_view(page, self):
+                return False
+        return True
+
     def _confirm_discard(self):
         """Ask what to do with unsaved edits. Returns False if the user cancels."""
+        if not self._resolve_unsaved_views():
+            return False
         self._flush_editors()
         for editor in self._unsaved_editors():  # sheets in edit mode with changes not saved
             if editor in self.editors.values():
@@ -741,6 +772,8 @@ class MainWindow(QMainWindow):
         self._close_reader()
         for page in list(self.list_pages.values()):
             self._close_list(page)
+        for page in list(self.diagram_pages.values()):
+            self._close_diagram(page)
         self.srs_edit_mode.set_enabled(False)  # imported SRS items start read-only in every session
         if self.project:
             self.project.close()
@@ -765,9 +798,14 @@ class MainWindow(QMainWindow):
             return self._last_editor
         return self._idle_editor
 
+    def _update_save(self):
+        """«Salva» of the toolbar: enabled when the model, a sheet or a view has changes not saved."""
+        self.save_action.setEnabled(bool(self.project) and (self.project.is_modified or bool(self._dirty_pages())))
+
     def _page_changed(self, _index):
         # Emitted also when the first tab is added (index 0) and when the last one is closed (index -1).
         self.work_area.setCurrentWidget(self.pages if self.pages.count() else self.no_pages)
+        self._update_save()
         if isinstance(self.pages.currentWidget(), ElementEditor):
             self._last_editor = self.pages.currentWidget()
 
@@ -778,7 +816,8 @@ class MainWindow(QMainWindow):
         editor.open_requested.connect(self.open_in_window)
         editor.elements_created.connect(self._model_changed)
         editor.dirty_changed.connect(lambda _dirty, e=editor: self._show_editor(e, activate=False))
-        editor.saved.connect(self._sheet_saved)
+        editor.dirty_changed.connect(lambda _dirty: self._update_save())
+        editor.saved.connect(lambda e=editor: self._sheet_saved(e))
         editor.abandoned.connect(self._abandon_new)
         editor.findings_for = self.checks.findings_for
         editor.edit_denied = self.edit_denied
@@ -786,9 +825,17 @@ class MainWindow(QMainWindow):
         editor.approver = self.da_name
         return editor
 
-    def _sheet_saved(self):
-        """«Salva» of a sheet: its changes are in the model; the project is saved."""
-        self._save_with_progress()
+    def _save_local(self, page):
+        """The «Salva» of a page (a sheet, a view): only what it changed is written, the other changes of the
+        project stay to be saved (the «Salva» of the toolbar saves everything)."""
+        own = getattr(page, "element", None) or getattr(page, "view", None)  # the sheet's element, the view
+        only = local_changes(page, self.project) | ({own.uuid} if own is not None else set())
+        self.project.save(only=only)
+        forget_local_changes(page)
+
+    def _sheet_saved(self, editor):
+        """«Salva» of a sheet: its changes are in the model and on disk, only them."""
+        self._save_local(editor)
         self._refresh_state()
         self.statusBar().showMessage("Scheda salvata", 3000)
         self._after_save()
@@ -803,6 +850,9 @@ class MainWindow(QMainWindow):
         """Open an element in its tab (a new one, or the one already open). Selecting something that is not an
         element (a group of the tree) leaves the open tabs as they are."""
         if element is None:
+            return
+        if element.kind == "diagram":  # a graphic view: its drawing, not a sheet
+            self.open_diagram(element)
             return
         editor = self.editors.get(element.uuid)
         if editor is None:
@@ -879,6 +929,10 @@ class MainWindow(QMainWindow):
         page = self.list_pages.get(kind)
         if page is None:
             page = ElementListPage(self.project, kind)
+            page.edit_denied = self.edit_denied
+            page.reload()  # its states, chosen on the rows, as the user may change them
+            # Queued: the table is drawn again after the change, not while its drop-down list is changing.
+            page.status_changed.connect(self._status_from_list, Qt.QueuedConnection)
             page.open_requested.connect(self._open_finding)
             page.create_requested.connect(self.tree.create)  # its sheet opens, in edit mode
             page.delete_requested.connect(self._delete_from_list)
@@ -889,11 +943,132 @@ class MainWindow(QMainWindow):
                                      else schema.plural)
         self.pages.setCurrentWidget(page)
 
+    # --- graphic views ---------------------------------------------------------------------------------
+
+    def open_breakdown(self, kind):
+        """The overview of the whole model: SA-1 (only the domains) or SA-2 (every domain open on its functions)."""
+        from arcadia_tool.model.diagrams import BREAKDOWN_VIEWS
+        if not self.project or kind not in BREAKDOWN_VIEWS:
+            return
+        key = f"breakdown:{kind}"
+        page = self.diagram_pages.get(key)
+        if page is None:
+            name, functions, _type = BREAKDOWN_VIEWS[kind]
+            title = f"{KINDS_BY_NAME[kind].template} {name}"  # «Vista complessiva» under SA-1 and SA-2
+            page = BreakdownPage(self.project, functions, self.checks.findings_for, title)
+            page.open_requested.connect(self._open_finding)
+            page.element_created.connect(lambda uuid, p=page: self._element_created(uuid, p))
+            page.model_edited.connect(lambda message, p=page: self._diagram_edited(message, p))
+            page.delete_requested.connect(self._delete_from_list)
+            self.diagram_pages[key] = page
+            index = self.pages.addTab(page, icon("mdi6.view-grid-outline", ACCENT), title)
+            self.pages.setTabToolTip(index, title)
+        self.pages.setCurrentWidget(page)
+
+    def open_diagram(self, view):
+        """A graphic view composed by the user, in its tab."""
+        page = self.diagram_pages.get(view.uuid)
+        if page is None:
+            page = DiagramPage(self.project, view, self.checks.findings_for)
+            page.open_requested.connect(self._open_finding)
+            page.element_created.connect(lambda uuid, p=page: self._element_created(uuid, p))
+            page.model_edited.connect(lambda message, p=page: self._diagram_edited(message, p))
+            page.delete_requested.connect(self._delete_from_list)
+            page.saved.connect(lambda p=page: self._diagram_saved("Vista salvata", p))
+            page.dirty_changed.connect(lambda _dirty, p=page: self._diagram_title(p))
+            page.dirty_changed.connect(lambda _dirty: self._update_save())
+            self.diagram_pages[view.uuid] = page
+            self.pages.addTab(page, icon("mdi6.vector-polyline", ACCENT), "")
+            self._diagram_title(page)
+        self.pages.setCurrentWidget(page)
+
+    def _diagram_title(self, page):
+        index = self.pages.indexOf(page)
+        if index < 0:
+            return
+        name = page.view.get("name") or "(vista senza nome)"
+        short = name if len(name) <= TAB_TITLE_LENGTH else name[:TAB_TITLE_LENGTH - 1] + "…"
+        self.pages.setTabText(index, f"● {short}" if page.dirty else short)  # ●: changes not saved
+        self.pages.setTabToolTip(index, f"{page.view.get('diagram_type') or 'Vista'}: {name}")
+
+    def _diagram_saved(self, message, page=None):
+        """A view created (the project saved), or saved with «Salva vista» (only the view written)."""
+        if page is None:
+            self._save_with_progress()
+        else:
+            self._save_local(page)
+        self._refresh_state()
+        self.statusBar().showMessage(message, 3000)
+        self._after_save()
+
+    def _element_created(self, uuid, page=None):
+        """An element created from a view (a domain, a system function, an exchange and its datum): saved with the
+        project, in the model tree and among the elements of every view."""
+        element = self.project.model.get(uuid)
+        label = self.project.model.label(element) if element is not None else ""
+        self._diagram_edited(f"Aggiunto al modello: {KINDS_BY_NAME[element.kind].label} {label}"
+                             if element is not None else "", page)
+
+    def _diagram_edited(self, message, page=None):
+        """Elements created or deleted from a view: written at once (only them), the other views drawn again."""
+        if page is None:
+            self._save_with_progress()
+        else:
+            self._save_local(page)
+        self._model_changed()
+        if message:
+            self.statusBar().showMessage(message, 5000)
+
+    def _close_diagram(self, page):
+        key = next((k for k, p in self.diagram_pages.items() if p is page), None)
+        self.diagram_pages.pop(key, None)
+        index = self.pages.indexOf(page)
+        if index >= 0:
+            self.pages.removeTab(index)
+        page.deleteLater()
+
+    def _refresh_diagrams(self):
+        """The model changed: the views are drawn again; those of a view deleted are closed."""
+        for key, page in list(self.diagram_pages.items()):
+            if isinstance(page, DiagramPage):
+                if self.project.model.get(key) is None:
+                    self._close_diagram(page)
+                    continue
+                self._diagram_title(page)
+            page.refresh()
+
+    def _status_from_list(self, uuid, status):
+        """The status of an element chosen on its row of a table (SA-1): in the model and on disk at once, only it."""
+        element = self.project.model.get(uuid) if self.project else None
+        if element is None or (element.get("status") or "") == status:
+            return
+        page = self.list_pages.get(element.kind)
+        reason = self.edit_denied(element.kind, "status")
+        editor = self.editors.get(uuid)
+        if reason is None and editor is not None and editor.dirty:
+            reason = (f"La scheda di «{self.project.model.label(element)}» ha modifiche in corso: salvale o "
+                      "annullale prima di cambiarne lo stato dalla tabella.")
+        if reason:
+            QMessageBox.information(self, "Stato", reason)
+            if page is not None:
+                QTimer.singleShot(0, page.reload)  # its old status again (not while its list is changing)
+            return
+        previous = element.copy()
+        element.set("status", status)
+        others = self.project.update(element, previous) or []
+        self.project.save(only={uuid, *(o.uuid for o in others)})
+        for changed in [element, *others]:
+            self._element_changed(changed)
+        self._refresh_state()
+        label = self.project.model.label(element)
+        self.statusBar().showMessage(f"Stato di {label}: {status or 'nessuno'} (salvato)", 4000)
+
     def _delete_from_list(self, uuid):
         element = self.project.model.get(uuid) if self.project else None
-        page = self.sender()  # the table the deletion comes from
-        if element is not None and self.tree.delete_element(element) and page in self.list_pages.values():
-            self.pages.setCurrentWidget(page)  # the table stays shown
+        page = self.sender()  # the table or the view the deletion comes from
+        if element is not None and self.tree.delete_element(element) and \
+                (page in self.list_pages.values() or page in self.diagram_pages.values()):
+            self.pages.setCurrentWidget(page)  # the table or the view stays shown
 
     def _close_list(self, page):
         kind = next((k for k, p in self.list_pages.items() if p is page), None)
@@ -972,7 +1147,7 @@ class MainWindow(QMainWindow):
         if self.item_window is None:
             self.item_window = ElementWindow(self.srs_edit_mode, self)
             self.item_window.editor.element_changed.connect(self._window_element_changed)
-            self.item_window.editor.saved.connect(self._sheet_saved)
+            self.item_window.editor.saved.connect(lambda e=self.item_window.editor: self._sheet_saved(e))
             self.item_window.editor.findings_for = self.checks.findings_for
             self.item_window.editor.edit_denied = self.edit_denied
             self.item_window.editor.locks_out = self.locks_out
@@ -1017,11 +1192,41 @@ class MainWindow(QMainWindow):
         self._show_reader()  # its tab, or its own window
         self.reader.reveal(uuid)
 
+    def _tab_menu(self, pos):
+        """Right click on a tab."""
+        index = self.pages.tabBar().tabAt(pos)
+        if index < 0:
+            return
+        menu = QMenu(self)
+        self.tab_actions(menu, index)
+        menu.exec(self.pages.tabBar().mapToGlobal(pos))
+
+    def tab_actions(self, menu, index):
+        page = self.pages.widget(index)
+        others = [self.pages.widget(i) for i in range(self.pages.count()) if i != index]
+        menu.addAction(icon("mdi6.close"), "Chiudi", lambda: self.close_pages([page]))
+        menu.addAction(icon("mdi6.tab-remove"), "Chiudi le altre", lambda: self.close_pages(others)).setEnabled(
+            bool(others))
+        menu.addAction(icon("mdi6.close-box-multiple-outline"), "Chiudi tutte",
+                       lambda: self.close_pages([page, *others]))
+
+    def close_pages(self, pages):
+        """Close these tabs one after the other; each asks about its changes not saved (cancelled: it stays)."""
+        for page in pages:
+            index = self.pages.indexOf(page)
+            if index >= 0:
+                self._close_page(index)
+
     def _close_page(self, index):
         if self.pages.widget(index) is self.reader:
             self._close_reader()
         elif self.pages.widget(index) in self.list_pages.values():
             self._close_list(self.pages.widget(index))
+        elif self.pages.widget(index) in self.diagram_pages.values():
+            page = self.pages.widget(index)
+            if isinstance(page, DiagramPage) and not resolve_unsaved_view(page, self):
+                return
+            self._close_diagram(page)
         elif isinstance(self.pages.widget(index), ElementEditor):
             editor = self.pages.widget(index)
             if not resolve_unsaved(editor, self):  # changes in progress: save or discard them
@@ -1071,6 +1276,7 @@ class MainWindow(QMainWindow):
         if self.reader is not None:
             self.reader.reload()
         self._reload_lists()
+        self._refresh_diagrams()
         self._refresh_state()
 
     def _element_changed(self, element):
@@ -1086,16 +1292,46 @@ class MainWindow(QMainWindow):
             self.reader.element_changed(element)
         if element.kind in self.list_pages:
             self.list_pages[element.kind].reload()
+        if self.diagram_pages:
+            self._refresh_diagrams()  # e.g. a name or an exchange changed in a sheet
         self._refresh_state()
 
+    def _dirty_pages(self):
+        """The sheets and the views with changes not saved yet."""
+        pages = [e for e in self.editors.values() if e.dirty]
+        if self.item_window is not None and self.item_window.editor.dirty:
+            pages.append(self.item_window.editor)
+        return pages + [p for p in self.diagram_pages.values() if isinstance(p, DiagramPage) and p.dirty]
+
     def save(self):
+        """«Salva» of the toolbar (Ctrl+Maiusc+S): every change of the model, those of every sheet and view open
+        included."""
         if not self.project:
             return
         self._flush_editors()
+        for page in self._dirty_pages():
+            page.save_view() if isinstance(page, DiagramPage) else page.save_changes()
+        left = self._dirty_pages()  # e.g. a sheet that could not be saved: it says why
         self._save_with_progress()
         self._refresh_state()
-        self.statusBar().showMessage("Modifiche salvate", 3000)
+        self.statusBar().showMessage(f"Modifiche salvate; non salvate: {len(left)} schede o viste" if left else
+                                     "Tutte le modifiche salvate", 5000)
         self._after_save()
+
+    def save_tab(self):
+        """Ctrl+S: only the changes of the tab shown (a sheet, a view), as its own «Salva»."""
+        if not self.project:
+            return
+        current = self.pages.currentWidget()
+        if isinstance(current, DiagramPage) and current.dirty:
+            current.save_view()
+        elif isinstance(current, ElementEditor) and current.dirty:
+            current.save_changes()
+        elif isinstance(current, ElementEditor) and local_changes(current, self.project):
+            self._sheet_saved(current)  # e.g. the SRS items traced from the sheet, outside its edit mode
+        elif self.project.is_modified or self._dirty_pages():
+            self.statusBar().showMessage("Nessuna modifica in questa tab: «Salva» nella barra in alto "
+                                         "(Ctrl+Maiusc+S) salva tutte le modifiche del modello", 6000)
 
     def _save_with_progress(self):
         if self.project.pending_count < SAVE_PROGRESS_THRESHOLD:
@@ -1247,6 +1483,8 @@ class MainWindow(QMainWindow):
 
     def _ready_to_leave_branch(self):
         """The edits are saved; the changes not yet published are published, or discarded, or the user cancels."""
+        if not self._resolve_unsaved_views():
+            return False
         self._flush_editors()
         for editor in self._unsaved_editors():
             if not resolve_unsaved(editor, self):

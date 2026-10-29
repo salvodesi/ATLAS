@@ -144,6 +144,7 @@ def test_chapter_9_cells_spanning_several_lines():
 def test_normalize_id():
     assert normalize_id("7.5.1.72 M_MODE") == "7.5.1.72"
     assert normalize_id("8.6.3 Message 132: MA request") == "8.6.3"
+    assert normalize_id("7..4.2.20.1") == "7.4.2.20.1"  # a typo of chapter 9
     for kept in ("3.6.5.1.4 a)", "5.11.2.2 A030", "4.10.1.3 Table - footnote [1]", "3.10.2.2 1st bullet",
                  "5.10.1.4.1 Figure 7"):
         assert normalize_id(kept) == kept
@@ -162,12 +163,30 @@ def test_appendix_of_the_chapter():
     items = {i.id: i for i in parse_lines(lines, 3)}
     assert items["3.20.1.9"].text == "Intentionally deleted."  # the appendix no longer ends up here
     assert items["A.3"].item_type == "Capitolo" and items["A.3"].title == "Appendix to Chapter 3"
-    assert items["A.3.1"].item_type == "Capitolo" and items["A.3.1"].title == "List of Fixed Value Data"
+    # The sections of the appendix: A.3.1 (one level less than 3.4.1); a bold A.3.4.1 is a heading inside A.3.4.
+    assert items["A.3.1"].item_type == "Sezione" and items["A.3.1"].title == "List of Fixed Value Data"
+    assert items["A.3.4"].item_type == "Sezione"
     assert items["A.3.3.1"].item_type == "Requisito"  # plain 3-level number in the appendix
-    assert items["A.3.4.1"].item_type == "Sezione"
+    assert items["A.3.4.1"].item_type == "Titolo"
     assert items["A.3.4.1.1"].item_type == "Requisito" and items["A.3.4.1.1"].parent_id == "A.3.4.1"
     assert items["A.3.1"].parent_id == "A.3"
     assert not any(i.warnings for i in items.values())
+
+
+def test_a_section_without_heading_is_added_before_its_clauses():
+    lines = [L("3.20 Juridical Data", bold=True),  # no «3.20.1» heading: the clauses follow the chapter
+             L("3.20.1.1 The on-board recording device is not part of the equipment."),
+             L("3.20.1.2 The on-board equipment shall transmit the information."),
+             L("3.21 Next chapter", bold=True),
+             L("3.21.1 A section", bold=True),
+             L("3.21.1.1 A clause.")]
+    items = parse_lines(lines, 3)
+    assert [(i.id, i.item_type) for i in items] == [
+        ("3.20", "Capitolo"), ("3.20.1", "Sezione"), ("3.20.1.1", "Requisito"), ("3.20.1.2", "Requisito"),
+        ("3.21", "Capitolo"), ("3.21.1", "Sezione"), ("3.21.1.1", "Requisito")]
+    added = items[1]
+    assert added.title == "Juridical Data" and "senza intestazione" in added.extra["import_note"]
+    assert items[2].parent_id == "3.20.1" and [i.sequence for i in items] == sorted(i.sequence for i in items)
 
 
 def test_appendix_items_in_chapter_9_and_merge(tmp_path):

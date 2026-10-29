@@ -98,11 +98,12 @@ def choose_logical_function(project, derived, parent=None):
 
 
 class SrsItemViewer(QDialog):
-    """Read-only full text of an SRS item: its text, its list items and bullets, its figures and tables."""
+    """Read-only full text of an SRS item: its text, its list items and bullets, its figures and tables.
+    open_item (uuid → None), when given: the button «Apri la scheda della voce», to edit it in its sheet."""
 
-    def __init__(self, project, parent=None):
+    def __init__(self, project, parent=None, open_item=None):
         super().__init__(parent)
-        self.project = project
+        self.project, self.open_item, self.element = project, open_item, None
         self.setWindowFlags(self.windowFlags() | Qt.WindowMaximizeButtonHint)
         self.resize(900, 700)
         self.browser = QTextBrowser()
@@ -110,6 +111,12 @@ class SrsItemViewer(QDialog):
         close = QPushButton("Chiudi")
         close.clicked.connect(self.close)
         buttons = QHBoxLayout()
+        self.sheet_button = QPushButton(icon("mdi6.open-in-app"), "Apri la scheda della voce")
+        self.sheet_button.setToolTip("La scheda della voce SRS, dove si modifica")
+        self.sheet_button.clicked.connect(lambda _=False: self.element is not None and
+                                          self.open_item(self.element.uuid))
+        self.sheet_button.setVisible(open_item is not None)
+        buttons.addWidget(self.sheet_button)
         buttons.addStretch()
         buttons.addWidget(close)
         layout = QVBoxLayout(self)
@@ -118,6 +125,7 @@ class SrsItemViewer(QDialog):
         layout.addLayout(buttons)
 
     def show_item(self, element, sub_items):
+        self.element = element
         model = self.project.model
         document = self.browser.document()
         document.clear()

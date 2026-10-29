@@ -32,6 +32,7 @@ SUBSET 026/
 *.pdf
 # Documents of the RFI methodology: kept on the PCs of the team, not published.
 Metodologia/
+import/
 
 # --- Data of the tool when it is run from the sources -------------------------------------------------
 # Local folder of an ARCADIA project (cache, recovery copy, settings of the PC) and logs.

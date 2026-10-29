@@ -435,10 +435,15 @@ class SrsReader(QWidget):
         self.edit_mode_button = edit_mode_button(self.edit_mode)
         self.window_button = QPushButton()
         self.window_button.clicked.connect(self.window_toggled)
+        self.coverage_button = QPushButton(icon("mdi6.chart-donut"), "Report di copertura…")
+        self.coverage_button.setToolTip("Le voci di bordo e di definizione coperte e scoperte (dominio, funzione di "
+                                        "sistema, requisito derivato) e la copertura del subset")
+        self.coverage_button.clicked.connect(lambda _=False: self.show_coverage())
         self.set_detached(False)
         top_row = QHBoxLayout()
         top_row.addWidget(self.search, 1)
         top_row.addWidget(self.count)
+        top_row.addWidget(self.coverage_button)
         top_row.addWidget(self.edit_mode_button)
         top_row.addWidget(self.delete_button)
         top_row.addWidget(self.window_button)
@@ -757,12 +762,25 @@ class SrsReader(QWidget):
             self.view.setCurrentIndex(index)  # right click outside the selection: act on that item
         self.context_menu(index.data(ELEMENT_ROLE)).exec(self.view.viewport().mapToGlobal(pos))
 
+    def show_coverage(self):
+        """«Report di copertura…»: a window of its own, not modal (a double click on an item opens it)."""
+        dialog = _coverage_dialog_class()(self.project, lambda uuid: self.open_element.emit(uuid), self)
+        dialog.setAttribute(Qt.WA_DeleteOnClose)
+        self.coverage = dialog
+        dialog.show()
+        return dialog
+
     def delete_selected(self):
         selected = self.selected_elements()
         if not selected or not self.edit_mode.enabled:
             return
         if confirm_delete(self, self.project, [e.uuid for e in selected]):
             self.elements_deleted.emit()
+
+
+def _coverage_dialog_class():
+    from arcadia_tool.ui.coverage_report import CoverageReportDialog
+    return CoverageReportDialog
 
 
 class SrsReaderWindow(QWidget):

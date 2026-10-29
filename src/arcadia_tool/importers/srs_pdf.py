@@ -186,9 +186,13 @@ def _numeric(number):
 
 
 def normalize_id(ident):
-    """«7.5.1.72 M_MODE» → «7.5.1.72»; sub-items such as «3.6.5.1.4 a)» or «5.4.3.2 S1» are kept."""
+    """«7.5.1.72 M_MODE» → «7.5.1.72»; sub-items such as «3.6.5.1.4 a)» or «5.4.3.2 S1» are kept; a dot typed
+    twice in chapter 9 («7..4.2.20.1») is one."""
     ident = " ".join(ident.split())
     number, _, rest = ident.partition(" ")
+    while ".." in number:
+        number = number.replace("..", ".")
+    ident = f"{number} {rest}".strip()
     if not rest or SUB_ITEM_SUFFIX.match(rest):
         return ident
     return number
@@ -291,15 +295,55 @@ def _plausible_successor(previous, number):
 def _item_type(number, bold):
     # Count the levels without converting them: chapter 9 has ids such as «3.13.9.3.1a)».
     depth = number.removeprefix(APPENDIX).count(".") + 1
+    if number.startswith(APPENDIX):
+        # The appendix of a chapter (A.3) has one level less: its sections are A.3.7, a 3-level number is a
+        # requirement unless it is a heading inside its section (A.3.3.1 vs A.3.4.1 «Introduction»).
+        if depth <= 1:
+            return "Capitolo"
+        if depth == 2:
+            return "Sezione"
+        return "Titolo" if bold else "Requisito"
     if depth <= 2:
         return "Capitolo"
-    if number.startswith(APPENDIX):
-        # In the appendix a 3-level number is a requirement unless it is a heading (A.3.3.1 vs A.3.4.1).
-        if depth == 3:
-            return "Sezione" if bold else "Requisito"
-    elif depth == 3:
+    if depth == 3:
         return "Sezione"
     return "Titolo" if bold else "Requisito"
+
+
+IMPLICIT_SECTION_NOTE = "Sezione senza intestazione nel SRS (le clausole seguono il capitolo): aggiunta da ATLAS"
+
+
+def _section_of_number(number):
+    """The section a clause number belongs to: 3.20.1.2 → 3.20.1, A.3.7.1 → A.3.7; None for a section or a
+    chapter, or a number that is not plain (7..4)."""
+    appendix = number.startswith(APPENDIX)
+    parts = number.removeprefix(APPENDIX).split(".")
+    if any(not p for p in parts):
+        return None
+    levels = 2 if appendix else 3
+    if len(parts) <= levels:
+        return None
+    return (APPENDIX if appendix else "") + ".".join(parts[:levels])
+
+
+def add_implicit_sections(items):
+    """Sections without a heading in the SRS: the clauses of some chapters follow the chapter heading directly
+    (3.20 Juridical Data → 3.20.1.1, 6.3 Scope → 6.3.1.1, the variables 7.5 → 7.5.0.1, 7.5.1.1). Their section
+    (3.20.1) is added right before its first clause, with the title of the chapter, so that the clauses have a
+    section like the others (the domains of the matrix A4 are allocated by section)."""
+    present = {i.id for i in items}
+    chapters = {i.id: i for i in items if i.item_type == "Capitolo"}
+    result = []
+    for item in items:
+        section = _section_of_number(item.id) if " " not in item.id and item.item_type in ("Requisito", "Titolo") \
+            else None
+        chapter = chapters.get(section.rsplit(".", 1)[0]) if section else None
+        if chapter is not None and section not in present:  # the clauses follow the chapter heading
+            result.append(SrsItem(section, "Sezione", title=chapter.title, page=item.page,
+                                  extra={"import_note": IMPLICIT_SECTION_NOTE}))
+            present.add(section)
+        result.append(item)
+    return result
 
 
 def _append(item, text, line, previous_top, structured):
@@ -533,6 +577,7 @@ def parse_lines(lines, chapter=None, figures=None, inside=(), spans=None):
         items.extend(functions.finish())
     if spans is not None and open_span and lines:
         spans[open_span[0]] = (*open_span[1:], lines[-1].page, float("inf"))
+    items = add_implicit_sections(items)
     _number(items, chapter)
     return items
 

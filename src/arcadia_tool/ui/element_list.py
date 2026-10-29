@@ -1,39 +1,48 @@
-"""A tab with the elements of a kind as a table (X-1, the architectural decisions; X-2, the requests for
-clarification): their main fields, a button to open and one to delete each of them, and one to create a new one.
-Opened with a double click on the kind in the model tree."""
+"""A tab with the elements of a kind as a table (SA-1, the functional domains; X-1, the architectural decisions;
+X-2, the requests for clarification): their main fields, a button to open each of them (and one to delete it), and
+one to create a new one. The status of a domain is changed on its row. Opened with a double click on the kind in
+the model tree."""
 from PySide6.QtCore import Qt, Signal
 from PySide6.QtGui import QBrush, QColor
-from PySide6.QtWidgets import (QAbstractItemView, QFileDialog, QFrame, QHBoxLayout, QHeaderView, QLabel, QLineEdit,
+from PySide6.QtWidgets import (QAbstractItemView, QComboBox, QFileDialog, QFrame, QHBoxLayout, QHeaderView, QLabel,
+                               QLineEdit,
                                QMessageBox, QPushButton, QStackedWidget, QTableWidget, QTableWidgetItem, QVBoxLayout,
                                QWidget)
 
 from arcadia_tool.model.element import natural_key
-from arcadia_tool.model.schema import ADR_AREAS, KINDS_BY_NAME, adr_area
+from arcadia_tool.model.schema import ADR_AREAS, KINDS_BY_NAME, adr_area, derived_value
 from arcadia_tool.ui.theme import BORDER, icon, kind_icon, status_colors
 
 UUID_ROLE = Qt.UserRole
 # The kinds shown as a table: their columns (fields of the schema); the first wide one takes the free space.
 LIST_COLUMNS = {
+    "domain": ("id", "name", "team", "referent", "status"),
     "clarification": ("id", "recipient", "status"),
     "adr": ("id", "title", "adr_area", "adr_type", "decision_date", "status"),
 }
-WIDE = ("recipient", "title")
+WIDE = ("recipient", "title", "name")
+STATUS_ON_ROW = ("domain",)  # the status chosen on the row, from a drop-down list
+NOT_DELETED_HERE = ("domain",)  # only «Apri»: a domain is deleted from its sheet, the tree or the views
 # How an element is called: one, many, the button to create one, the empty list, the search.
 NAMES = {
+    "domain": ("dominio", "domini", "Nuovo dominio", "Nessun dominio funzionale",
+               "Cerca per ID, nome, team, responsabile o stato", "Nuovo dominio funzionale"),
     "clarification": ("richiesta", "richieste", "Nuova richiesta", "Nessuna richiesta di chiarimento",
                       "Cerca per ID, destinatario o stato", "Nuova richiesta di chiarimento"),
     "adr": ("ADR", "ADR", "Nuova ADR", "Nessuna decisione architetturale",
             "Cerca per ID, titolo, tipo, data o stato", "Nuova decisione architetturale (ADR)"),
 }
 COLUMN_LABELS = {"id": "ID", "recipient": "Destinatario della richiesta", "adr_type": "Tipo",
-                 "adr_area": "Ambito"}
-TOOLTIP_FIELDS = {"clarification": "problem", "adr": "context"}
+                 "adr_area": "Ambito", "name": "Nome del dominio", "referent": "Responsabile"}
+TOOLTIP_FIELDS = {"clarification": "problem", "adr": "context", "domain": "mission"}
 
 
 class ElementListPage(QWidget):
     open_requested = Signal(str)  # uuid of the element to open in its sheet
     create_requested = Signal(str)  # kind of the element to create
     delete_requested = Signal(str)  # uuid of the element to delete (after a confirmation)
+    status_changed = Signal(str, str)  # uuid, the status chosen on its row (a domain)
+    edit_denied = None  # (kind, field) → why the user may not change it, or None
 
     def __init__(self, project, kind, parent=None):
         super().__init__(parent)
@@ -86,11 +95,14 @@ class ElementListPage(QWidget):
         for c, name in enumerate(self.columns):
             if name == self.wide:  # the free space
                 columns.setSectionResizeMode(c, QHeaderView.Stretch)
+            elif name == "status" and kind in STATUS_ON_ROW:  # its drop-down list
+                columns.setSectionResizeMode(c, QHeaderView.Interactive)
+                columns.resizeSection(c, 170)
             elif name in ("id", "status"):
                 columns.setSectionResizeMode(c, QHeaderView.ResizeToContents)
             else:  # another text (the decider of an ADR): a width of its own, changeable by dragging
                 columns.setSectionResizeMode(c, QHeaderView.Interactive)
-                columns.resizeSection(c, 220)
+                columns.resizeSection(c, 170 if kind == "domain" else 220)  # a domain: room for its name
         columns.setSectionResizeMode(len(self.columns), QHeaderView.Fixed)
         columns.setMinimumSectionSize(90)
         self.table.cellDoubleClicked.connect(self._double_clicked)
@@ -135,8 +147,8 @@ class ElementListPage(QWidget):
         model = self.project.model
         if column == "adr_area":  # where the type of the ADR applies (SA, LA, generali)
             return adr_area(element.get("adr_type"))
-        value = element.get(column)
         field = self.schema.field(column)
+        value = derived_value(model, element, field) if field is not None and field.derived_from else             element.get(column)  # the referent of a domain: from its team
         if field is not None and field.type == "ref":
             target = model.get(value) if value else None
             if target is not None:
@@ -150,16 +162,41 @@ class ElementListPage(QWidget):
         open_button = QPushButton(icon("mdi6.open-in-app"), "Apri")
         open_button.setToolTip(f"Apri la scheda di {label}")
         open_button.clicked.connect(lambda _=False, u=element.uuid: self.open_requested.emit(u))
-        delete = QPushButton(icon("mdi6.trash-can-outline"), "Elimina")  # the same style as «Apri»
-        delete.setToolTip(f"Elimina {label}")
-        delete.clicked.connect(lambda _=False, u=element.uuid: self.delete_requested.emit(u))
         cell = QWidget()
         row = QHBoxLayout(cell)
         row.setContentsMargins(4, 2, 4, 2)
         row.setSpacing(6)
         row.addWidget(open_button)
-        row.addWidget(delete)
+        if self.kind not in NOT_DELETED_HERE:
+            delete = QPushButton(icon("mdi6.trash-can-outline"), "Elimina")  # the same style as «Apri»
+            delete.setToolTip(f"Elimina {label}")
+            delete.clicked.connect(lambda _=False, u=element.uuid: self.delete_requested.emit(u))
+            row.addWidget(delete)
         return cell
+
+    def _status_choice(self, element):
+        """The status of the row, chosen from the states of the kind; its text in the colour of the status."""
+        choice = QComboBox()
+        choice.addItem("")
+        states = list(self.schema.field("status").options)
+        if element.get("status") and element.get("status") not in states:  # e.g. written by an earlier version
+            states.append(element.get("status"))
+        for i, state in enumerate(states, 1):
+            choice.addItem(state)
+            choice.setItemData(i, QColor(status_colors(state)[0]), Qt.ForegroundRole)
+        choice.setCurrentText(element.get("status") or "")
+        self._color_choice(choice)
+        reason = self.edit_denied(self.kind, "status") if self.edit_denied else None
+        choice.setEnabled(not reason)
+        choice.setToolTip(reason or f"Stato di {self.project.model.label(element)}")
+        choice.currentTextChanged.connect(lambda text, c=choice: self._color_choice(c))
+        choice.currentTextChanged.connect(lambda text, u=element.uuid: self.status_changed.emit(u, text))
+        return choice
+
+    @staticmethod
+    def _color_choice(choice):
+        color = status_colors(choice.currentText())[0] if choice.currentText() else "#6B7280"
+        choice.setStyleSheet(f"QComboBox {{ color: {color}; font-weight: 600; }}")
 
     def reload(self):
         """The elements of the kind, from the model (after a change, a creation or a deletion)."""
@@ -180,7 +217,9 @@ class ElementListPage(QWidget):
                 cell.setData(UUID_ROLE, e.uuid)
                 if name == "id":
                     cell.setIcon(kind_icon(self.kind))
-                if name == "status" and value:
+                if name == "status" and self.kind in STATUS_ON_ROW:
+                    self.table.setCellWidget(r, c, self._status_choice(e))  # the text under it: for the search
+                elif name == "status" and value:
                     fg, bg = status_colors(value)
                     cell.setForeground(QBrush(QColor(fg)))
                     cell.setBackground(QBrush(QColor(bg)))

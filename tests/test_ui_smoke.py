@@ -42,6 +42,8 @@ def test_editing_every_kind_and_saving_never_computes_a_diff(app, tmp_path, diff
     window._set_project(Project.create(tmp_path / "p", "Prova"))
     project = window.project
     for k in KINDS:
+        if k.name == "diagram":
+            continue  # a graphic view opens its drawing, not a sheet (see test_diagrams)
         element = project.new_element(k.name)
         window._select(element)  # its own tab, as when it is opened from the model tree
         # A new element opens in edit mode; an SRS item (imported) read-only even when not saved yet.

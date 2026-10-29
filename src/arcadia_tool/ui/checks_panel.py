@@ -495,7 +495,7 @@ class ChecksDock(QDockWidget):
         self._height = EXPANDED_HEIGHT
 
         bar = _TitleBar(objectName="dockTitle")
-        bar.setStyleSheet(f"QFrame#dockTitle {{ background: {SURFACE}; border-top: 1px solid {BORDER}; }}")
+        bar.setStyleSheet(f"QFrame#dockTitle {{ background: {SURFACE}; }}")  # the line above: the separator
         bar.setCursor(Qt.PointingHandCursor)
         bar.setToolTip("Mostra o nasconde le segnalazioni delle verifiche")
         bar.clicked.connect(self.toggle)

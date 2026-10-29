@@ -1,23 +1,56 @@
-"""Model navigator: phase → element kind → elements (nested when a kind has a parent of the same kind)."""
+"""Left panel, in two tabs: «Modello», the navigator phase → element kind → elements (nested when a kind has a
+parent of the same kind), and «Viste grafiche», the graphic views of the SA grouped by type. The tabs are chosen
+from the bar of icons at its left (ui.activity_bar), which also closes and opens the panel."""
 from PySide6.QtCore import Qt, Signal
 from PySide6.QtGui import QBrush, QColor, QFont
-from PySide6.QtWidgets import (QFrame, QHBoxLayout, QHeaderView, QLabel, QLineEdit, QMenu, QMessageBox, QPushButton,
-                               QTreeWidget, QTreeWidgetItem, QVBoxLayout)
+from PySide6.QtWidgets import (QFrame, QHBoxLayout, QHeaderView, QLabel, QLineEdit, QMenu, QMessageBox,
+                               QPushButton, QStackedWidget, QTabBar, QTreeWidget, QTreeWidgetItem,
+                               QVBoxLayout, QWidget)
 
+from arcadia_tool.model.diagrams import BREAKDOWN_TYPES, BREAKDOWN_VIEWS, DIAGRAM, VIEW_GROUPS, views_of
 from arcadia_tool.model.element import natural_key
 from arcadia_tool.model.identifiers import CREATION_CONTEXT
 from arcadia_tool.ui.element_list import LIST_COLUMNS
-from arcadia_tool.model.schema import GROUPS, KINDS, KINDS_BY_NAME
+from arcadia_tool.model.schema import DIAGRAM_TYPES, GROUPS, KINDS, KINDS_BY_NAME
 from arcadia_tool.ui.element_editor import RefPicker
 from arcadia_tool.ui.srs_edit_mode import SrsEditMode
 from arcadia_tool.ui.srs_reader import confirm_delete
-from arcadia_tool.ui.theme import GROUP_ICONS, MUTED, icon, kind_icon
+from arcadia_tool.ui.theme import ACCENT, GROUP_ICONS, MUTED, icon, kind_icon
 
 KIND_ROLE = Qt.UserRole
 UUID_ROLE = Qt.UserRole + 1
+# Tab «Viste grafiche»: on a group, the type of its views; on a functional breakdown, the kind of its SA.
+VIEWS_ROLE = Qt.UserRole + 2
+BREAKDOWN_ROLE = Qt.UserRole + 3
+MODEL_TAB, VIEWS_TAB = 0, 1
 # Kinds shown first in their group of the tree (the others in the order of the schema): the external actors
 # before the domains (SA-1), as the context of the system comes before its decomposition.
 TREE_FIRST = ("external_actor",)
+# Not in the tree of the elements: the views have their own tab.
+NOT_IN_TREE = (DIAGRAM,)
+
+
+TAB_ICONS = ("mdi6.file-tree-outline", "mdi6.vector-polyline")
+
+
+def _navigator():
+    tree = QTreeWidget(objectName="navigator")  # the style of the navigator (see theme)
+    tree.setColumnCount(2)
+    tree.setHeaderHidden(True)
+    tree.header().setStretchLastSection(False)
+    tree.header().setSectionResizeMode(0, QHeaderView.Stretch)
+    tree.header().setSectionResizeMode(1, QHeaderView.ResizeToContents)
+    tree.setIndentation(14)
+    tree.setUniformRowHeights(True)
+    tree.setContextMenuPolicy(Qt.CustomContextMenu)
+    return tree
+
+
+def _search(placeholder):
+    line = QLineEdit(placeholderText=placeholder, objectName="search")
+    line.addAction(icon("mdi6.magnify"), QLineEdit.LeadingPosition)
+    line.setClearButtonEnabled(True)
+    return line
 
 
 def _self_parent_field(kind):
@@ -52,6 +85,8 @@ class ModelTree(QFrame):
     import_requested = Signal()  # «Importa SRS…»: the SRS items from the PDFs of the SUBSET-026
     element_created = Signal(str)  # «Nuovo…»: the uuid of the element just created (its sheet opens next)
     list_requested = Signal(str)  # a kind whose elements are shown as a table in a tab (e.g. X-2)
+    breakdown_requested = Signal(str)  # the functional breakdown of the SA of this kind (SA-1 or SA-2)
+    view_created = Signal(str)  # «Nuova vista»: the uuid of the view, created and to be saved with the project
 
     def __init__(self, srs_edit_mode=None):
         super().__init__(objectName="panel")
@@ -59,36 +94,68 @@ class ModelTree(QFrame):
         self.edit_denied = None  # function(kind) → why the user may not create or delete it, or None
         self.locks_out = None  # function(team without members) → True if deleting it leaves the user outside
         self.srs_edit_mode = srs_edit_mode or SrsEditMode()
-        caption = QLabel("MODELLO", objectName="sectionCaption")
-        self.filter = QLineEdit(placeholderText="Cerca per ID o nome", objectName="search")
-        self.filter.addAction(icon("mdi6.magnify"), QLineEdit.LeadingPosition)
-        self.filter.setClearButtonEnabled(True)
+        # Two tabs: the elements of the model, and the graphic views (kept apart from the elements).
+        self.tabs = QTabBar()
+        self.tabs.addTab(icon("mdi6.file-tree-outline"), "Modello")
+        self.tabs.addTab(icon("mdi6.vector-polyline"), "Viste grafiche")
+        self.tabs.setExpanding(True)
+        self.tabs.setDocumentMode(True)
+        self.tabs.setUsesScrollButtons(False)  # a narrow panel shortens the titles, both tabs stay in sight
+        self.tabs.setElideMode(Qt.ElideRight)
+        self.tabs.currentChanged.connect(lambda index: self.pages.setCurrentIndex(index))
+        self.tabs.currentChanged.connect(lambda index: self.caption.setText(self.tabs.tabText(index).upper()))
+        self.tabs.hide()  # chosen from the bar of icons (ActivityBar): the name of the one shown on top
+        self.caption = QLabel(self.tabs.tabText(0).upper(), objectName="sectionCaption")
+
+        self.filter = _search("Cerca per ID o nome")
         self.filter.textChanged.connect(self._apply_filter)
-        self.tree = QTreeWidget(objectName="navigator")
-        self.tree.setColumnCount(2)
-        self.tree.setHeaderHidden(True)
-        self.tree.header().setStretchLastSection(False)
-        self.tree.header().setSectionResizeMode(0, QHeaderView.Stretch)
-        self.tree.header().setSectionResizeMode(1, QHeaderView.ResizeToContents)
-        self.tree.setIndentation(14)
-        self.tree.setUniformRowHeights(True)
-        self.tree.setContextMenuPolicy(Qt.CustomContextMenu)
+        self.tree = _navigator()
         self.tree.customContextMenuRequested.connect(self._context_menu)
         self.tree.currentItemChanged.connect(self._current_changed)
         self.tree.itemDoubleClicked.connect(self._double_clicked)
         self.tree.setExpandsOnDoubleClick(False)
+        model_page = QWidget()
+        model_layout = QVBoxLayout(model_page)
+        model_layout.setContentsMargins(0, 0, 0, 0)
+        model_layout.setSpacing(8)
+        model_layout.addWidget(self.filter)
+        model_layout.addWidget(self.tree, 1)
+
+        self.views_filter = _search("Cerca una vista")
+        self.views_filter.textChanged.connect(self._apply_views_filter)
+        self.new_view_button = QPushButton(icon("mdi6.plus", "white"), "Nuova vista…")
+        self.new_view_button.setProperty("primary", True)
+        self.new_view_button.setToolTip("Nuovo dataflow funzionale, catena funzionale o scenario di scambio")
+        self.new_view_button.clicked.connect(lambda _checked=False: self.create_view())
+        self.views = _navigator()
+        self.views.customContextMenuRequested.connect(self._views_menu)
+        self.views.currentItemChanged.connect(self._view_changed)
+        self.views.itemClicked.connect(lambda item, _column: self._view_changed(item, None))  # also once selected
+        views_page = QWidget()
+        views_layout = QVBoxLayout(views_page)
+        views_layout.setContentsMargins(0, 0, 0, 0)
+        views_layout.setSpacing(8)
+        views_layout.addWidget(self.views_filter)
+        views_layout.addWidget(self.new_view_button)
+        views_layout.addWidget(self.views, 1)
+
+        self.pages = QStackedWidget()
+        self.pages.addWidget(model_page)
+        self.pages.addWidget(views_page)
         # Elements are created and deleted from the context menu; below the tree the window puts its own
         # buttons (see add_footer).
         self.footer = QHBoxLayout()
         layout = QVBoxLayout(self)
         layout.setContentsMargins(12, 12, 12, 12)
         layout.setSpacing(8)
-        layout.addWidget(caption)
-        layout.addWidget(self.filter)
-        layout.addWidget(self.tree, 1)
+        layout.addWidget(self.tabs)
+        layout.addWidget(self.caption)
+        layout.addWidget(self.pages, 1)
         layout.addLayout(self.footer)
         self._kind_items = {}
         self._items = {}
+        self._view_groups = {}  # diagram type (None: the functional breakdown) → its group in «Viste grafiche»
+        self._view_items = {}  # uuid of a view → its item
 
     def add_footer(self, widget):
         self.footer.addWidget(widget)
@@ -110,7 +177,8 @@ class ModelTree(QFrame):
         self.tree.blockSignals(False)
         self.tree.setUpdatesEnabled(True)
         self._apply_filter(self.filter.text())
-        if select_uuid in self._items:
+        self._build_views()
+        if select_uuid in self._items or select_uuid in self._view_items:
             self.select(select_uuid)
 
     def _build(self, expanded):
@@ -126,7 +194,8 @@ class ModelTree(QFrame):
             item.setExpanded(True)
             groups[g] = item
         model = self.project.model
-        for k in sorted(KINDS, key=lambda k: TREE_FIRST.index(k.name) if k.name in TREE_FIRST else len(TREE_FIRST)):
+        kinds = [k for k in KINDS if k.name not in NOT_IN_TREE]
+        for k in sorted(kinds, key=lambda k: TREE_FIRST.index(k.name) if k.name in TREE_FIRST else len(TREE_FIRST)):
             elements = model.of_kind(k.name)
             title = f"{k.template} · {k.plural}" if k.template else k.plural
             kind_item = QTreeWidgetItem(groups[k.group], [title, str(len(elements))])
@@ -147,6 +216,71 @@ class ModelTree(QFrame):
                     children.setdefault(parent if parent in uuids else None, []).append(e)
                 self._add_nested(kind_item, None, children)
             kind_item.setExpanded(k.name in expanded)
+
+    def _build_views(self):
+        """Tab «Viste grafiche»: the functional breakdown of SA-1 and SA-2, then the views of the users, a group for
+        each type (with its SA)."""
+        collapsed = {t for t, item in self._view_groups.items() if not item.isExpanded()}
+        current = self.views.currentItem()
+        current = (current.data(0, UUID_ROLE) or current.data(0, BREAKDOWN_ROLE)) if current else None
+        self.views.blockSignals(True)
+        self.views.clear()
+        self._view_groups, self._view_items = {}, {}
+        if self.project is not None:
+            bold = QFont()
+            bold.setWeight(QFont.DemiBold)
+            muted, accent = QBrush(QColor(MUTED)), QBrush(QColor(ACCENT))
+            for title, diagram_type in VIEW_GROUPS:
+                views = views_of(self.project.model, diagram_type)
+                group = QTreeWidgetItem(self.views, [title, str(len(views))])
+                group.setFont(0, bold)
+                group.setIcon(0, icon("mdi6.view-grid-outline" if diagram_type in BREAKDOWN_TYPES
+                                      else "mdi6.vector-polyline", "#3D4B5C"))
+                group.setForeground(1, muted)
+                group.setTextAlignment(1, Qt.AlignRight | Qt.AlignVCenter)
+                group.setData(0, VIEWS_ROLE, diagram_type)
+                group.setFlags(Qt.ItemIsEnabled)
+                self._view_groups[diagram_type] = group
+                # First, the breakdown of the whole model of its SA.
+                for kind, (name, _all_open, group_type) in BREAKDOWN_VIEWS.items():
+                    if group_type == diagram_type:
+                        item = QTreeWidgetItem(group, [name, "tutto il modello"])
+                        item.setIcon(0, icon("mdi6.view-grid-outline", ACCENT))
+                        item.setForeground(0, accent)
+                        item.setForeground(1, muted)
+                        item.setData(0, BREAKDOWN_ROLE, kind)
+                        item.setToolTip(0, f"{KINDS_BY_NAME[kind].template}: i domini funzionali e le loro "
+                                           "funzioni di sistema")
+                        if current == kind:
+                            self.views.setCurrentItem(item)
+                for view in views:
+                    item = QTreeWidgetItem(group, [view.get("name") or "(vista senza nome)", ""])
+                    item.setIcon(0, icon("mdi6.vector-polyline", ACCENT))
+                    item.setForeground(0, accent)
+                    item.setData(0, KIND_ROLE, DIAGRAM)
+                    item.setData(0, UUID_ROLE, view.uuid)
+                    item.setToolTip(0, view.get("description") or view.get("name") or "")
+                    self._view_items[view.uuid] = item
+                    if current == view.uuid:
+                        self.views.setCurrentItem(item)
+                if diagram_type not in BREAKDOWN_TYPES and not views:
+                    empty = QTreeWidgetItem(group, ["nessuna vista: clic destro per crearne una"])
+                    empty.setForeground(0, muted)
+                    empty.setFlags(Qt.ItemIsEnabled)
+                group.setExpanded(diagram_type not in collapsed)
+        self.views.blockSignals(False)
+        self._apply_views_filter(self.views_filter.text())
+
+    def _apply_views_filter(self, text):
+        text = text.lower().strip()
+        for group in self._view_groups.values():
+            shown = 0
+            for i in range(group.childCount()):
+                child = group.child(i)
+                hidden = bool(text) and text not in child.text(0).lower()
+                child.setHidden(hidden)
+                shown += not hidden
+            group.setHidden(bool(text) and not shown)
 
     def _add(self, parent_item, element):
         label = self.project.model.choice_label(element)  # elements are chosen here: with their short name
@@ -170,14 +304,23 @@ class ModelTree(QFrame):
         item = self._items.get(element.uuid)
         if item is not None:
             item.setText(0, self.project.model.choice_label(element))
+        view = self._view_items.get(element.uuid)
+        if view is not None:
+            view.setText(0, element.get("name") or "(vista senza nome)")
 
     def clear_selection(self):
-        self.tree.blockSignals(True)  # the page is already closed: nothing to announce
-        self.tree.setCurrentItem(None)
-        self.tree.clearSelection()
-        self.tree.blockSignals(False)
+        for tree in (self.tree, self.views):
+            tree.blockSignals(True)  # the page is already closed: nothing to announce
+            tree.setCurrentItem(None)
+            tree.clearSelection()
+            tree.blockSignals(False)
 
     def select(self, uuid):
+        if uuid in self._view_items:  # a view: in its tab
+            self.tabs.setCurrentIndex(VIEWS_TAB)
+            self.views.setCurrentItem(self._view_items[uuid])
+            self.views.scrollToItem(self._view_items[uuid])
+            return
         item = self._items.get(uuid)
         if item is None:
             return
@@ -221,6 +364,15 @@ class ModelTree(QFrame):
     def _current_changed(self, current, _previous):
         uuid = current.data(0, UUID_ROLE) if current else None
         self.element_selected.emit(self.project.model.get(uuid) if uuid and self.project else None)
+
+    def _view_changed(self, current, _previous):
+        """A click in «Viste grafiche»: the view opens (a functional breakdown, or a view of the users)."""
+        if current is None or self.project is None:
+            return
+        if current.data(0, BREAKDOWN_ROLE):
+            self.breakdown_requested.emit(current.data(0, BREAKDOWN_ROLE))
+        elif current.data(0, UUID_ROLE):
+            self.element_selected.emit(self.project.model.get(current.data(0, UUID_ROLE)))
 
     def _double_clicked(self, item, _column):
         kind = item.data(0, KIND_ROLE)
@@ -278,6 +430,59 @@ class ModelTree(QFrame):
             delete.setEnabled(not locked and not denied)
             delete.setToolTip(denied or "")
         menu.exec(self.tree.viewport().mapToGlobal(pos))
+
+    def _views_menu(self, pos):
+        """Menu of «Viste grafiche»: on a group, a new view of its type; on a view, open, rename, delete; on the
+        functional breakdown, open."""
+        if self.project is None:
+            return
+        item = self.views.itemAt(pos)
+        menu = QMenu(self)
+        if item is not None and item.data(0, BREAKDOWN_ROLE):
+            menu.addAction(icon("mdi6.open-in-app"), "Apri",
+                           lambda _=False: self.breakdown_requested.emit(item.data(0, BREAKDOWN_ROLE)))
+        elif item is not None and item.data(0, UUID_ROLE):
+            view = self.project.model.get(item.data(0, UUID_ROLE))
+            menu.addAction(icon("mdi6.open-in-app"), "Apri", lambda _=False: self.element_selected.emit(view))
+            menu.addAction(icon("mdi6.rename-outline"), "Rinomina…", lambda _=False: self.rename_view(view))
+            menu.addSeparator()
+            menu.addAction(icon("mdi6.trash-can-outline"), "Elimina la vista",
+                           lambda _=False: self.delete_element(view))
+        else:
+            group = item if item is None or item.parent() is None else item.parent()
+            diagram_type = group.data(0, VIEWS_ROLE) if group is not None else None
+            # On a group, «Nuova vista…» of its type; elsewhere, one for each group.
+            for title, t in VIEW_GROUPS:
+                if t == diagram_type or not diagram_type:
+                    label = "Nuova vista…" if diagram_type else f"Nuova vista in {title}…"
+                    menu.addAction(icon("mdi6.plus"), label,
+                                   lambda _=False, t=t: self.create_view(t))
+        menu.exec(self.views.viewport().mapToGlobal(pos))
+
+    def create_view(self, diagram_type=None):
+        """«Nuova vista»: asks its name and, for a chain or a scenario, the chain; the type too, only from
+        «+ Nuova vista…» (from the group of an SA it is the type of the group). It opens to be composed with the
+        elements of the model."""
+        from arcadia_tool.ui.diagrams import NewViewDialog
+        dialog = NewViewDialog(self.project.model, [diagram_type] if diagram_type else DIAGRAM_TYPES, self)
+        if not dialog.exec():
+            return None
+        view = self.project.new_element(DIAGRAM, **dialog.values())
+        self.view_created.emit(view.uuid)
+        self.reload(select_uuid=view.uuid)
+        self.model_changed.emit()
+        return view
+
+    def rename_view(self, view):
+        from PySide6.QtWidgets import QInputDialog
+        name, ok = QInputDialog.getText(self, "Rinomina la vista", "Nome della vista:", text=view.get("name") or "")
+        if not ok or not name.strip() or name.strip() == view.get("name"):
+            return
+        previous = view.copy()
+        view.set("name", name.strip())
+        self.project.update(view, previous)
+        self.reload(select_uuid=view.uuid)
+        self.model_changed.emit()
 
     def _new_from_selection(self):
         item = self.tree.currentItem()

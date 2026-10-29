@@ -21,6 +21,7 @@ from arcadia_tool.model.adr import approval_problems, approve_new_domain, can_ap
 from arcadia_tool.model.element import is_empty
 from arcadia_tool.model.schema import (ADR_DETAILS, BOOL, ENUM, IMAGE, INT, KINDS_BY_NAME, MAP, MULTIENUM, REF,
                                        REFS, STR, STRLIST, TABLE, TEXT, enum_option)
+from arcadia_tool.storage.project import local_change
 from arcadia_tool.ui.checks_panel import SEVERITY_COLORS, summary
 from arcadia_tool.ui.dialogs import replace_page
 from arcadia_tool.ui.rich_text import RichTextEdit
@@ -458,6 +459,7 @@ class ElementEditor(QScrollArea):
             self.editing = True
             self._build()
 
+    @local_change
     def approve(self):
         """The Design Authority approves the ADR of a new domain: the domain is created (see
         model.adr.approve_new_domain), after a confirmation that says what changes."""
@@ -488,6 +490,7 @@ class ElementEditor(QScrollArea):
         QMessageBox.information(self, "Approva ADR", f"ADR approvata: creato il dominio "
                                 f"{model.label(domain)}.")
 
+    @local_change
     def save_changes(self):
         """«Salva»: the draft becomes the element in the model; the project is then saved (signal saved)."""
         if self.element is None:
@@ -778,7 +781,7 @@ class ElementEditor(QScrollArea):
             self.cancel_button.clicked.connect(lambda _=False: self.cancel_changes())
             self.save_button = QPushButton(icon("mdi6.content-save-outline", "white"), "Salva")
             self.save_button.setProperty("primary", True)
-            self.save_button.setToolTip("Applica le modifiche della scheda e salva il progetto")
+            self.save_button.setToolTip("Salva le modifiche di questa scheda (Ctrl+S); «Salva» nella barra in alto salva tutto il modello")
             self.save_button.clicked.connect(lambda _=False: self.save_changes())
             buttons = (self.cancel_button, self.save_button)
         else:
@@ -951,6 +954,14 @@ class ElementEditor(QScrollArea):
         button.clicked.connect(self._trace_srs)
         row = QHBoxLayout()
         row.addWidget(button)
+        if element.kind == "domain":  # the principal sections written in its SA-1 sheet in Excel
+            imported = QPushButton(icon("mdi6.microsoft-excel"), "Importa clausole principali…")
+            imported.setEnabled(has_srs)
+            imported.setToolTip("Legge la riga «Sezioni SRS principali» del foglio del dominio in un file Excel "
+                                "(SA-1), ne mostra le voci e le importa come sezioni principali del dominio"
+                                if has_srs else "Importa prima le voci SRS (menu Progetto › Importa voci SRS)")
+            imported.clicked.connect(lambda _=False: self._import_principal())
+            row.addWidget(imported)
         row.addStretch()
         layout.addLayout(row)
         lists = QHBoxLayout()
@@ -1036,6 +1047,21 @@ class ElementEditor(QScrollArea):
             self.draft.set("function", chosen)
             self._draft_changed()
 
+    @local_change
+    def _import_principal(self, path=None):
+        """«Importa clausole principali…»: the domain becomes the principal domain of the sections of its row in
+        the Excel sheet (after a summary); saved with the «Salva» of the sheet."""
+        from arcadia_tool.ui.import_principal import import_principal
+
+        self.flush()
+        changed = import_principal(self.project, self.element, self, path)
+        for item in changed:
+            self.element_changed.emit(item)
+        if changed:  # saved with the «Salva» of the sheet, Ctrl+S or the «Salva» of the toolbar
+            self._build()
+        return changed
+
+    @local_change
     def _trace_srs(self):
         """The traceability windows apply their choices with their own «Applica» (they change also other
         elements, e.g. the allocation of the SRS items to the domain)."""
