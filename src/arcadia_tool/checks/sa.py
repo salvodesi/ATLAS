@@ -5,6 +5,7 @@ from collections import Counter, defaultdict
 from arcadia_tool.checks import ERROR, INFO, WARNING, check, issue
 from arcadia_tool.checks.context import (AGREED, CLAUSE_TYPES, NON_BOARD, name_acronyms, question_number,
                                          sentences, starts_with_verb, without_variants)
+from arcadia_tool.model.adr import related_adrs
 from arcadia_tool.model.identifiers import NO_ID_KINDS, _domain_code
 from arcadia_tool.checks.params import VERB_ENDINGS
 from arcadia_tool.model.schema import ETCS_MODES, REF, REFS, TABLE
@@ -468,7 +469,7 @@ def sa2_new_reason(ctx):
 @check("SA2-11", "Funzione nuova approvata senza ADR collegata", "I", "SA-2")
 def sa2_new_without_adr(ctx):
     for sf in ctx.of("system_function"):
-        if sf.get("is_new") and ctx.approved(sf) and not sf.get("adrs"):
+        if sf.get("is_new") and ctx.approved(sf) and not related_adrs(ctx.model, sf):
             yield issue(sf, "Funzione nuova approvata senza ADR: se la scelta non è ovvia va registrata.")
 
 
@@ -496,7 +497,7 @@ def sa2_mode_values(ctx):
 def sa2_optional_without_adr(ctx):
     for sf in ctx.of("system_function"):
         optional = [m for m, v in _modes(sf).items() if v == "O"]
-        if optional and not sf.get("adrs"):
+        if optional and not related_adrs(ctx.model, sf):
             yield issue(sf, f"Funzione opzionale in {', '.join(optional)} senza ADR: è una decisione di prodotto.")
 
 

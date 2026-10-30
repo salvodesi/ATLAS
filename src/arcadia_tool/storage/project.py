@@ -504,7 +504,9 @@ class Project:
         - The members of a team were a list of names: each becomes a member (a row) without the ID of the
           account, recognized by name until the DA writes it (see model.teams).
         - An ADR had «Data e decisore» (a text): its date becomes «Data della decisione»; the decider is always
-          the Design Authority."""
+          the Design Authority.
+        - The ADR of a reallocation had one SRS item («Sezione o clausola da riallocare»): now a list, one or
+          more items («Sezioni o clausole da riallocare»)."""
         by_id = {}
         for item in self.model.of_kind("requirement"):
             by_id.setdefault(item.get("id"), item.uuid)
@@ -525,6 +527,10 @@ class Project:
                 adr.values["decision_date"] = f"{int(found[1]):02d}/{int(found[2]):02d}/{found[3]}"
             adr.values.pop("date_decider")
             self.update(adr)
+        for adr in self.model.of_kind("adr"):  # the item to reallocate: one, now a list
+            if isinstance(adr.values.get("realloc_item"), str):
+                adr.set("realloc_item", [adr.values["realloc_item"]])
+                self.update(adr)
         teams = self.model.of_kind("team")
         for team in teams:  # members of the first versions (only names): rows, to which the DA adds the ID
             members = team.values.get("members") or []
@@ -821,6 +827,10 @@ class Project:
     def set_asset(self, rel, data):
         """Store a binary file of the project (e.g. a figure image) at the next save."""
         self._pending_assets[rel] = data
+
+    def unsaved_assets(self):
+        """The assets set and not written yet (their data is in memory, not in the file)."""
+        return self._pending_assets.keys()
 
     def asset_data(self, rel):
         if rel in self._pending_assets:

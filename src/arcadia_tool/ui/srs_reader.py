@@ -10,11 +10,11 @@ from html import escape
 from PySide6.QtCore import QAbstractListModel, QEvent, QModelIndex, QRect, QSize, Qt, Signal
 from PySide6.QtGui import QColor, QCursor, QFont, QFontMetrics, QKeySequence, QPainter, QShortcut, QTextDocument
 from PySide6.QtWidgets import (QAbstractItemView, QApplication, QCheckBox, QFrame, QHBoxLayout, QLabel, QLineEdit,
-                               QListView, QMenu, QMessageBox, QPushButton, QStyle, QStyledItemDelegate, QTabBar, QVBoxLayout, QWidget)
+                               QListView, QMenu, QMessageBox, QProgressDialog, QPushButton, QStyle, QStyledItemDelegate, QTabBar, QVBoxLayout, QWidget)
 
 from arcadia_tool.importers.srs_pdf import chapter_of_item
 from arcadia_tool.model.element import natural_key
-from arcadia_tool.ui.element_editor import load_pixmap
+from arcadia_tool.ui.element_editor import image_size, load_pixmap
 from arcadia_tool.ui.srs_edit_mode import SrsEditMode, edit_mode_button
 from arcadia_tool.ui.theme import ACCENT, ACCENT_SOFT, BORDER, MUTED, TEXT, icon
 
@@ -122,6 +122,7 @@ class ItemDelegate(QStyledItemDelegate):
         self.links = None  # function(element) → what the item is allocated to, shown in its row of actions
         self._sizes = {}
         self._pixmaps = {}
+        self._figure_sizes = {}  # (width, height) of the figures: their layout does not decode them
         self.highlight = ""  # searched text, highlighted in the items (lower case)
         base = view.font()
         self.fonts = {"text": QFont(base), "bold": QFont(base), "italic": QFont(base), "chip": QFont(base)}
@@ -144,8 +145,10 @@ class ItemDelegate(QStyledItemDelegate):
         for key in [k for k in self._sizes if k[0] == uuid]:
             del self._sizes[key]
         self._pixmaps.pop(uuid, None)
+        self._figure_sizes.pop(uuid, None)
 
     def _pixmap(self, element):
+        """The image of a figure: decoded only to paint it (the rows shown)."""
         rel = element.values.get("figure")
         if not rel or self.project is None:
             return None
@@ -153,11 +156,30 @@ class ItemDelegate(QStyledItemDelegate):
             self._pixmaps[element.uuid] = load_pixmap(self.project, rel)
         return self._pixmaps[element.uuid]
 
+    def _figure_size(self, element):
+        rel = element.values.get("figure")
+        if not rel or self.project is None:
+            return None
+        if element.uuid not in self._figure_sizes:
+            self._figure_sizes[element.uuid] = image_size(self.project, rel)
+        return self._figure_sizes[element.uuid]
+
     @staticmethod
-    def _image_size(pixmap, width):
+    def _image_size(size, width):
         # Figures are rendered at 2x: show them at about their size on paper, never wider than the text.
-        w = min(width, int(pixmap.width() / FIGURE_SCALE))
-        return w, int(pixmap.height() * w / pixmap.width())
+        w = min(width, int(size[0] / FIGURE_SCALE))
+        return w, int(size[1] * w / size[0])
+
+    def measure(self, elements, progress=None):
+        """The heights of the items not measured yet, before the view lays them out (the first opening of the
+        catalogue: seconds); progress(done, total) every few items."""
+        width = self.view.viewport().width()
+        missing = [e for e in elements if (e.uuid, width, self.highlight) not in self._sizes]
+        for n, element in enumerate(missing, 1):
+            *_, height = self._layout(element, QRect(0, 0, width, 0))
+            self._sizes[(element.uuid, width, self.highlight)] = QSize(width, height)
+            if progress is not None and (n % 50 == 0 or n == len(missing)):
+                progress(n, len(missing))
 
     def cached(self, uuid):
         return (uuid, self.view.viewport().width(), self.highlight) in self._sizes
@@ -248,10 +270,10 @@ class ItemDelegate(QStyledItemDelegate):
                 h = self._text_height(key, text, body_width)
                 placed.append((key, colour, text, QRect(body_left, y, body_width, h)))
             y += h + 2
-        pixmap = self._pixmap(element)
-        if pixmap is not None and not pixmap.isNull():
-            w, h = self._image_size(pixmap, body_width)
-            placed.append(("image", None, pixmap, QRect(body_left, y + 4, w, h)))
+        size = self._figure_size(element)
+        if size is not None:
+            w, h = self._image_size(size, body_width)
+            placed.append(("image", None, element, QRect(body_left, y + 4, w, h)))
             y += h + 10
         height = y - top
         chips = None
@@ -333,8 +355,10 @@ class ItemDelegate(QStyledItemDelegate):
                 painter.restore()
                 continue
             if key == "image":
-                painter.setRenderHint(QPainter.SmoothPixmapTransform)
-                painter.drawPixmap(box, content)
+                pixmap = self._pixmap(content)
+                if pixmap is not None and not pixmap.isNull():
+                    painter.setRenderHint(QPainter.SmoothPixmapTransform)
+                    painter.drawPixmap(box, pixmap)
                 painter.setPen(QColor(BORDER))
                 painter.drawRect(box.adjusted(-1, -1, 0, 0))
                 continue
@@ -398,6 +422,7 @@ class SrsReader(QWidget):
         self.project = project
         self.chapter = None
         self._pending_refresh = True
+        self._refreshing = False
         self.edit_mode = edit_mode or SrsEditMode()
         self.edit_mode.changed.connect(self._selection_changed)
 
@@ -555,6 +580,15 @@ class SrsReader(QWidget):
             # Item heights depend on the final width of the view: lay out only once it is shown.
             self._pending_refresh = True
             return
+        if self._refreshing:  # asked again while the loading bar lets the events through: this one does it
+            return
+        self._refreshing = True
+        try:
+            self._refresh()
+        finally:
+            self._refreshing = False
+
+    def _refresh(self):
         self._pending_refresh = False
         wanted = self.selected_categories()
         text = self.search.text().strip().lower()
@@ -585,12 +619,36 @@ class SrsReader(QWidget):
         delegate = self.view.itemDelegate()
         delegate.highlight = text
         slow = sum(1 for e in shown if not delegate.cached(e.uuid)) > SLOW_LAYOUT_ITEMS
+        loading = None
         if slow:
             QApplication.setOverrideCursor(Qt.WaitCursor)
+        if slow and not text:
+            # The first opening (or a new width): a window with a loading bar while the items are measured. Not
+            # while searching: the items found are measured again with the text highlighted, as it is typed.
+            loading = QProgressDialog("Caricamento del catalogo delle voci SRS…", None, 0, 0, self)
+            loading.setWindowTitle("Voci SRS")
+            loading.setWindowModality(Qt.WindowModal)
+            loading.setMinimumDuration(0)
+            loading.setAutoClose(False)
+            loading.setAutoReset(False)
+            loading.setMinimumWidth(420)
+            loading.show()
+            QApplication.processEvents()
+
+            def progress(done, total):
+                loading.setLabelText(f"Caricamento del catalogo delle voci SRS: {done} di {total} voci…")
+                loading.setMaximum(total)
+                loading.setValue(done)
+                QApplication.processEvents()
         try:
+            if loading is not None:
+                delegate.measure(shown, progress)
             self.model.set_elements(shown)
             self.view.doItemsLayout()
         finally:
+            if loading is not None:
+                loading.close()
+                loading.deleteLater()
             if slow:
                 QApplication.restoreOverrideCursor()
         self.count.setText("1 voce" if len(items) == 1 else f"{len(items)} voci")
@@ -763,8 +821,32 @@ class SrsReader(QWidget):
         self.context_menu(index.data(ELEMENT_ROLE)).exec(self.view.viewport().mapToGlobal(pos))
 
     def show_coverage(self):
-        """«Report di copertura…»: a window of its own, not modal (a double click on an item opens it)."""
-        dialog = _coverage_dialog_class()(self.project, lambda uuid: self.open_element.emit(uuid), self)
+        """«Report di copertura…»: a window of its own, not modal (a double click on an item opens it). While it is
+        generated, a window with a loading bar."""
+        loading = QProgressDialog("Generazione del report di copertura…", None, 0, 0, self)
+        loading.setWindowTitle("Report di copertura")
+        loading.setWindowModality(Qt.WindowModal)
+        loading.setMinimumDuration(0)
+        loading.setAutoClose(False)
+        loading.setAutoReset(False)
+        loading.setMinimumWidth(420)
+        loading.show()
+        QApplication.processEvents()
+
+        def progress(done, total, what):
+            loading.setLabelText(what)
+            loading.setMaximum(total)
+            loading.setValue(done)
+            QApplication.processEvents()
+
+        QApplication.setOverrideCursor(Qt.WaitCursor)
+        try:
+            dialog = _coverage_dialog_class()(self.project, lambda uuid: self.open_element.emit(uuid), self,
+                                              progress=progress)
+        finally:
+            QApplication.restoreOverrideCursor()
+            loading.close()
+            loading.deleteLater()
         dialog.setAttribute(Qt.WA_DeleteOnClose)
         self.coverage = dialog
         dialog.show()

@@ -53,6 +53,13 @@ def _bold(entry, column):
     entry.setFont(column, font)
 
 
+def _fit(tree, columns):
+    """Columns as wide as their contents, measured once the tree is filled (ResizeToContents measured every row at
+    each change of the layout: seconds, with the 1250 clauses of board)."""
+    for column in columns:
+        tree.resizeColumnToContents(column)
+
+
 class CategoryPage(QWidget):
     """The clauses of a category: the percentages of the three levels, then two views: «Per sezione» (the coverage
     of each section) and «Per clausola» (the sections and their clauses down to the last one), with a filter and a
@@ -124,8 +131,9 @@ class CategoryPage(QWidget):
         table.setHeaderLabels(SECTION_COLUMNS)
         for c, tip in enumerate(SECTION_TIPS):
             table.headerItem().setToolTip(c, tip)
+        table.setUniformRowHeights(True)
         header = table.header()
-        header.setSectionResizeMode(QHeaderView.ResizeToContents)
+        header.setSectionResizeMode(QHeaderView.Interactive)  # measured once, when filled (see _fit)
         header.setSectionResizeMode(1, QHeaderView.Stretch)
         header.setStretchLastSection(False)
         table.setToolTip("Doppio clic: il testo della sezione · clic destro: le sue clausole")
@@ -146,6 +154,7 @@ class CategoryPage(QWidget):
                 entry.setTextAlignment(c, Qt.AlignCenter)
             table.addTopLevelItem(entry)
         table.itemDoubleClicked.connect(self._double_clicked)
+        _fit(table, (0, *range(2, 7)))
         return table
 
     def _section_menu(self, table, pos):
@@ -176,12 +185,10 @@ class CategoryPage(QWidget):
         tree.setAlternatingRowColors(True)
         tree.setExpandsOnDoubleClick(False)  # the double click reads the item; only the arrow opens and closes it
         tree.setHeaderLabels(COLUMNS)
+        tree.setUniformRowHeights(True)
         header = tree.header()
-        header.setSectionResizeMode(QHeaderView.Interactive)
-        header.setSectionResizeMode(IDENT, QHeaderView.ResizeToContents)
-        header.setSectionResizeMode(CATEGORY, QHeaderView.ResizeToContents)
+        header.setSectionResizeMode(QHeaderView.Interactive)  # IDENT, CATEGORY, STATE: measured once (see _fit)
         header.setSectionResizeMode(TEXT, QHeaderView.Stretch)
-        header.setSectionResizeMode(STATE, QHeaderView.ResizeToContents)
         header.setStretchLastSection(False)
         for column, width in ((DOMAINS, 220), (FUNCTIONS, 220), (DERIVATIONS, 150)):
             header.resizeSection(column, width)
@@ -205,6 +212,7 @@ class CategoryPage(QWidget):
                 entries[r.item.uuid] = entry
                 self._clauses.append(entry)
         tree.expandAll()  # down to the last clause
+        _fit(tree, (IDENT, CATEGORY, STATE))
         return tree
 
     def _entry(self, row):
@@ -255,17 +263,22 @@ class CategoryPage(QWidget):
 class CoverageReportDialog(QDialog):
     """The report: the coverage of the subset, a tab for the clauses of board and one for those of definition."""
 
-    def __init__(self, project, open_item=None, parent=None):
+    def __init__(self, project, open_item=None, parent=None, progress=None):
+        """progress(done, total, what): called at each step of the generation (the loading bar)."""
         super().__init__(parent)
         self.project, self.open_item = project, open_item
         self.viewer = None
+        steps = 1 + len(REPORT_CATEGORIES)
+        step = progress or (lambda *_args: None)
+        step(0, steps, "Calcolo della copertura delle voci SRS…")
+        model = project.model
+        ordered = document_order(model)
         self.sub_items = {}  # list items, bullets, figures… of each item, shown with its full text
-        for e in document_order(project.model):
+        for e in ordered:
             if e.get("item_type") not in SHOWN:
                 self.sub_items.setdefault(e.get("parent"), []).append(e)
         self.setWindowTitle("Report di copertura delle voci SRS")
-        model = project.model
-        self.reports = reports(model)
+        self.reports = [coverage(model, ordered, c) for c in REPORT_CATEGORIES]
         covered, total, percent = subset_coverage(self.reports)
         layout = QVBoxLayout(self)
         layout.addWidget(QLabel("Copertura delle voci SRS di bordo e di definizione", objectName="cardTitle"))
@@ -281,7 +294,8 @@ class CoverageReportDialog(QDialog):
                                 "parte, da cui aprirne la scheda.", objectName="muted", wordWrap=True))
         self.tabs = QTabWidget()
         self.pages = {}
-        for report in self.reports:
+        for n, report in enumerate(self.reports, 1):
+            step(n, steps, f"Tabelle delle voci di {report.category.lower()} ({report.total} voci)…")
             page = CategoryPage(model, report, self.show_item)
             self.pages[report.category] = page
             index = self.tabs.addTab(page, f"{report.category} ({report.count(DOMAIN)}/{report.total} coperte)")
@@ -296,6 +310,7 @@ class CoverageReportDialog(QDialog):
         buttons.rejected.connect(self.reject)
         layout.addWidget(buttons)
         self.resize(1200, 720)
+        step(steps, steps, "Apertura del report…")
 
     def show_item(self, uuid):
         """The full text of a section or a clause, in a window of its own; its button opens the sheet."""

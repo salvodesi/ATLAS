@@ -759,15 +759,6 @@ class TraceClauseDialog(TraceParentDialog):
             "spuntarne un'altra sposta la scelta. Doppio clic su una riga per leggerne il testo completo.")
 
 
-class TraceReallocItemDialog(TraceParentDialog):
-    """ADR of a reallocation (X-1): the SRS section or clause to reallocate, one only."""
-    FIELD = "realloc_item"
-    COLUMNS = ((PARENT, "Voce"),)
-    TITLE = "sezione o clausola da riallocare"
-    HINT = ("Spunta la sezione (es. 3.4.1) o la clausola (es. 3.4.1.3) da riallocare: una sola, spuntarne un'altra "
-            "sposta la scelta. Doppio clic su una riga per leggerne il testo completo.")
-
-
 class TraceImplItemDialog(TraceParentDialog):
     """ADR of a choice left to the implementation (X-1): the SRS section or clause leaving it, one only."""
     FIELD = "impl_item"
@@ -779,7 +770,7 @@ class TraceImplItemDialog(TraceParentDialog):
 
 # The window to choose an SRS item, for each reference field to the specification chosen with ticks.
 ITEM_DIALOGS = {"requirement": TraceItemDialog, "clause": TraceClauseDialog, "parent": TraceParentDialog,
-                "realloc_item": TraceReallocItemDialog, "impl_item": TraceImplItemDialog}
+                "impl_item": TraceImplItemDialog}
 
 
 class TraceItemsDialog(_TraceDialog):
@@ -847,12 +838,48 @@ class TraceSectionsDialog(TraceItemsDialog):
         return "Nessuna sezione scelta" if not n else "1 sezione scelta" if n == 1 else f"{n} sezioni scelte"
 
 
+class TraceReallocItemsDialog(TraceItemsDialog):
+    """ADR of a reallocation (X-1): the SRS clauses to reallocate (or a section), one or more, provided they belong
+    to the same section: those of another section are refused, with the advice to open a separate ADR."""
+
+    def __init__(self, project, owner, field, parent=None):
+        super().__init__(project, owner, field, parent)
+        self.HINT = ("Spunta le clausole (es. 3.4.1.3) da riallocare, o la sezione (es. 3.4.1): una o più, purché "
+                     "della stessa sezione; per voci di sezioni diverse apri ADR separate. Doppio clic su una riga "
+                     "per leggerne il testo completo.")
+
+    def click(self, item, choice):
+        from arcadia_tool.model.adr import same_section, section_of
+
+        model = self.project.model
+        uuid = item.data(0, UUID_ROLE)
+        if self.state[uuid] != PARENT:
+            chosen = [model.get(u) for u in self.chosen(PARENT)]
+            if chosen and not same_section(model, [*chosen, model.get(uuid)]):
+                section, other = section_of(model, chosen[0]), section_of(model, model.get(uuid))
+
+                def named(s):
+                    return f"alla sezione {s.get('id')}" if s is not None else "a nessuna sezione"
+                QMessageBox.warning(
+                    self, "Sezioni o clausole da riallocare",
+                    f"Non è possibile aggiungere «{model.label_of(uuid)}»: appartiene {named(other)}, mentre le voci "
+                    f"già scelte appartengono {named(section)}.\n\nUna ADR di riallocazione riguarda voci di una sola "
+                    "sezione: per riallocare voci di sezioni diverse apri ADR separate, una per sezione.")
+                return
+        super().click(item, choice)
+
+
+# Windows for a list field of SRS items with a rule of its own.
+ITEMS_DIALOGS = {"realloc_item": TraceReallocItemsDialog}
+
+
 def choose_items(project, element, field, current, parent=None, sections_only=False):
     """SRS items of a list field of a sheet (its draft), chosen with ticks: the new list, or None if cancelled.
     sections_only: only the sections (three numbers) can be chosen."""
     probe = element.copy()  # the window works on a copy: the sheet applies the choice with its «Salva»
     probe.set(field, list(current))
-    dialog = (TraceSectionsDialog if sections_only else TraceItemsDialog)(project, probe, field, parent)
+    dialog_class = ITEMS_DIALOGS.get(field) or (TraceSectionsDialog if sections_only else TraceItemsDialog)
+    dialog = dialog_class(project, probe, field, parent)
     return dialog.selected if dialog.exec() else None
 
 

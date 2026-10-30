@@ -4,10 +4,10 @@ from the methodology: its parameters, its severity and its scope (status and dom
 the checks, on the right the details of the selected one."""
 import copy
 
-from PySide6.QtCore import Qt, Signal
+from PySide6.QtCore import QEvent, Qt, Signal
 from PySide6.QtWidgets import (QCheckBox, QComboBox, QFormLayout, QFrame, QHBoxLayout, QHeaderView, QInputDialog,
                                QLabel, QLineEdit, QListWidget, QListWidgetItem, QMessageBox, QPushButton,
-                               QScrollArea, QSpinBox, QSplitter, QTableWidget, QTableWidgetItem, QTreeWidget,
+                               QScrollArea, QSpinBox, QSplitter, QStyle, QTableWidget, QTableWidgetItem, QTreeWidget,
                                QTreeWidgetItem, QVBoxLayout, QWidget)
 
 from arcadia_tool.checks import (CHECKS, CHECKS_BY_CODE, ERROR, GROUPS, INFO, SEVERITY_LABELS, WARNING,
@@ -91,6 +91,8 @@ class ChecksSettingsPage(QWidget):
         header.setSectionResizeMode(2, QHeaderView.Interactive)
         header.resizeSection(2, 110)
         self.tree.itemClicked.connect(self._clicked)
+        self._pressed = None
+        self.tree.viewport().installEventFilter(self)
         self.tree.currentItemChanged.connect(lambda item, _old: self._show(item))
         self.groups, self.items = {}, {}
         for key, label in GROUPS:
@@ -234,9 +236,20 @@ class ChecksSettingsPage(QWidget):
 
     def _on_box(self, item):
         """The click was on the box of the check (its icon), not on its text."""
-        pos = self.tree.viewport().mapFromGlobal(self.cursor().pos())
+        pos = self._pressed
         rect = self.tree.visualItemRect(item)
-        return pos.x() < rect.left() + self.tree.iconSize().width() + 10 if rect.contains(pos) else True
+        if pos is None or not rect.contains(pos):
+            return True
+        # The size of the icons when the tree does not set one (-1: only a few pixels before the box counted).
+        size = self.tree.iconSize().width()
+        if size <= 0:
+            size = self.tree.style().pixelMetric(QStyle.PM_SmallIconSize, None, self.tree)
+        return pos.x() < rect.left() + size + 16
+
+    def eventFilter(self, watched, event):
+        if watched is self.tree.viewport() and event.type() == QEvent.MouseButtonPress:
+            self._pressed = event.position().toPoint()  # where the click is (itemClicked does not say)
+        return super().eventFilter(watched, event)
 
     def _toggle(self, code, on=None):
         enabled = self.enabled

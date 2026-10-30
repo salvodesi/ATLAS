@@ -6,6 +6,94 @@ l'altra.
 
 ## [Non rilasciato]
 
+## [0.6.0] - 2026-10-30
+
+### Aggiunto
+- **Progetto › Genera**: genera in Excel gli artefatti SA-1…SA-7 e le ADR, compilati dal modello con il disegno
+  dei template.
+  - **«Schede Arcadia»** genera ciò che dicono le impostazioni. Se non sono valide (mai salvate, senza cartella,
+    nessun artefatto con dati) spiega perché e propone di aprirle.
+  - **«Impostazioni…»** apre la finestra in cui si sceglie cosa generare e dove:
+    - gli artefatti, tutti o uno per uno; quelli senza dati nel modello non si possono scegliere ora;
+    - i domini da includere;
+    - la cartella di destinazione.
+
+    «Salva» salva le impostazioni; «Salva e genera» genera anche.
+  - **Dove si salvano le impostazioni:** la scelta è nel progetto (`project.yaml`), condivisa con il team; la
+    cartella vale per questo PC. Un artefatto senza dati resta tra quelli voluti e si genera quando il modello ne
+    avrà. «Tutte le ADR» comprende anche quelle create dopo.
+  - **File:** uno per artefatto.
+    - SA-1 e SA-2 hanno un foglio per dominio e si possono rileggere con «Importa clausole principali» e «Importa
+      funzioni».
+    - SA-3 è un foglio unico con tutte le voci tracciate e i loro requisiti derivati; SA-4, SA-5 e SA-6 sono fogli
+      unici; SA-7 ha un foglio per chain.
+    - Le ADR stanno in un file con il registro delle aperte e un foglio per ADR, con la decisione della DA.
+
+    Se un file esiste già, ATLAS chiede prima di sostituirlo; alla fine il riepilogo ha «Apri cartella».
+- **Import delle funzioni di sistema dal catalogo Excel SA-2 dei team** (un foglio per dominio): con «Importa
+  funzioni da Excel SA-2…» nella scheda di una funzione di sistema, accanto ad «Alloca a sezioni e clausole SRS…»,
+  oppure con «Importa funzioni…» nel menu del clic destro su «SA-2 Funzioni di sistema» nell'albero del modello.
+  - **Cosa crea:** ogni funzione va nel dominio del suo foglio, con l'ID dato da ATLAS, allocata alle clausole della
+    sua riga; si importano anche le funzioni senza clausole. Le sottovoci scritte dopo una clausola («3.5.3.4 b) f)»)
+    sono tracciate con la clausola, e i gruppi come 4.8.1–4.8.3 valgono per tutte le clausole del gruppo.
+  - **Altre colonne:** «Stato Sezione» «Nuova» segna la funzione come nuova, le note a margine vanno nelle note e lo
+    stato «Proposto» diventa «Proposta».
+  - **Re-import dello stesso file:** una funzione già nel dominio con lo stesso nome non si sovrascrive; solo le sue
+    clausole si allineano al file. Le funzioni dei domini del file che nel file non ci sono più si eliminano; quelle
+    create in ATLAS, mai importate, sono proposte senza spunta.
+  - **Riepilogo:** prima di applicare mostra cosa cambia nel modello, con la spunta «Applica» per ogni funzione:
+    funzioni nuove, aggiornate (clausole allocate e tolte), eliminate (con i riferimenti e le viste impattati) e
+    senza modifiche.
+- **ADR**:
+  - **«Proponente (membro del team)»** in tutti i tipi, scelto tra i membri del team proponente; compare anche nel
+    registro delle ADR aperte e nei template.
+  - In tutti i tipi una sezione **«Decisione della DA»** con l'esito («Commenti DA», «Accolta», «Accolta con
+    modifiche», «Respinta») e le osservazioni; solo i membri della Design Authority possono modificarla. Con
+    «Commenti DA» l'ADR torna al proponente e resta attiva.
+  - Gli stati **«In revisione DA»** e **«Revisionato DA»**: l'ADR è ancora aperta, senza data della decisione, e la
+    DA può approvare un nuovo dominio.
+- Schede di **dominio funzionale** e di **funzione di sistema**: in «Relazioni», al posto di «Decisioni collegate»,
+  c'è la tabella delle ADR che li riguardano (esito, ID, titolo, tipo, stato, decisione DA), ordinate per esito.
+  - **Quali compaiono:** attive, approvate, respinte e superate; sono le ADR che li citano o che ne leggono il
+    dominio, più quelle collegate a mano nelle versioni precedenti.
+  - **Azioni:** doppio clic apre l'ADR; «Nuova ADR…» ne crea una che li riguarda.
+  - **Verifiche:** SA2-11 e SA2-14 tengono conto di tutte queste ADR.
+
+### Modificato
+- **Template SA-1…SA-7** allineati alle schede di ATLAS e generati dal codice (`scripts/make_sa_templates.py`),
+  come quelli delle ADR. Tra le modifiche:
+  - SA-1 ha le sezioni Identificazione, Descrizione, Tracciabilità e Relazioni, e la tabella delle ADR;
+  - SA-2 ha descrizione, disponibilità nei modi, note, ADR e stato;
+  - SA-3 è una tabella unica con sezione e dominio principale;
+  - SA-4 ha nome sintetico e motivazione della derivazione;
+  - SA-5 ha nome e accordi di produttore e utilizzatore;
+  - SA-6 ha natura e significato;
+  - SA-7 ha dato prodotto e natura separati, e lo stato.
+
+  I template ADR usano lo stesso disegno, con la decisione della DA nella sua sezione.
+- **ADR di riallocazione:** più clausole nella stessa ADR, purché della stessa sezione. Al clic su una voce di
+  un'altra sezione la finestra di scelta avvisa che servono ADR separate. Le ADR salvate con una sola voce sono
+  convertite all'apertura del progetto.
+- **Lista delle decisioni architetturali (X-1):**
+  - le colonne «Team proponente», «Membro proponente» e «Decisione DA» sostituiscono «Ambito» e «Data della
+    decisione»;
+  - la lista è ordinata per ID; un clic sull'intestazione di ID, Tipo, Team, Membro, Stato o Decisione DA la ordina
+    per quella colonna.
+- **Report di copertura:** una barra di caricamento mostra la fase, e la generazione è passata da circa 8 secondi a
+  meno di uno.
+- **Catalogo delle voci SRS:** alla prima apertura una barra di caricamento mostra quante voci sono pronte; durante
+  una ricerca non compare. Con le 4540 voci del SUBSET-026 l'apertura è passata da circa 14 secondi a meno di 5:
+  le figure si impaginano leggendone solo le dimensioni.
+- **Import SA-2:** riconosce anche il catalogo generato da ATLAS. Nelle note mette solo le colonne senza
+  intestazione.
+
+### Corretto
+- **Dominio principale e contributori attuali di una clausola** nelle ADR e nei documenti generati: una clausola
+  senza dominio principale proprio prende quello della sezione che la contiene (A4), indicata accanto («da
+  3.11.6»). Prima risultava «Nessuno».
+- **Vista complessiva SA-2:** le funzioni mostravano 0 clausole anche se allocate; ora si contano le loro voci SRS.
+- **Impostazioni delle verifiche:** il clic sul quadratino di un singolo controllo non lo attivava né disattivava.
+
 ## [0.5.0] - 2026-10-29
 
 ### Aggiunto
@@ -351,7 +439,8 @@ Prima versione pubblicata su GitLab.
 - Nome ATLAS (Arcadia Traceability, Logical Architecture Software), icona e logo.
 - Installer Windows e archivio Linux. La pipeline GitLab esegue i test e compila la versione Linux.
 
-[Non rilasciato]: https://github.com/salvodesi/ATLAS/compare/v0.5.0...main
+[Non rilasciato]: https://github.com/salvodesi/ATLAS/compare/v0.6.0...main
+[0.6.0]: https://github.com/salvodesi/ATLAS/compare/v0.5.0...v0.6.0
 [0.5.0]: https://github.com/salvodesi/ATLAS/compare/v0.4.0...v0.5.0
 [0.4.0]: https://github.com/salvodesi/ATLAS/compare/v0.3.0...v0.4.0
 [0.3.0]: https://github.com/salvodesi/ATLAS/compare/v0.2.0...v0.3.0

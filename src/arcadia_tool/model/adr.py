@@ -4,13 +4,16 @@ from datetime import date
 
 from arcadia_tool.model.element import Element
 from arcadia_tool.model.schema import (ADR_DELETE_DOMAIN, ADR_DETAILS, ADR_DOMAIN_SCOPE, ADR_FUNCTION,
-                                       ADR_IMPLEMENTATION, ADR_NEW_DOMAIN, ADR_OWNER, ADR_PRODUCT_OPTION,
+                                       ADR_IMPLEMENTATION, ADR_MERGE_DOMAINS, ADR_NEW_DOMAIN, ADR_OWNER,
+                                       ADR_PRODUCT_OPTION,
                                        ADR_SECTION, ADR_SPLIT_DOMAIN, KINDS_BY_NAME)
 from arcadia_tool.model.teams import person_key
 
-PROPOSED, DECIDED = "Proposta", "Decisa"
+PROPOSED, IN_REVIEW, REVIEWED, DECIDED = "Proposta", "In revisione DA", "Revisionato DA", "Decisa"
+OPEN = (PROPOSED, IN_REVIEW, REVIEWED, None)  # not decided yet
 
-IDENTIFICATION = ("id", "title", "adr_type", "status", "superseded_by", "proposer", "decision_date")
+IDENTIFICATION = ("id", "title", "adr_type", "status", "superseded_by", "proposer", "proposer_member",
+                  "decision_date")
 
 
 def srs_items_of(model, domains):
@@ -36,22 +39,81 @@ def current_mission(model, adr):
     return (domain.get("mission") or "") if domain is not None else ""
 
 
-def _realloc_item(model, adr):
-    """The SRS item of the ADR: the one to reallocate, or the one leaving a choice to the implementation."""
-    uuid = adr.get("realloc_item") or adr.get("impl_item")
-    return model.get(uuid) if uuid else None
+def realloc_items(model, adr):
+    """The SRS items of the ADR: those to reallocate (one or more, of sections of the same domain), or the one
+    leaving a choice to the implementation."""
+    value = adr.get("realloc_item") or adr.get("impl_item") or []
+    uuids = [value] if isinstance(value, str) else list(value)  # one item: written by earlier versions
+    return [e for e in (model.get(u) for u in uuids) if e is not None]
+
+
+def allocated_part(model, item):
+    """The SRS item whose domains the item has (A4): the item itself if it has a principal or contributing domain,
+    else the nearest section or clause containing it that has one (a clause takes them from its section)."""
+    seen = set()
+    while item is not None and item.uuid not in seen:
+        seen.add(item.uuid)
+        if item.get("primary_domain") or item.get("contributing_domains"):
+            return item
+        item = model.get(item.get("parent")) if item.get("parent") else None
+    return None
+
+
+def principal_of(model, item):
+    """The principal domain an SRS item has now: its own, else of the nearest section or clause containing it that
+    has one (A4; also when the item has contributing domains of its own)."""
+    seen = set()
+    while item is not None and item.uuid not in seen:
+        seen.add(item.uuid)
+        if item.get("primary_domain"):
+            return item.get("primary_domain")
+        item = model.get(item.get("parent")) if item.get("parent") else None
+    return None
 
 
 def item_primary(model, adr):
-    """The principal domain the SRS item of the ADR has now."""
-    item = _realloc_item(model, adr)
-    return item.get("primary_domain") if item is not None else None
+    """The principal domain the SRS items of the ADR have now (of the first that has one: they are of one section,
+    see same_section)."""
+    return next((d for d in (principal_of(model, e) for e in realloc_items(model, adr)) if d), None)
 
 
 def item_contributors(model, adr):
-    """The contributing domains the SRS item to reallocate has now."""
-    item = _realloc_item(model, adr)
-    return list(item.get("contributing_domains") or []) if item is not None else []
+    """The contributing domains the SRS items to reallocate have now (their own, or of the sections containing
+    them), without repetitions."""
+    result = []
+    for item in realloc_items(model, adr):
+        part = allocated_part(model, item)
+        result += [d for d in (part.get("contributing_domains") or [] if part is not None else []) if d not in result]
+    return result
+
+
+def allocated_from(model, adr):
+    """The sections or clauses the domains of the SRS items of the ADR come from, when not the items themselves."""
+    result = []
+    for item in realloc_items(model, adr):
+        part, seen = item, set()  # where its principal domain comes from (see principal_of)
+        while part is not None and part.uuid not in seen and not part.get("primary_domain"):
+            seen.add(part.uuid)
+            part = model.get(part.get("parent")) if part.get("parent") else None
+        if part is not None and part is not item and part.get("primary_domain") and part not in result:
+            result.append(part)
+    return result
+
+
+def section_of(model, item):
+    """The section (item type «Sezione») an SRS item is, or belongs to; None for one outside any section."""
+    seen = set()
+    while item is not None and item.uuid not in seen:
+        seen.add(item.uuid)
+        if item.get("item_type") == "Sezione":
+            return item
+        item = model.get(item.get("parent")) if item.get("parent") else None
+    return None
+
+
+def same_section(model, items):
+    """The SRS items of one ADR of reallocation: all of the same section (else: one ADR per section)."""
+    return len({getattr(section_of(model, e), "uuid", None) for e in items}) <= 1
 
 
 def function_domain(model, adr):
@@ -125,8 +187,10 @@ def adr_defaults(model, adr_type, element=None):
         values["split_domain"] = element.uuid
     elif kind == "domain" and adr_type == ADR_DOMAIN_SCOPE:
         values["domain"] = element.uuid
+    elif kind == "domain" and adr_type == ADR_MERGE_DOMAINS:
+        values["merged_domains"] = [element.uuid]  # the others: added in the sheet
     elif kind == "requirement" and adr_type == ADR_SECTION:
-        values["realloc_item"] = element.uuid  # its domains now: read from it (see item_primary)
+        values["realloc_item"] = [element.uuid]  # its domains now: read from it (see item_primary)
     elif kind == "requirement" and adr_type == ADR_IMPLEMENTATION:
         values["impl_item"] = element.uuid  # its domain: read from it (see item_primary)
     elif kind == "system_function" and adr_type in (ADR_FUNCTION, ADR_PRODUCT_OPTION):
@@ -136,11 +200,64 @@ def adr_defaults(model, adr_type, element=None):
     return {k: v for k, v in values.items() if v}
 
 
+# --- the ADR of a domain or of a system function -------------------------------------------------------------
+
+ACTIVE, APPROVED, REJECTED, SUPERSEDED = "Attiva", "Approvata", "Respinta", "Superata"
+OUTCOMES = (ACTIVE, APPROVED, REJECTED, SUPERSEDED)  # in the order of the table of a sheet
+
+
+def outcome(adr):
+    """Where an ADR stands: respinta (by the DA), superata, approvata (decided, or accepted by the DA), else
+    attiva (proposed, under the review of the DA, or with its comments to address)."""
+    if adr.get("da_decision") == "Respinta":
+        return REJECTED
+    if adr.get("status") == "Superata":
+        return SUPERSEDED
+    if adr.get("status") == DECIDED or adr.get("da_decision") in ("Accolta", "Accolta con modifiche"):
+        return APPROVED
+    return ACTIVE
+
+
+def related_adrs(model, element):
+    """The ADR about a domain or a system function: those that name it in a field (the domain to delete, the
+    function to move, the domain proposed…, or «Riguarda», when created from its sheet), those that read it from
+    the model (the domain of the clauses to reallocate, of the function to move), and those linked by hand in the
+    sheet by earlier versions («Decisioni collegate»). In the order of the table: by outcome, then by ID."""
+    from arcadia_tool.model.element import natural_key
+
+    found = {u: model.get(u) for u in element.get("adrs") or []}
+    for adr in model.of_kind("adr"):
+        if adr.uuid in found:
+            continue
+        named = any(
+            (f.type == "ref" and adr.values.get(f.name) == element.uuid) or
+            (f.type == "refs" and element.uuid in (adr.values.get(f.name) or [])) or
+            (f.type == "table" and any(element.uuid in row.values() for row in adr.values.get(f.name) or []
+                                       if isinstance(row, dict)))
+            for f in adr.schema.fields if f.stored and f.applies(adr) or f.name == "concerns")
+        computed = any(element.uuid in ([v] if isinstance(v, str) else (v or []))
+                       for f in adr.schema.fields if f.computed and f.applies(adr) and f.computed in COMPUTED
+                       and f.type in ("ref", "refs") and element.kind in f.ref_kinds
+                       for v in [COMPUTED[f.computed](model, adr)])
+        if named or computed:
+            found[adr.uuid] = adr
+    adrs = [a for a in found.values() if a is not None and a.kind == "adr"]
+    return sorted(adrs, key=lambda a: (OUTCOMES.index(outcome(a)), natural_key(a.get("id") or "")))
+
+
+def related_adrs_ids(model, element):
+    return [a.uuid for a in related_adrs(model, element)]
+
+
+COMPUTED["related_adrs"] = related_adrs_ids  # the table of the ADR of a domain or function sheet
+
+
 # --- the approval of the Design Authority ---------------------------------------------------------------------
 
 def can_approve(adr):
-    """An ADR the Design Authority can approve with an action of the tool: a new domain still proposed."""
-    return adr.kind == "adr" and adr.get("adr_type") == ADR_NEW_DOMAIN and adr.get("status") in (PROPOSED, None)
+    """An ADR the Design Authority can approve with an action of the tool: a new domain still proposed (or under
+    its review)."""
+    return adr.kind == "adr" and adr.get("adr_type") == ADR_NEW_DOMAIN and adr.get("status") in OPEN
 
 
 def approval_problems(model, adr):
@@ -168,11 +285,12 @@ def sections_taken(model, adr):
 
 def decision_date_of(adr, previous=None, today=None):
     """The date of the decision of an ADR as it should be: set (today) when it becomes «Decisa», kept while it is
-    decided or superseded, removed if it goes back to «Proposta»."""
+    decided or superseded, removed if it goes back to «Proposta», «In revisione DA» or «Revisionato
+    DA»."""
     status = adr.get("status")
     if status == DECIDED and not adr.get("decision_date"):
         return f"{(today or date.today()):%d/%m/%Y}"
-    if status in (PROPOSED, None):
+    if status in OPEN:
         return None
     return adr.get("decision_date")
 

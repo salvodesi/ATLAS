@@ -73,6 +73,9 @@ def adr_area(adr_type):
     """The area a type of ADR applies to («Domini funzionali (SA)»…), or "" (an ADR without a type)."""
     return next((area for area, types in ADR_AREAS if adr_type in types), "")
 ADR_DETAILS = "Dettagli del tipo di decisione"
+DA_DECISION = "Decisione della DA"
+# «Commenti DA»: the DA asks the proposer for changes before deciding (the ADR stays active).
+DA_DECISIONS = ("Commenti DA", "Accolta", "Accolta con modifiche", "Respinta")
 
 
 def _adr(field, *types):
@@ -115,6 +118,9 @@ class Field:
     section: str = ""
     # A text chosen among the values of a list field of the same element (the referent among the members).
     choices_from: str = ""
+    # A name chosen among the members of the team of a reference field of the same element (the member of the team
+    # proposing an ADR).
+    members_of: str = ""
     # Copied from a referenced element, not entered: (reference field, field of the referenced element).
     derived_from: tuple = ()
     # Analysis data, not imported: editable also on read-only SRS items (e.g. the allocation to domains).
@@ -274,7 +280,10 @@ KINDS = (
         Field("team", "Team assegnatario", REF, ref_kinds=("team",), section="Identificazione"),
         Field("referent", "Referente", derived_from=("team", "referent")),
         Field("planned_components", "Componenti logici previsti", REFS, ref_kinds=("logical_component",)),
-        Field("adrs", "Decisioni collegate", REFS, ref_kinds=("adr",)),
+        # Linked by hand by earlier versions: now among the ADR about the domain (see related_adrs).
+        Field("adrs", "Decisioni collegate", REFS, ref_kinds=("adr",), hidden=True),
+        Field("related_adrs", "Decisioni architetturali (ADR)", REFS, ref_kinds=("adr",), stored=False,
+              computed="related_adrs"),
         _common_status(),
     )),
     Kind("system_function", "Funzione di sistema", "Funzioni di sistema", "sa/functions", "System Analysis", "SA-2",
@@ -291,7 +300,12 @@ KINDS = (
         Field("is_new", "Funzione nuova", BOOL),
         Field("new_reason", "Motivo", TEXT),
         Field("notes", "Note e decisioni", TEXT),
-        Field("adrs", "ADR", REFS, ref_kinds=("adr",)),
+        # Linked by hand by earlier versions: now among the ADR about the function (see related_adrs).
+        Field("adrs", "ADR", REFS, ref_kinds=("adr",), hidden=True),
+        Field("related_adrs", "Decisioni architetturali (ADR)", REFS, ref_kinds=("adr",), stored=False,
+              computed="related_adrs"),
+        # Imported from the SA-2 catalogue in Excel: its ID there (a re-import deletes it if no longer there).
+        Field("catalogue_id", "ID nel catalogo SA-2", hidden=True),
         _common_status(("Proposta", "Rivista", "Approvata")),
     )),
     Kind("external_actor", "Attore esterno", "Attori esterni", "sa/actors", "System Analysis", "", "", (
@@ -434,10 +448,16 @@ KINDS = (
         # The deletion of a domain: the domain right under the type.
         Field("deleted_domain", "Dominio interessato", REF, ref_kinds=("domain",), section="Identificazione",
               when=("adr_type", (ADR_DELETE_DOMAIN,))),
-        Field("status", "Stato", ENUM, ("Proposta", "Decisa", "Superata"), significant=True),
+        # «In revisione DA»: the Design Authority is examining it; «Revisionato DA»: it has examined it. Both still
+        # open, not decided.
+        Field("status", "Stato", ENUM, ("Proposta", "In revisione DA", "Revisionato DA", "Decisa", "Superata"),
+              significant=True),
         # The ADR can be many: chosen in a window with search and ticks, not in a drop-down list.
         Field("superseded_by", "Superata da", REF, ref_kinds=("adr",), picker=True, section="Identificazione"),
         Field("proposer", "Proponente (team)", REF, ref_kinds=("team",), section="Identificazione"),
+        Field("proposer_member", "Proponente (membro del team)", members_of="proposer", section="Identificazione"),
+        # The domain or the system function whose sheet the ADR was created from (among its ADR, see related_adrs).
+        Field("concerns", "Riguarda", REFS, ref_kinds=("domain", "system_function"), hidden=True),
         # Set by the tool when the ADR is decided (the decider is always the Design Authority).
         Field("decision_date", "Data della decisione", by_tool=True),
         # Description, relations and options: not in a new domain, whose details say it all (its sections); the
@@ -453,7 +473,10 @@ KINDS = (
             Column("pros", "Vantaggi"), Column("cons", "Svantaggi e rischi"))), ADR_NEW_DOMAIN, ADR_DELETE_DOMAIN, ADR_MERGE_DOMAINS, ADR_SPLIT_DOMAIN, ADR_DOMAIN_SCOPE, ADR_SECTION, ADR_FUNCTION, ADR_OWNER, ADR_IMPLEMENTATION, ADR_PRODUCT_OPTION),
         _adr_except(Field("decision", "Decisione", TEXT), ADR_NEW_DOMAIN, ADR_DELETE_DOMAIN, ADR_MERGE_DOMAINS, ADR_SPLIT_DOMAIN, ADR_DOMAIN_SCOPE, ADR_SECTION, ADR_FUNCTION, ADR_OWNER, ADR_IMPLEMENTATION, ADR_PRODUCT_OPTION),
         _adr_except(Field("rationale", "Motivazione", TEXT), ADR_NEW_DOMAIN, ADR_MERGE_DOMAINS, ADR_SPLIT_DOMAIN, ADR_DOMAIN_SCOPE, ADR_SECTION, ADR_FUNCTION, ADR_OWNER, ADR_IMPLEMENTATION, ADR_PRODUCT_OPTION),
-        Field("da_notes", "Osservazioni DA", TEXT, when=("adr_type", (ADR_DELETE_DOMAIN,))),
+        # The decision of the Design Authority on the proposal, in every ADR (changed only by its members, see
+        # model.teams).
+        Field("da_decision", "Esito della decisione DA", ENUM, DA_DECISIONS, section=DA_DECISION),
+        Field("da_notes", "Osservazioni DA", TEXT, section=DA_DECISION),
         _adr_except(Field("consequences", "Conseguenze", TEXT), ADR_NEW_DOMAIN, ADR_DELETE_DOMAIN, ADR_MERGE_DOMAINS, ADR_SPLIT_DOMAIN, ADR_DOMAIN_SCOPE, ADR_SECTION, ADR_FUNCTION, ADR_OWNER, ADR_IMPLEMENTATION, ADR_PRODUCT_OPTION),
         _adr_except(Field("review_when", "Da rivedere quando", TEXT), ADR_NEW_DOMAIN, ADR_DELETE_DOMAIN, ADR_MERGE_DOMAINS, ADR_SPLIT_DOMAIN, ADR_DOMAIN_SCOPE, ADR_SECTION, ADR_FUNCTION, ADR_OWNER, ADR_IMPLEMENTATION, ADR_PRODUCT_OPTION),
         # --- details of the type (see ADR_TYPES) ---------------------------------------------------------
@@ -497,10 +520,10 @@ KINDS = (
         _adr(Field("split_allocation", "Ripartizione delle voci SRS tra i domini risultanti", TABLE, columns=(
             Column("item", "Voce SRS del dominio da scindere", choices="split_domain_items"),
             Column("destination", "Dominio risultante", choices="split_destinations"))), ADR_SPLIT_DOMAIN),
-        # The reallocation of an SRS item: the item (chosen with ticks), its domains now (read from it) and those
-        # proposed, with the motivation.
-        _adr(Field("realloc_item", "Sezione o clausola da riallocare", REF, ref_kinds=("requirement",),
-                   picker=True), ADR_SECTION),
+        # The reallocation of SRS items: the items (chosen with ticks, one or more, of sections of the same domain),
+        # their domains now (read from them) and those proposed, with the motivation.
+        _adr(Field("realloc_item", "Sezioni o clausole da riallocare", REFS, ref_kinds=("requirement",)),
+             ADR_SECTION),
         _adr(Field("primary_current", "Dominio principale attuale", REF, ref_kinds=("domain",), stored=False,
                    computed="item_primary"), ADR_SECTION),
         _adr(Field("contributors_current", "Contributori attuali", REFS, ref_kinds=("domain",), stored=False,

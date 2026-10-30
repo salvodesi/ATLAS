@@ -202,7 +202,9 @@ def test_project_menu_cleans_the_project(app, tmp_path, monkeypatch, choice):
     project_menu = window.menuBar().actions()[1].menu()
     assert [a.text() for a in project_menu.actions() if a.text()] == [
         "Chiudi progetto", "Pulisci progetto…", "Rimuovi tutte le voci SRS…", "Ricarica dal repository…",
-        "Migra repository…", "Verifica modello", "Impostazioni verifiche…", "Impostazioni…"]
+        "Migra repository…", "Verifica modello", "Impostazioni verifiche…", "Genera", "Impostazioni…"]
+    generate_menu = next(a.menu() for a in project_menu.actions() if a.text() == "Genera")
+    assert [a.text() for a in generate_menu.actions()] == ["Schede Arcadia", "Impostazioni…"]
     assert not window.remove_srs_action.isEnabled()  # no SRS items yet
     domain = p.new_element("domain", name="Odometria")
     item = p.new_element("requirement", id="3.4.1", item_type="Sezione", primary_domain=domain.uuid)

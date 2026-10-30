@@ -73,8 +73,25 @@ def test_the_report_opens_from_the_srs_page_with_sections_and_clauses_and_is_exp
     opened = []
     reader.open_element.connect(opened.append)
     assert reader.coverage_button.text() == "Report di copertura…"
+    from arcadia_tool.ui import srs_reader
+    steps = []
+
+    class RecordedLoading(srs_reader.QProgressDialog):  # the window with the loading bar: its steps recorded
+        def setValue(self, value):
+            super().setValue(value)
+            steps.append((value, self.maximum(), self.labelText(), self.isVisible()))
+
+        def setLabelText(self, text):
+            super().setLabelText(text)
+            steps.append((self.value(), self.maximum(), text, self.isVisible()))
+    monkeypatch.setattr(srs_reader, "QProgressDialog", RecordedLoading)
     dialog = reader.show_coverage()
     assert isinstance(dialog, CoverageReportDialog) and not dialog.isModal()
+    texts = list(dict.fromkeys(text for _v, _m, text, _shown in steps))
+    assert texts == ["Calcolo della copertura delle voci SRS…", "Tabelle delle voci di bordo (4 voci)…",
+                     "Tabelle delle voci di definizione (2 voci)…", "Apertura del report…"]
+    assert all(shown for *_rest, shown in steps) and steps[-1][:2] == (3, 3)
+    assert not [w for w in app.topLevelWidgets() if isinstance(w, RecordedLoading) and w.isVisible()]  # closed
     assert "66.7%" in dialog.subset.text() and "4 di 6" in dialog.subset.text()
     assert [dialog.tabs.tabText(i) for i in range(dialog.tabs.count())] == ["Bordo (3/4 coperte)",
                                                                            "Definizione (1/2 coperte)"]

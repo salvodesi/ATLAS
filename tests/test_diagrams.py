@@ -54,8 +54,16 @@ def build(tmp_path):
          "nature": "FLOW", "exchange": x["inputs"].uuid},
         {"cycle": "2", "function": f[(6, 4)].uuid, "what": "Verifica lo standstill", "data": "Standstill"},
     ])
-    p.new_element("trace_record", primary_function=f[(6, 4)].uuid)
-    p.new_element("trace_record", primary_function=f[(6, 6)].uuid, secondary_functions=[f[(6, 4)].uuid])
+    section = p.new_element("requirement", id="3.11", item_type="Sezione", sequence=1)
+    c1, c2 = (p.new_element("requirement", id=f"3.11.{n}", item_type="Requisito", parent=section.uuid, sequence=n + 1)
+              for n in (1, 2))
+    p.new_element("trace_record", requirement=c1.uuid, primary_function=f[(6, 4)].uuid)
+    p.new_element("trace_record", requirement=c2.uuid, primary_function=f[(6, 6)].uuid,
+                  secondary_functions=[f[(6, 4)].uuid])
+    # Allocated from its sheet (or the import of SA-2), without SA-3 records: its clauses are counted too.
+    f[(11, 1)].set("sections", [section.uuid])
+    p.update(f[(11, 1)])
+    p.new_element("trace_record", requirement=c1.uuid, primary_function=f[(11, 1)].uuid)  # within its section
     return p, d, f, x, chain, rbc, alone
 
 
@@ -71,6 +79,10 @@ def test_the_breakdown_has_the_domains_with_their_functions_and_traced_items(tmp
     assert [x.ident for x in domains] == ["DF02", "DF05", "DF06", "DF11", ""]
     df06 = domains[2]
     assert [(g.ident, g.clauses) for g in df06.functions] == [("SF-DF06-04", 2), ("SF-DF06-06", 1)]
+    assert [(g.ident, g.clauses) for g in domains[3].functions] == [("SF-DF11-01", 1), ("SF-DF11-02", 0)]
+    # Only allocated, never in an SA-3 record (as after the import of SA-2).
+    f[(2, 1)].set("sections", [p.model.of_kind("requirement")[1].uuid, p.model.of_kind("requirement")[2].uuid])
+    assert [g.clauses for g in dg.breakdown(p.model)[0].functions] == [2]
     assert domains[-1].name == "Funzioni senza dominio" and domains[-1].functions[0].uuid == alone.uuid
     # An open domain is as wide as the others and higher; the others flow around it.
     blocks = breakdown_layout(domains, {d[5].uuid})

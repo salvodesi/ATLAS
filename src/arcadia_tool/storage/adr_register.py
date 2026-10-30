@@ -21,8 +21,9 @@ def open_adrs(model):
         if status in CLOSED:
             continue
         team = model.get(adr.get("proposer")) if adr.get("proposer") else None
-        rows.append((adr.get("id") or "", adr.get("title") or "", model.label(team) if team is not None else "",
-                     status or "Proposta"))
+        proposer = " · ".join(t for t in (model.label(team) if team is not None else "",
+                                          adr.get("proposer_member") or "") if t)  # the team, its member
+        rows.append((adr.get("id") or "", adr.get("title") or "", proposer, status or "Proposta"))
     return sorted(rows, key=lambda r: natural_key(r[0]))
 
 

@@ -177,9 +177,11 @@ def test_recipients_written_as_text_become_teams(tmp_path):
 
 def test_x1_lists_the_architectural_decisions(app, tmp_path, monkeypatch):
     p = Project.create(tmp_path / "p", "Prova")
+    team = p.new_element("team", id="T2", name="Odometria", members=[{"name": "Luca Neri"}])
     adr = p.new_element("adr", title="MRSP in un dominio autonomo", status="Decisa",
-                        context="La catena rimbalza tra DF03 e DF04.")
-    adr.set("decision_date", "12/10/2026")
+                        context="La catena rimbalza tra DF03 e DF04.", proposer=team.uuid,
+                        proposer_member="Luca Neri")
+    adr.set("decision_date", "12/10/2026")  # not in the table
     p.update(adr)
     window = MainWindow()
     window.show()
@@ -187,10 +189,10 @@ def test_x1_lists_the_architectural_decisions(app, tmp_path, monkeypatch):
     window.tree._double_clicked(window.tree._kind_items["adr"], 0)
     page = window.list_pages["adr"]
     table = page.table
-    assert [table.horizontalHeaderItem(c).text() for c in range(6)] == ["ID", "Titolo", "Ambito", "Tipo",
-                                                                        "Data della decisione", "Stato"]
-    assert [table.item(0, c).text() for c in range(6)] == ["ADR-001", "MRSP in un dominio autonomo", "", "",
-                                                           "12/10/2026", "Decisa"]
+    assert [table.horizontalHeaderItem(c).text() for c in range(6)] == ["ID", "Titolo", "Tipo", "Team proponente",
+                                                                        "Membro proponente", "Stato"]
+    assert [table.item(0, c).text() for c in range(6)] == ["ADR-001", "MRSP in un dominio autonomo", "",
+                                                           "T2 Odometria", "Luca Neri", "Decisa"]
     assert "rimbalza" in table.item(0, 0).toolTip() and page.count.text() == "1 ADR"
     import arcadia_tool.ui.adr_types as adr_types
 
@@ -205,11 +207,77 @@ def test_x1_lists_the_architectural_decisions(app, tmp_path, monkeypatch):
     window.pages.setCurrentWidget(page)
     monkeypatch.setattr(QMessageBox, "question", lambda *a, **k: QMessageBox.Yes)
     rows = {page.table.item(r, 0).text(): r for r in range(page.table.rowCount())}
-    assert list(rows) == ["ADR-002", "ADR-001"]  # grouped by area: the one without a type last
-    assert page.table.item(rows["ADR-002"], 2).text() == "Domini funzionali (SA)"
+    assert list(rows) == ["ADR-001", "ADR-002"]  # by ID
+    assert page.table.item(rows["ADR-002"], 2).text() == "Fusione di domini"
     buttons(page, rows["ADR-002"])["Elimina"].click()
     assert [e.get("id") for e in p.model.of_kind("adr")] == ["ADR-001"]
     window.close()
+
+
+def test_the_list_of_the_adr_is_sorted_by_id_and_by_a_click_on_a_heading(app, tmp_path):
+    from PySide6.QtCore import Qt
+
+    p = Project.create(tmp_path / "p", "Prova")
+    t1 = p.new_element("team", id="T1", name="Odometria", members=[{"name": "Luca Neri"}, {"name": "Anna Bianchi"}])
+    t2 = p.new_element("team", id="T2", name="Fondazione", members=[{"name": "Marta Verdi"}])
+    for title, team, member, adr_type, status, decision in (
+            ("Prima", t2, "Marta Verdi", "Eliminazione di dominio", "Decisa", "Respinta"),
+            ("Seconda", t1, "Luca Neri", "Altro / decisione trasversale", "Proposta", None),
+            ("Terza", None, None, None, "Superata", None),
+            ("Quarta", t1, "Anna Bianchi", "Riallocazione di sezione o clausola", "Revisionato DA", "Accolta")):
+        p.new_element("adr", title=title, status=status, **({"proposer": team.uuid} if team else {}),
+                      **({"proposer_member": member} if member else {}),
+                      **({"adr_type": adr_type} if adr_type else {}), **({"da_decision": decision} if decision else {}))
+    for n in range(5, 11):  # ADR-010 after ADR-009, not after ADR-001
+        p.new_element("adr", title=f"Altra {n}", status="Proposta")
+    page = ElementListPage(p, "adr")
+
+    def ids():
+        return [page.table.item(r, 0).text() for r in range(page.table.rowCount())]
+
+    def column(name):
+        c = page.columns.index(name)
+        return [page.table.item(r, c).text() for r in range(page.table.rowCount())]
+    assert ids() == [f"ADR-{n:03d}" for n in range(1, 11)]
+    # The decision of the DA next to the status of the ADR, in colour like it.
+    status, decision = page.columns.index("status"), page.columns.index("da_decision")
+    assert decision == status + 1 and page.table.horizontalHeaderItem(decision).text() == "Decisione DA"
+    assert column("da_decision")[:4] == ["Respinta", "", "", "Accolta"]
+    assert page.table.item(0, decision).foreground().color().name().upper() == "#B42318"
+    assert page.table.item(3, decision).foreground().color().name().upper() == "#166534"
+    assert column("status")[3] == "Revisionato DA"
+    page.sort_by("da_decision")  # in the order of the outcomes: Accolta, …, Respinta; the others last
+    assert column("da_decision")[:2] == ["Accolta", "Respinta"] and ids()[:2] == ["ADR-004", "ADR-001"]
+    page.sort_by("proposer")  # the teams, the ADR without one last (by ID)
+    assert column("proposer")[:4] == ["T1 Odometria", "T1 Odometria", "T2 Fondazione", ""]
+    assert ids()[:4] == ["ADR-002", "ADR-004", "ADR-001", "ADR-003"]
+    page.sort_by("proposer_member")
+    assert column("proposer_member")[:3] == ["Anna Bianchi", "Luca Neri", "Marta Verdi"]
+    page.sort_by("adr_type", Qt.DescendingOrder)  # in the order of the types of the method, here reversed
+    assert column("adr_type")[:3] == ["Altro / decisione trasversale", "Riallocazione di sezione o clausola",
+                                      "Eliminazione di dominio"]
+    page.sort_by("status")  # in the order of the states
+    assert column("status")[0] == "Proposta" and column("status")[-3:] == ["Revisionato DA", "Decisa", "Superata"]
+    page.sort_by("title")  # not sortable: the order stays, as the arrow
+    assert column("status")[-3:] == ["Revisionato DA", "Decisa", "Superata"]
+    header = page.table.horizontalHeader()
+    assert header.sortIndicatorSection() == page.columns.index("status")
+    from PySide6.QtTest import QTest
+    page.resize(1200, 600)
+    page.show()
+    id_column = page.columns.index("id")
+    point = header.rect().center()
+    point.setX(header.sectionViewportPosition(id_column) + header.sectionSize(id_column) // 2)
+    QTest.mouseClick(header.viewport(), Qt.LeftButton, Qt.NoModifier, point)  # a real click: by ID
+    assert ids()[0] in ("ADR-001", "ADR-010") and header.sortIndicatorSection() == id_column
+    if ids()[0] == "ADR-001":
+        QTest.mouseClick(header.viewport(), Qt.LeftButton, Qt.NoModifier, point)  # again: the other way round
+    assert ids()[0] == "ADR-010"
+    page.sort_by("id", Qt.DescendingOrder)
+    assert ids()[0] == "ADR-010"
+    p.new_element("adr", title="Nuova", status="Proposta")
+    page.reload()  # a new ADR: the order chosen is kept
+    assert ids()[0] == "ADR-011"
 
 
 @pytest.mark.parametrize("kind, text", [("clarification", "0 richieste"), ("adr", "0 ADR")])

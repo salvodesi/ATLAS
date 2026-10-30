@@ -140,6 +140,7 @@ class MainWindow(QMainWindow):
         self.tree.srs_reader_requested.connect(self.open_srs_reader)
         self.tree.srs_window_requested.connect(self.open_srs_window)
         self.tree.import_requested.connect(self.import_srs)
+        self.tree.functions_import_requested.connect(self.import_functions)
         self.tree.list_requested.connect(self.open_element_list)
         self.tree.breakdown_requested.connect(self.open_breakdown)
         self.tree.view_created.connect(lambda _uuid: self._diagram_saved("Vista creata"))
@@ -222,6 +223,12 @@ class MainWindow(QMainWindow):
         self.check_settings_action = self._action("Impostazioni verifiche…", "mdi6.clipboard-edit-outline",
                                                   lambda: self.project_settings("Verifiche"), None,
                                                   "Sceglie i controlli da eseguire e i loro parametri")
+        self.sheets_action = self._action(
+            "Schede Arcadia", "mdi6.file-document-multiple-outline", self.generate_sheets, None,
+            "Genera in Excel gli artefatti SA (SA-1 … SA-7) e le ADR scelti nelle impostazioni, compilati dal modello")
+        self.sheets_settings_action = self._action(
+            "Impostazioni…", "mdi6.file-cog-outline", self.sheets_settings, None,
+            "Sceglie gli artefatti da generare, i domini e la cartella (salvati con il progetto)")
         self.account_action = self._action("Modifica account…", "mdi6.account-edit-outline", self.edit_account,
                                            None, "Dati dell'utente e accesso ai repository Git")
         self.switch_user_action = self._action("Cambia utente…", "mdi6.account-switch-outline", self.switch_user,
@@ -271,6 +278,11 @@ class MainWindow(QMainWindow):
         project_menu.addSeparator()
         project_menu.addAction(self.check_action)
         project_menu.addAction(self.check_settings_action)
+        project_menu.addSeparator()
+        generate_menu = project_menu.addMenu("Genera")  # the documentation of the method, from the model
+        generate_menu.addAction(self.sheets_action)
+        generate_menu.addAction(self.sheets_settings_action)
+        self.generate_menu = generate_menu
         project_menu.addSeparator()
         project_menu.addAction(self.settings_action)
         versions_menu = self.menuBar().addMenu("&Versioni")
@@ -362,6 +374,34 @@ class MainWindow(QMainWindow):
         self.checks.run()
         self.checks_dock.expand()
         self.statusBar().showMessage(f"Verifica del modello: {summary(self.checks.counts())}", 6000)
+
+    def generate_sheets(self):
+        """Progetto › Genera › Schede Arcadia: the artefacts SA and the ADR of the settings of the project, in Excel,
+        filled in from the model as it is now (the edits in progress in the sheets included); without valid
+        settings, says why and offers to open them."""
+        from arcadia_tool.ui.documentation import generate_from_settings
+
+        if not self.project:
+            return None
+        self._flush_editors()
+        written = generate_from_settings(self, self.project, self.user.full_name if self.user else "",
+                                         open_settings=self.sheets_settings)
+        if written:
+            self.statusBar().showMessage(f"Schede Arcadia generate: {len(written)} file", 6000)
+        return written
+
+    def sheets_settings(self):
+        """Progetto › Genera › Impostazioni…: what «Schede Arcadia» generates and where, saved with the project."""
+        from arcadia_tool.ui.documentation import DocumentationDialog
+
+        if not self.project:
+            return None
+        self._flush_editors()
+        dialog = DocumentationDialog(self.project, self.user.full_name if self.user else "", self)
+        dialog.exec()
+        if dialog.written:
+            self.statusBar().showMessage(f"Schede Arcadia generate: {len(dialog.written)} file", 6000)
+        return dialog
 
     def _refresh_profiles(self):
         """The profiles of checks in the toolbar: shown only when there are more than one."""
@@ -472,7 +512,7 @@ class MainWindow(QMainWindow):
         for a in (self.save_action, self.publish_action, self.compare_action, self.history_action,
                   self.close_action, self.import_action, self.settings_action, self.send_action,
                   self.reload_action, self.migrate_action, self.check_action, self.check_settings_action,
-                  self.receive_action, self.branches_action):
+                  self.receive_action, self.branches_action, self.sheets_action, self.sheets_settings_action):
             a.setEnabled(has_project)
         user = self.user.full_name if self.user else "nessuno"
         da = design_authority(self.project.model) if has_project else None
@@ -814,6 +854,7 @@ class MainWindow(QMainWindow):
         editor.element_changed.connect(self._element_changed)
         editor.back_requested.connect(self._back_to_reader)
         editor.open_requested.connect(self.open_in_window)
+        editor.adr_requested.connect(self.new_adr_for)
         editor.elements_created.connect(self._model_changed)
         editor.dirty_changed.connect(lambda _dirty, e=editor: self._show_editor(e, activate=False))
         editor.dirty_changed.connect(lambda _dirty: self._update_save())
@@ -1147,6 +1188,7 @@ class MainWindow(QMainWindow):
         if self.item_window is None:
             self.item_window = ElementWindow(self.srs_edit_mode, self)
             self.item_window.editor.element_changed.connect(self._window_element_changed)
+            self.item_window.editor.adr_requested.connect(self.new_adr_for)
             self.item_window.editor.saved.connect(lambda e=self.item_window.editor: self._sheet_saved(e))
             self.item_window.editor.findings_for = self.checks.findings_for
             self.item_window.editor.edit_denied = self.edit_denied
@@ -1277,9 +1319,32 @@ class MainWindow(QMainWindow):
             self.reader.reload()
         self._reload_lists()
         self._refresh_diagrams()
+        self._refresh_adr_tables()  # an ADR created or deleted
         self._refresh_state()
 
+    def new_adr_for(self, uuid):
+        """«Nuova ADR…» of a domain or a function sheet: its type chosen (the one suggested for the element first),
+        then the ADR created about it, filled from it, and opened."""
+        from arcadia_tool.model.adr import adr_defaults, suggested_type
+        from arcadia_tool.ui.adr_types import AdrTypeDialog
+
+        element = self.project.model.get(uuid) if self.project else None
+        if element is None:
+            return
+        dialog = AdrTypeDialog(self, preselect=suggested_type(element))
+        if not dialog.exec():
+            return
+        self.tree.create("adr", {**adr_defaults(self.project.model, dialog.adr_type, element), "concerns": [uuid]})
+
+    def _refresh_adr_tables(self):
+        """The tables of the ADR of the domain and function sheets open, as the ADR are now."""
+        editors = list(self.editors.values()) + ([self.item_window.editor] if self.item_window is not None else [])
+        for editor in editors:
+            editor.refresh_adrs()
+
     def _element_changed(self, element):
+        if element.kind == "adr":
+            self._refresh_adr_tables()
         self.tree.refresh_label(element)
         editor = self.editors.get(element.uuid)
         if editor is not None:
@@ -1360,6 +1425,26 @@ class MainWindow(QMainWindow):
             self.statusBar().showMessage(
                 f"Import completato: {dialog.created} voci nuove, {dialog.updated} aggiornate{deleted}. "
                 "Salva per scriverle su disco.", 8000)
+
+    def import_functions(self, path=None):
+        """«Importa funzioni…» of SA-2 in the model tree: the catalogue of the teams in Excel (path: given, without
+        asking), the same import of the button of a system function sheet. Saved with «Salva» of the toolbar."""
+        from arcadia_tool.ui.import_functions import import_functions, summary
+
+        if not self.project:
+            return [], [], []
+        self._flush_editors()
+        created, changed, deleted = import_functions(self.project, self, path)
+        for element in changed:
+            self._element_changed(element)
+        if created or deleted:
+            self._model_changed()
+            self.tree.reload()  # asked from the tree: _model_changed leaves it to the tree
+        if created or changed or deleted:
+            self._refresh_state()
+            self.statusBar().showMessage(f"Import completato. {summary(created, changed, deleted)}. Salva per "
+                                         "scrivere le modifiche su disco.", 10000)
+        return created, changed, deleted
 
     # --- versions (the only places where a diff is computed) ------------------------------------
 

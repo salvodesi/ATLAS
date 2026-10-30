@@ -94,7 +94,9 @@ def is_da_member(model, user):
 # --- who may change the teams ------------------------------------------------------------------------------------
 
 DA_ONLY_KINDS = ("team",)  # sheets that only the members of the Design Authority create, change and delete
-DA_ONLY_FIELDS = {"domain": ("team",)}  # fields of other sheets changed only by them (who works on a domain)
+# Fields of other sheets changed only by them: who works on a domain, the decision on an ADR. (what they do)
+DA_ONLY_FIELDS = {"domain": ("team",), "adr": ("da_decision", "da_notes")}
+DA_ONLY_WHAT = {"domain": "assegnare i domini ai team", "adr": "decidere sulle ADR (esito e osservazioni)"}
 
 
 def edit_denied(model, user, kind, field=None):
@@ -109,8 +111,7 @@ def edit_denied(model, user, kind, field=None):
     if user is not None and is_member(da, user):
         return None
     name = " ".join(str(v) for v in (da.get("id"), da.get("name")) if v)
-    what = ("assegnare i domini ai team" if kind not in DA_ONLY_KINDS else
-            "creare, modificare ed eliminare i team")
+    what = (DA_ONLY_WHAT[kind] if kind not in DA_ONLY_KINDS else "creare, modificare ed eliminare i team")
     return (f"Solo i membri della Design Authority ({name}) possono {what}. Se ne fai parte, comunica alla DA "
             "l'ID del tuo account (Utente › Modifica account), che lo indica nella tua riga del team.")
 

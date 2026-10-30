@@ -83,6 +83,7 @@ class ModelTree(QFrame):
     srs_reader_requested = Signal()
     srs_window_requested = Signal()  # the SRS catalogue in a separate window
     import_requested = Signal()  # «Importa SRS…»: the SRS items from the PDFs of the SUBSET-026
+    functions_import_requested = Signal()  # «Importa funzioni…» of SA-2: the catalogue in Excel of the teams
     element_created = Signal(str)  # «Nuovo…»: the uuid of the element just created (its sheet opens next)
     list_requested = Signal(str)  # a kind whose elements are shown as a table in a tab (e.g. X-2)
     breakdown_requested = Signal(str)  # the functional breakdown of the SA of this kind (SA-1 or SA-2)
@@ -412,6 +413,12 @@ class ModelTree(QFrame):
             delete_all.setEnabled(bool(self.project.model.of_kind("requirement")))
             menu.addSeparator()
         denied = self.edit_denied(kind) if self.edit_denied else None
+        if kind == "system_function" and not uuid:
+            imported = menu.addAction(icon("mdi6.file-import-outline"), "Importa funzioni…",
+                                      lambda _=False: self.functions_import_requested.emit())
+            imported.setEnabled(not denied)
+            imported.setToolTip(denied or "")
+            menu.addSeparator()
         if denied:
             menu.setToolTipsVisible(True)
         new = menu.addAction(icon("mdi6.plus"), f"Nuovo: {KINDS_BY_NAME[kind].label}",

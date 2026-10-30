@@ -22,10 +22,11 @@ CHANGE_BG = {"added": "#DAFBE1", "removed": "#FFEBE9", "modified": "#FFF8C5"}
 # Status chip colours by keyword of the state name, one per stage of a sheet: (text, background), dark text on a
 # light background so that every state is readable. Checked in order («non eseguibile» before «eseguibile»).
 STATUS_STYLES = (
-    (("non eseguibile", "superata"), "#B42318", "#FEE4E2"),
-    (("approvat", "decisa", "chiusa", "eseguibile"), "#166534", "#DCFCE7"),
+    (("non eseguibile", "superata", "respint"), "#B42318", "#FEE4E2"),
+    (("con modifiche",), "#0F766E", "#CCFBF1"),  # the decision of the DA: «Accolta con modifiche»
+    (("approvat", "decisa", "chiusa", "eseguibile", "accolt"), "#166534", "#DCFCE7"),
     (("concordat",), "#0F766E", "#CCFBF1"),
-    (("revision", "rivist"), "#92400E", "#FEF3C7"),
+    (("revision", "rivist", "commenti"), "#92400E", "#FEF3C7"),
     (("propost",), "#1E40AF", "#DBEAFE"),
     (("analizzare",), "#5B21B6", "#EDE9FE"),
     (("aperta",), "#9A3412", "#FFEDD5"),

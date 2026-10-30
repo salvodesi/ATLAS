@@ -94,6 +94,59 @@ def test_reader_chapters_filters_and_search(app, tmp_path):
     p.close()
 
 
+def test_a_large_catalogue_opens_with_a_loading_bar_and_measures_figures_without_decoding_them(app, tmp_path,
+                                                                                              monkeypatch):
+    from PySide6.QtCore import QBuffer, QIODevice
+    from PySide6.QtGui import QImage
+
+    p = Project.create(tmp_path / "p", "Prova")
+    section = p.new_element("requirement", id="3.1", item_type="Sezione", sequence=0)
+    for n in range(1, srs_reader.SLOW_LAYOUT_ITEMS + 60):
+        p.new_element("requirement", id=f"3.1.{n}", item_type="Requisito", parent=section.uuid, sequence=n,
+                      text=f"Il treno deve fare la cosa numero {n}.")
+    image = QImage(320, 160, QImage.Format_RGB32)
+    image.fill(0xFFFFFF)
+    buffer = QBuffer()
+    buffer.open(QIODevice.WriteOnly)
+    image.save(buffer, "PNG")
+    figure = p.new_element("requirement", id="3.1.999", item_type="Voce", parent=section.uuid, sequence=999,
+                           title="Figura 1", figure="assets/srs/figura1.png")
+    p.set_asset("assets/srs/figura1.png", bytes(buffer.data()))  # not saved yet: read from memory
+    steps = []
+
+    class RecordedLoading(srs_reader.QProgressDialog):
+        def setValue(self, value):
+            super().setValue(value)
+            steps.append((value, self.maximum(), self.labelText(), self.isVisible()))
+    monkeypatch.setattr(srs_reader, "QProgressDialog", RecordedLoading)
+    reader = SrsReader(p)
+    reader.resize(900, 700)
+    reader.show()
+    total = srs_reader.SLOW_LAYOUT_ITEMS + 61  # the items and their section
+    assert steps and steps[-1][:2] == (total, total) and all(shown for *_rest, shown in steps)
+    assert f"{total} di {total} voci" in steps[-1][2]
+    assert not [w for w in app.topLevelWidgets() if isinstance(w, RecordedLoading) and w.isVisible()]
+    delegate = reader.view.itemDelegate()
+    # The height of the figure is from its size, read from the header of the image: decoded only to paint it.
+    assert delegate._figure_sizes[figure.uuid] == (320, 160) and figure.uuid not in delegate._pixmaps
+    width = reader.view.viewport().width()
+    caption = p.new_element("requirement", id="3.1.998", item_type="Voce", parent=section.uuid, title="Figura 1")
+    delegate.measure([caption])
+    # Shown at 1/1.6 of its pixels: 100 px higher than the same item without the figure.
+    assert delegate._sizes[(figure.uuid, width, "")].height() >= delegate._sizes[(caption.uuid, width, "")].height() + 100
+    steps.clear()
+    reader.refresh()  # measured already: no loading bar
+    assert not steps
+    reader.search.setText("il treno")  # a search: all the items found measured again, without the loading bar
+    assert reader.count.text() == f"{srs_reader.SLOW_LAYOUT_ITEMS + 59} voci" and not steps
+    reader.search.clear()
+    row = next(i for i, e in enumerate(reader.model.elements) if e.uuid == figure.uuid)
+    reader.view.scrollTo(reader.model.index(row))
+    reader.view.viewport().grab()  # painted: its image is loaded now
+    assert not delegate._pixmaps[figure.uuid].isNull()
+    reader.close()
+
+
 def test_multiple_selection_and_group_delete(app, tmp_path, confirm_yes):
     p, e = build(tmp_path)
     reader = SrsReader(p)

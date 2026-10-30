@@ -5,8 +5,8 @@ saves the project.
 """
 from html import escape
 
-from PySide6.QtCore import QEvent, QObject, QSize, Qt, QTimer, Signal
-from PySide6.QtGui import QColor, QFont, QKeySequence, QPainter, QPixmap
+from PySide6.QtCore import QBuffer, QByteArray, QEvent, QIODevice, QObject, QSize, Qt, QTimer, Signal
+from PySide6.QtGui import QBrush, QColor, QFont, QImageReader, QKeySequence, QPainter, QPixmap
 from PySide6.QtWidgets import (QAbstractItemView, QCheckBox, QComboBox, QDialog, QDialogButtonBox, QFormLayout,
                                QFrame, QGridLayout, QHBoxLayout, QHeaderView, QLabel, QLineEdit, QListWidget,
                                QListWidgetItem,
@@ -19,7 +19,7 @@ from arcadia_tool.model.identifiers import compute_id, is_automatic, matches_con
 from arcadia_tool.model.teams import DA_FIELD, MEMBERS, da_teams, member_rows
 from arcadia_tool.model.adr import approval_problems, approve_new_domain, can_approve, sections_taken
 from arcadia_tool.model.element import is_empty
-from arcadia_tool.model.schema import (ADR_DETAILS, BOOL, ENUM, IMAGE, INT, KINDS_BY_NAME, MAP, MULTIENUM, REF,
+from arcadia_tool.model.schema import (ADR_DETAILS, BOOL, DA_DECISION, ENUM, IMAGE, INT, KINDS_BY_NAME, MAP, MULTIENUM, REF,
                                        REFS, STR, STRLIST, TABLE, TEXT, enum_option)
 from arcadia_tool.storage.project import local_change
 from arcadia_tool.ui.checks_panel import SEVERITY_COLORS, summary
@@ -35,7 +35,7 @@ READ_ONLY_KINDS = ("requirement",)
 TRACE_CARDS = ("domain", "system_function", "logical_function", "derived_requirement")
 FINDINGS_SHOWN = 8  # findings of the checks listed in the header of a sheet; the others are in the panel
 # Kinds whose sheet has the sections in another order: an ADR shows first what it is about (SRS items, ADR).
-SECTION_ORDER = {"adr": ("Identificazione", ADR_DETAILS, "Relazioni", "Descrizione")}
+SECTION_ORDER = {"adr": ("Identificazione", ADR_DETAILS, "Relazioni", "Descrizione", DA_DECISION)}
 # The texts of the SRS items are those of the specification, imported: plain text, no styles.
 PLAIN_TEXT_KINDS = ("requirement",)
 HEADER = "@header"  # the header card of the sheet, in ElementEditor.widgets
@@ -64,6 +64,25 @@ def load_pixmap(project, rel):
         return None
     pixmap = QPixmap()
     return pixmap if pixmap.loadFromData(data) else None
+
+
+def image_size(project, rel):
+    """(width, height) of the image of a project asset, read from its header without decoding it; None if it is
+    not an image. An asset not saved yet is read from memory."""
+    if not rel:
+        return None
+    file = project.path / rel
+    if rel in project.unsaved_assets() or not file.is_file():
+        data = project.asset_data(rel)
+        if not data:
+            return None
+        buffer = QBuffer()
+        buffer.setData(QByteArray(data))
+        buffer.open(QIODevice.ReadOnly)
+        size = QImageReader(buffer).size()
+    else:
+        size = QImageReader(str(file)).size()
+    return (size.width(), size.height()) if size.isValid() and size.width() > 0 else None
 
 
 def compact_combo():
@@ -389,6 +408,7 @@ class ElementEditor(QScrollArea):
     element_changed = Signal(object)
     back_requested = Signal(str)  # uuid of the element being left
     open_requested = Signal(str)  # another element to show (e.g. an SRS item traced by a domain)
+    adr_requested = Signal(str)  # «Nuova ADR…» of a domain or a function sheet: its uuid
     elements_created = Signal()  # e.g. derived requirements created from the allocation window
     dirty_changed = Signal(bool)  # the draft has (True) or no longer has changes not yet saved
     saved = Signal()  # «Salva»: the changes are in the model, the project is to be saved
@@ -962,6 +982,13 @@ class ElementEditor(QScrollArea):
                                 if has_srs else "Importa prima le voci SRS (menu Progetto › Importa voci SRS)")
             imported.clicked.connect(lambda _=False: self._import_principal())
             row.addWidget(imported)
+        if element.kind == "system_function":  # the catalogue of the functions of the teams, SA-2 in Excel
+            imported = QPushButton(icon("mdi6.microsoft-excel"), "Importa funzioni da Excel SA-2…")
+            imported.setToolTip("Legge il catalogo delle funzioni di sistema (un foglio per dominio) e, dopo un "
+                                "riepilogo, crea le funzioni nei loro domini, con gli ID dati da ATLAS, allocate "
+                                "alle clausole indicate dai team")
+            imported.clicked.connect(lambda _=False: self._import_functions())
+            row.addWidget(imported)
         row.addStretch()
         layout.addLayout(row)
         lists = QHBoxLayout()
@@ -1062,6 +1089,27 @@ class ElementEditor(QScrollArea):
         return changed
 
     @local_change
+    def _import_functions(self, path=None):
+        """«Importa funzioni da Excel SA-2…»: the functions of the catalogue in their domains, allocated to their
+        clauses (after a summary); saved with the «Salva» of the sheet, Ctrl+S or the «Salva» of the toolbar."""
+        from arcadia_tool.ui.import_functions import import_functions, summary
+
+        self.flush()
+        created, changed, deleted = import_functions(self.project, self, path)
+        if self.element is not None and self.element in changed:
+            self.draft.set("sections", self.element.get("sections"))
+            self._build()
+        for element in changed:
+            self.element_changed.emit(element)
+        if created or deleted:
+            self.elements_created.emit()  # the model tree, the lists, the views (this sheet, if its function went)
+        if created or changed or deleted:
+            QMessageBox.information(self, "Importa funzioni di sistema",
+                                    f"{summary(created, changed, deleted)}.\nSalva la scheda (Ctrl+S) o usa «Salva» "
+                                    "nella barra in alto per scrivere le modifiche su disco.")
+        return created, changed, deleted
+
+    @local_change
     def _trace_srs(self):
         """The traceability windows apply their choices with their own «Applica» (they change also other
         elements, e.g. the allocation of the SRS items to the domain)."""
@@ -1142,6 +1190,137 @@ class ElementEditor(QScrollArea):
         refresh()
         return w, current
 
+    ADR_COLUMNS = ("Esito", "ID", "Titolo", "Tipo", "Stato", "Decisione DA")
+    OUTCOME_COLORS = {"Attiva": ("#1E40AF", "#DBEAFE"), "Approvata": ("#166534", "#DCFCE7"),
+                      "Respinta": ("#B42318", "#FEE4E2"), "Superata": ("#374151", "#E5E7EB")}
+
+    def _adrs_widget(self):
+        """The ADR about the domain or the system function (attive, approvate, respinte, superate), a double click
+        opens one; «Nuova ADR…» creates one from the sheet (its type chosen first). Usable also on a read-only
+        sheet: the ADR is another element."""
+        w = QWidget()
+        w.setProperty("keepEnabled", True)
+        layout = QVBoxLayout(w)
+        layout.setContentsMargins(0, 0, 0, 0)
+        table = QTableWidget(0, len(self.ADR_COLUMNS))
+        table.setHorizontalHeaderLabels(self.ADR_COLUMNS)
+        table.verticalHeader().setVisible(False)
+        table.setEditTriggers(QAbstractItemView.NoEditTriggers)
+        table.setSelectionBehavior(QAbstractItemView.SelectRows)
+        table.setSelectionMode(QAbstractItemView.SingleSelection)
+        header = table.horizontalHeader()
+        header.setSectionResizeMode(QHeaderView.ResizeToContents)
+        header.setSectionResizeMode(2, QHeaderView.Stretch)
+        table.setToolTip("Doppio clic su una riga per aprire l'ADR")
+        table.cellDoubleClicked.connect(
+            lambda row, _c: self.open_requested.emit(table.item(row, 1).data(Qt.UserRole)))
+        self.adrs_table = table
+        self.adrs_empty = QLabel(objectName="muted")
+        new = QPushButton(icon("mdi6.plus"), "Nuova ADR…")
+        what = "il dominio" if self.element.kind == "domain" else "la funzione"
+        new.setToolTip(f"Crea una decisione architetturale che riguarda {what}: prima se ne sceglie il tipo")
+        new.clicked.connect(lambda _=False: self.adr_requested.emit(self.element.uuid))
+        denied = self.edit_denied("adr") if self.edit_denied else None
+        new.setEnabled(not denied)
+        if denied:
+            new.setToolTip(denied)
+        self.adrs_new = new
+        row = QHBoxLayout()
+        row.addWidget(self.adrs_empty, 1)
+        row.addWidget(new)
+        layout.addWidget(table)
+        layout.addLayout(row)
+        self.refresh_adrs()
+        return w, lambda: [table.item(r, 1).data(Qt.UserRole) for r in range(table.rowCount())]
+
+    def refresh_adrs(self):
+        """The table of the ADR of the sheet, as the model is now (an ADR created, decided, deleted)."""
+        from arcadia_tool.model.adr import outcome, related_adrs
+
+        table = getattr(self, "adrs_table", None)
+        if table is None or self.element is None:
+            return
+        try:
+            table.rowCount()
+        except RuntimeError:  # the page was built again: its table is gone
+            return
+        model = self.project.model
+        adrs = related_adrs(model, self.element)
+        table.setRowCount(0)
+        for adr in adrs:
+            r = table.rowCount()
+            table.insertRow(r)
+            state = outcome(adr)
+            values = (state, adr.get("id") or "", adr.get("title") or "", adr.get("adr_type") or "",
+                      adr.get("status") or "", adr.get("da_decision") or "")
+            for c, text in enumerate(values):
+                cell = QTableWidgetItem(text)
+                cell.setData(Qt.UserRole, adr.uuid)
+                cell.setToolTip(model.label(adr))
+                table.setItem(r, c, cell)
+            fg, bg = self.OUTCOME_COLORS[state]
+            table.item(r, 0).setForeground(QBrush(QColor(fg)))
+            table.item(r, 0).setBackground(QBrush(QColor(bg)))
+            for c in (4, 5):
+                if values[c]:
+                    fg, bg = status_colors(values[c])
+                    table.item(r, c).setForeground(QBrush(QColor(fg)))
+        rows = min(max(len(adrs), 1), 8)  # as high as its rows, up to 8 (then it scrolls)
+        table.setFixedHeight(table.horizontalHeader().sizeHint().height() + rows * 30 + 4)
+        table.verticalHeader().setDefaultSectionSize(30)
+        table.setVisible(bool(adrs))
+        what = "il dominio" if self.element.kind == "domain" else "la funzione"
+        counts = {s: sum(1 for a in adrs if outcome(a) == s) for s in self.OUTCOME_COLORS}
+        self.adrs_empty.setText(f"Nessuna ADR riguarda {what}." if not adrs else " · ".join(
+            f"{n} {s.lower()[:-1] + ('a' if n == 1 else 'e')}" for s, n in counts.items() if n))
+
+    def _show_computed_ref(self, f, widget, uuid):
+        """An element read from the model; the domain of an SRS item taken from the section containing it says so."""
+        from arcadia_tool.model.adr import allocated_from
+
+        model = self.project.model
+        text, tip = (model.label_of(uuid) if uuid else ""), "Letto dal modello"
+        sources = allocated_from(model, self.draft) if f.computed == "item_primary" else []
+        if uuid and sources:
+            names = ", ".join(s.get("id") or "" for s in sources)
+            text += f"  (da {names})"
+            tip = (f"Domini presi da {names}: la sezione o la clausola che contiene la voce, che non ne ha di "
+                   "propri (A4).")
+        widget.setText(text)
+        widget.setToolTip(tip)
+        widget.setProperty("uuid", uuid)
+
+    def _member_widget(self, f, value):
+        """A member of the team chosen in another field of the sheet (the member of the team proposing an ADR)."""
+        from arcadia_tool.model.teams import member_names
+
+        w = compact_combo()
+        team_label = self.element.schema.field(f.members_of).label
+
+        def refresh(*_):
+            getter = self.getters.get(f.members_of)
+            uuid = getter() if getter else self.draft.get(f.members_of)
+            team = self.project.model.get(uuid) if uuid else None
+            selected = w.currentData() if w.count() else value
+            w.blockSignals(True)
+            w.clear()
+            w.addItem("", None)
+            for name in (member_names(team) if team is not None else []):
+                w.addItem(name, name)
+            if selected and w.findData(selected) < 0:
+                w.addItem(f"{selected} (non è tra i membri del team)", selected)
+            w.setCurrentIndex(max(w.findData(selected), 0) if selected else 0)
+            w.blockSignals(False)
+            w.setToolTip(f"Si sceglie tra i membri del team indicato in «{team_label}»" if team is not None else
+                         f"Scegli prima il team in «{team_label}»")
+
+        refresh()
+        source = self.widgets.get(f.members_of)
+        if isinstance(source, QComboBox):
+            source.currentIndexChanged.connect(refresh)
+        w.currentIndexChanged.connect(self._changed)
+        return w, w.currentData
+
     def _choice_widget(self, f, value):
         """A text chosen among the values of a list field of the same element (the referent among the members)."""
         w = compact_combo()
@@ -1178,6 +1357,8 @@ class ElementEditor(QScrollArea):
 
     def _make_widget(self, f, value):
         model = self.project.model
+        if f.computed == "related_adrs":  # the ADR about the domain or the function: a table, and a new one
+            return self._adrs_widget()
         if f.computed:  # computed from the other fields (e.g. the SRS items of the domains merged)
             from arcadia_tool.model.adr import COMPUTED
             if f.type == REFS:
@@ -1186,10 +1367,9 @@ class ElementEditor(QScrollArea):
                 w.set_read_only("Calcolato dal tool")
             elif f.type == REF:  # an element (e.g. the principal domain an SRS item has now)
                 uuid = COMPUTED[f.computed](model, self.draft)
-                w = QLineEdit(model.label_of(uuid) if uuid else "", readOnly=True, objectName="readonly")
+                w = QLineEdit(readOnly=True, objectName="readonly")
                 w.setPlaceholderText("Nessuno")
-                w.setToolTip("Letto dal modello")
-                w.setProperty("uuid", uuid)
+                self._show_computed_ref(f, w, uuid)
                 self._computed.append((f, w))
                 return w, lambda: w.property("uuid")
             else:  # a text (e.g. the mission the domain has now)
@@ -1205,6 +1385,8 @@ class ElementEditor(QScrollArea):
             return self._derived_widget(f)
         if f.choices_from:
             return self._choice_widget(f, value)
+        if f.members_of:
+            return self._member_widget(f, value)
         if f.picker:
             return self._picker_widget(f, value)
         if f.type == STR:
@@ -1401,8 +1583,7 @@ class ElementEditor(QScrollArea):
             if f.type == REFS:
                 widget.set_value(value)
             elif f.type == REF:
-                widget.setText(self.project.model.label_of(value) if value else "")
-                widget.setProperty("uuid", value)
+                self._show_computed_ref(f, widget, value)
             elif value != widget.markdown():
                 widget.set_markdown(value)
         for table in getattr(self, "_dynamic_tables", []):  # the lists of their cells follow the element

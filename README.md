@@ -5,7 +5,7 @@
 <p align="center">
   <b>Arcadia Traceability, Logical Architecture Software</b><br>
   Strumento desktop di modellazione ARCADIA per l'EVC ERTMS di bordo<br>
-  <sub>RFI - Ricerca e Sviluppo - Sviluppo Sistemi · versione 0.5.0</sub>
+  <sub>RFI - Ricerca e Sviluppo - Sviluppo Sistemi · versione 0.6.0</sub>
 </p>
 
 > [!WARNING]
@@ -50,10 +50,26 @@ repository serve solo per scaricare e pubblicare le versioni.
 - I tipi di ADR sono raggruppati per ambito (domini SA; voci SRS, funzioni e scambi SA; LA; generali). I dati che
   ATLAS conosce già (la missione attuale, i domini di una voce, il dominio di una funzione, i produttori di
   un'informazione) sono letti dal modello e non si riscrivono. La data della decisione la imposta ATLAS.
+- Ogni ADR ha il team e il membro proponente e una sezione «Decisione della DA», con l'esito e le osservazioni,
+  modificabile solo dalla DA. Gli stati sono Proposta, In revisione DA, Revisionato DA, Decisa e Superata. Una
+  riallocazione può riguardare più clausole, purché della stessa sezione.
+- L'elenco X-1 mostra team, membro proponente, stato e decisione della DA, ordinabile con un clic sulle intestazioni.
+  Le schede di dominio e di funzione elencano le ADR che le riguardano, con «Nuova ADR…» per crearne una.
 - La Design Authority approva un'ADR di nuovo dominio con «Approva e crea il dominio»: ATLAS crea il dominio con
   il primo ID libero e gli alloca le sezioni indicate.
 - «Esporta ADR aperte…» nell'elenco X-1 salva in Excel le ADR non ancora decise (ID, descrizione, team
   proponente, stato); lo stesso registro è anche un template (`Template_X-1.00_Registro_ADR_aperte.xlsx`).
+- **Progetto › Genera › Schede Arcadia** scrive in Excel gli artefatti SA-1…SA-7 e le ADR scelti in **Progetto ›
+  Genera › Impostazioni…** (scelta salvata nel progetto, cartella di destinazione per PC), compilati dal modello con
+  il disegno dei loro template:
+  - SA-1 e SA-2 hanno un foglio per dominio, nello stesso formato letto da «Importa clausole principali» e
+    «Importa funzioni»;
+  - SA-3, SA-4, SA-5 e SA-6 hanno un foglio unico, SA-7 un foglio per chain;
+  - le ADR stanno in un unico file, con il registro delle aperte e un foglio per ADR;
+  - gli artefatti senza dati non si possono scegliere, e si possono includere solo alcuni domini.
+
+  I template SA (`Template_SA-n_*.xlsx`) hanno gli stessi campi delle schede di ATLAS e si rigenerano con
+  `scripts/make_sa_templates.py`.
 - I campi collegati tra schede diverse restano allineati: per esempio il team assegnato a un dominio compare tra i
   domini del team, e viceversa.
 - Campi di testo libero con editor formattato (grassetto, corsivo, elenchi), salvati in Markdown, che si
@@ -142,7 +158,13 @@ repository serve solo per scaricare e pubblicare le versioni.
     riga «Sezioni SRS principali» del foglio del dominio in un Excel SA-1 («Importa clausole principali…»:
     singole, gruppi come 4.8.1–4.8.5, riferimenti ad altri documenti segnalati; riepilogo prima di importare, con
     la colonna «Importa» per scegliere voce per voce e le voci allocate a più di un dominio indicate);
-  - funzioni di sistema → sezioni e clausole;
+  - funzioni di sistema → sezioni e clausole; dalla scheda di una funzione («Importa funzioni da Excel SA-2…») o
+    dal clic destro su «SA-2 Funzioni di sistema» nell'albero («Importa funzioni…») si importa il catalogo delle
+    funzioni ipotizzate dai team (un foglio per dominio): ogni funzione va nel dominio del suo foglio con l'ID dato
+    da ATLAS ed è allocata alle clausole indicate (una sottovoce, «3.5.3.4 b) f)», con la sua clausola), anche se
+    non ne ha ancora. Reimportando lo stesso file le funzioni esistenti non si sovrascrivono: si allineano le loro
+    clausole e si eliminano le funzioni non più nel file. Prima di applicare, un riepilogo mostra cosa cambia nel
+    modello, con la spunta «Applica» per ogni funzione;
   - funzioni logiche → sezioni, clausole e requisiti derivati.
 - Il catalogo delle voci SRS si apre anche in una finestra separata (pulsante o menu contestuale dell'albero).
   Dalle righe si allocano le sezioni ai domini e le clausole alle funzioni di sistema, e si derivano uno o più
@@ -198,7 +220,7 @@ repository serve solo per scaricare e pubblicare le versioni.
 - **Viste grafiche**: modifica del modello anche dalle catene e dagli scenari, ridimensionamento dei blocchi dei
   domini e diagrammi della Logical Architecture (funzioni logiche, componenti, allocazioni, component exchange).
 - **Notifiche** delle ADR e delle CQ: nel tool e via e-mail.
-- **Generazione dei documenti** di progetto dal modello, ad esempio registri di tracciamento e schede delle fasi.
+- **Generazione dei documenti** anche per la Logical Architecture (LA-1…LA-4) e le richieste di chiarimento (X-2).
 - **Integrazione dei rami di attività in `main`** fatta dalla Design Authority direttamente in ATLAS, con le
   verifiche del modello.
 - **Effetti delle altre ADR all'approvazione** (fusione, scissione, spostamento di funzione…), come già per il

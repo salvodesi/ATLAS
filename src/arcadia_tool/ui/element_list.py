@@ -10,7 +10,7 @@ from PySide6.QtWidgets import (QAbstractItemView, QComboBox, QFileDialog, QFrame
                                QWidget)
 
 from arcadia_tool.model.element import natural_key
-from arcadia_tool.model.schema import ADR_AREAS, KINDS_BY_NAME, adr_area, derived_value
+from arcadia_tool.model.schema import KINDS_BY_NAME, derived_value
 from arcadia_tool.ui.theme import BORDER, icon, kind_icon, status_colors
 
 UUID_ROLE = Qt.UserRole
@@ -18,7 +18,7 @@ UUID_ROLE = Qt.UserRole
 LIST_COLUMNS = {
     "domain": ("id", "name", "team", "referent", "status"),
     "clarification": ("id", "recipient", "status"),
-    "adr": ("id", "title", "adr_area", "adr_type", "decision_date", "status"),
+    "adr": ("id", "title", "adr_type", "proposer", "proposer_member", "status", "da_decision"),
 }
 WIDE = ("recipient", "title", "name")
 STATUS_ON_ROW = ("domain",)  # the status chosen on the row, from a drop-down list
@@ -30,11 +30,16 @@ NAMES = {
     "clarification": ("richiesta", "richieste", "Nuova richiesta", "Nessuna richiesta di chiarimento",
                       "Cerca per ID, destinatario o stato", "Nuova richiesta di chiarimento"),
     "adr": ("ADR", "ADR", "Nuova ADR", "Nessuna decisione architetturale",
-            "Cerca per ID, titolo, tipo, data o stato", "Nuova decisione architetturale (ADR)"),
+            "Cerca per ID, titolo, tipo, team, membro o stato", "Nuova decisione architetturale (ADR)"),
 }
 COLUMN_LABELS = {"id": "ID", "recipient": "Destinatario della richiesta", "adr_type": "Tipo",
-                 "adr_area": "Ambito", "name": "Nome del dominio", "referent": "Responsabile"}
+                 "name": "Nome del dominio", "referent": "Responsabile", "proposer": "Team proponente",
+                 "proposer_member": "Membro proponente", "da_decision": "Decisione DA"}
+# Shown in colour like the status (the decision of the DA: accolta, respinta…).
+COLOURED = ("status", "da_decision")
 TOOLTIP_FIELDS = {"clarification": "problem", "adr": "context", "domain": "mission"}
+# Columns the list is sorted by, with a click on their heading (at first: by ID).
+SORTABLE = {"adr": ("id", "adr_type", "proposer", "proposer_member", "status", "da_decision")}
 
 
 class ElementListPage(QWidget):
@@ -98,7 +103,7 @@ class ElementListPage(QWidget):
             elif name == "status" and kind in STATUS_ON_ROW:  # its drop-down list
                 columns.setSectionResizeMode(c, QHeaderView.Interactive)
                 columns.resizeSection(c, 170)
-            elif name in ("id", "status"):
+            elif name in ("id", "status", "da_decision"):
                 columns.setSectionResizeMode(c, QHeaderView.ResizeToContents)
             else:  # another text (the decider of an ADR): a width of its own, changeable by dragging
                 columns.setSectionResizeMode(c, QHeaderView.Interactive)
@@ -106,6 +111,16 @@ class ElementListPage(QWidget):
         columns.setSectionResizeMode(len(self.columns), QHeaderView.Fixed)
         columns.setMinimumSectionSize(90)
         self.table.cellDoubleClicked.connect(self._double_clicked)
+        self.sortable = SORTABLE.get(kind, ())
+        self.sort_column, self.sort_order = "id", Qt.AscendingOrder
+        if self.sortable:
+            columns.setSectionsClickable(True)
+            columns.setSortIndicatorShown(True)
+            columns.setSortIndicator(self.columns.index("id"), Qt.AscendingOrder)
+            columns.sortIndicatorChanged.connect(self._sort_chosen)
+            for c, name in enumerate(self.columns):
+                if name in self.sortable:
+                    self.table.horizontalHeaderItem(c).setToolTip(f"Clic per ordinare per {self._header(name)}")
 
         # Without elements: a message in the middle of the page and the button to create the first one.
         self.empty = QFrame(objectName="card")
@@ -145,8 +160,6 @@ class ElementListPage(QWidget):
         """What a cell shows: the label of a referenced element (the team recipient of a request), else the
         value; a recipient written as text by earlier versions."""
         model = self.project.model
-        if column == "adr_area":  # where the type of the ADR applies (SA, LA, generali)
-            return adr_area(element.get("adr_type"))
         field = self.schema.field(column)
         value = derived_value(model, element, field) if field is not None and field.derived_from else             element.get(column)  # the referent of a domain: from its team
         if field is not None and field.type == "ref":
@@ -198,14 +211,42 @@ class ElementListPage(QWidget):
         color = status_colors(choice.currentText())[0] if choice.currentText() else "#6B7280"
         choice.setStyleSheet(f"QComboBox {{ color: {color}; font-weight: 600; }}")
 
+    def _sort_chosen(self, column, order):
+        """A click on a heading: the list sorted by that column (again: the other way round); a column that does
+        not sort keeps the order there is."""
+        columns = self.table.horizontalHeader()
+        name = self.columns[column] if column < len(self.columns) else None
+        if name not in self.sortable:
+            columns.blockSignals(True)
+            columns.setSortIndicator(self.columns.index(self.sort_column), self.sort_order)
+            columns.blockSignals(False)
+            return
+        self.sort_column, self.sort_order = name, order
+        self.reload()
+
+    def sort_by(self, column, order=Qt.AscendingOrder):
+        """Sorted by a column, as with a click on its heading."""
+        self.table.horizontalHeader().setSortIndicator(self.columns.index(column), order)
+
+    def _sorted(self, elements):
+        """In the order chosen: by ID, else by the column (the empty ones last), then by ID."""
+        by_id = sorted(elements, key=lambda e: natural_key(e.get("id") or ""))
+        if self.sort_column == "id":
+            return by_id if self.sort_order == Qt.AscendingOrder else by_id[::-1]
+        field = self.schema.field(self.sort_column)
+        if field is not None and field.type == "enum":  # in the order of the options (Proposta, In revisione DA…)
+            states, name = list(field.options), self.sort_column
+            key = lambda e: states.index(e.get(name)) if e.get(name) in states else len(states)  # noqa: E731
+        else:
+            key = lambda e: natural_key(self._text(e, self.sort_column).lower())  # noqa: E731
+        filled = [e for e in by_id if self._text(e, self.sort_column)]
+        filled.sort(key=key, reverse=self.sort_order == Qt.DescendingOrder)
+        return filled + [e for e in by_id if not self._text(e, self.sort_column)]
+
     def reload(self):
         """The elements of the kind, from the model (after a change, a creation or a deletion)."""
         model = self.project.model
-        elements = sorted(model.of_kind(self.kind), key=lambda e: natural_key(e.get("id") or ""))
-        if self.kind == "adr":  # grouped by area, in the order of the method (the ADR without a type last)
-            areas = [area for area, _ in ADR_AREAS]
-            elements.sort(key=lambda e: areas.index(adr_area(e.get("adr_type")))
-                          if adr_area(e.get("adr_type")) else len(areas))
+        elements = self._sorted(model.of_kind(self.kind))
         self.table.setRowCount(0)
         actions_width = 0
         for e in elements:
@@ -219,7 +260,7 @@ class ElementListPage(QWidget):
                     cell.setIcon(kind_icon(self.kind))
                 if name == "status" and self.kind in STATUS_ON_ROW:
                     self.table.setCellWidget(r, c, self._status_choice(e))  # the text under it: for the search
-                elif name == "status" and value:
+                elif name in COLOURED and value:
                     fg, bg = status_colors(value)
                     cell.setForeground(QBrush(QColor(fg)))
                     cell.setBackground(QBrush(QColor(bg)))

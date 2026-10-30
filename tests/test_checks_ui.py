@@ -35,6 +35,34 @@ def _item(page, code):
     raise KeyError(code)
 
 
+def test_a_click_on_the_box_of_a_single_check_turns_it_on_and_off(app, tmp_path):
+    from PySide6.QtCore import QPoint, Qt
+    from PySide6.QtGui import QCursor
+    from PySide6.QtTest import QTest
+
+    project = Project.create(tmp_path / "p", "Prova")
+    dialog = ProjectSettingsDialog(project, section="Verifiche")
+    page = dialog.checks_page
+    dialog.show()
+    QTest.qWaitForWindowExposed(dialog)
+    page.groups["SA2"].setExpanded(True)
+    app.processEvents()
+    item = _item(page, "SA2-03")
+    rect = page.tree.visualItemRect(item)
+    box = QPoint(rect.left() + 16, rect.center().y())  # on its icon (drawn 5–20 px after the indentation)
+
+    def click(point):  # the cursor too, where a real click is
+        QCursor.setPos(page.tree.viewport().mapToGlobal(point))
+        QTest.mouseClick(page.tree.viewport(), Qt.LeftButton, Qt.NoModifier, point)
+    click(box)
+    assert page.enabled == {"SA2-03"}
+    click(QPoint(rect.left() + 60, box.y()))
+    assert page.enabled == {"SA2-03"}  # on its code and title: only its details
+    click(box)
+    assert page.enabled == set()
+    dialog.close()
+
+
 def test_settings_start_with_no_check_and_keep_the_choice(app, tmp_path):
     project = Project.create(tmp_path / "p", "Prova")
     dialog = ProjectSettingsDialog(project, section="Verifiche")

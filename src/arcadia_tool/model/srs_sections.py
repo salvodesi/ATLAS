@@ -16,6 +16,7 @@ class Reference:
     end: str = ""  # a group: its last section
     external: bool = False  # another document: not an SRS item
     ids: list = field(default_factory=list)  # the sections it stands for (resolve)
+    sub_items: str = ""  # list items written after the number («b) f)»): they are traced with their clause
 
     @property
     def is_range(self):
@@ -59,3 +60,25 @@ def resolve(references, ordered_ids=()):
         if not r.external:
             r.ids = expand(r.start, r.end, ordered_ids) if r.is_range else [r.start]
     return references
+
+
+CLAUSE = re.compile(rf"^({SECTION})(?:\s+(.+))?$")  # a number, then possibly its list items: «3.5.3.4 b) f)»
+
+
+def parse_clauses(text):
+    """The clauses of a list (a catalogue of functions, SA-2): like parse_sections, and a number may be followed by
+    its list items («3.5.3.4 b) f)», «3.6.2.2.2 a) a)»): start is the clause, sub_items the list items."""
+    result = []
+    for token in re.split(r"[,;\n]", text or ""):
+        token = token.strip().rstrip(".").strip()
+        if not token:
+            continue
+        group = RANGE.match(token)
+        clause = CLAUSE.match(token)
+        if group:
+            result.append(Reference(token, group[1], group[2]))
+        elif clause:
+            result.append(Reference(token, clause[1], sub_items=clause[2] or ""))
+        else:
+            result.append(Reference(token, external=True))
+    return result

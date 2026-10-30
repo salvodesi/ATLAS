@@ -123,20 +123,38 @@ def domain_of_function(model, uuid):
     return e.get("domain") if e is not None and e.kind == "system_function" else None
 
 
+def _within(model, item, uuids):
+    """The SRS item, or one of its parents, is among uuids."""
+    seen = set()
+    while item is not None and item.uuid not in seen:
+        if item.uuid in uuids:
+            return True
+        seen.add(item.uuid)
+        item = model.get(item.get("parent")) if item.get("parent") else None
+    return False
+
+
 def breakdown(model):
     """The domains, in the order of their IDs, each with its system functions; last the functions without a
     domain, if any."""
-    clauses = defaultdict(int)
+    # The SRS items of a function: those it is allocated to («Sezioni SRS»: from its sheet, «Alloca a sezioni e
+    # clausole SRS…», the import of SA-2) and those of the SA-3 records naming it, unless one of their parents is.
+    traced = defaultdict(set)
+    for f in model.of_kind("system_function"):
+        traced[f.uuid].update(u for u in f.get("sections") or [] if model.get(u) is not None)
     for record in model.of_kind("trace_record"):
+        item = model.get(record.get("requirement"))
+        if item is None:
+            continue
         for f in {record.get("primary_function"), *(record.get("secondary_functions") or [])}:
-            if f:
-                clauses[f] += 1
+            if f and not _within(model, item, traced[f]):
+                traced[f].add(item.uuid)
     by_domain = defaultdict(list)
     domains = {d.uuid for d in model.of_kind("domain")}
     for f in model.of_kind("system_function"):
         ident, name = ident_and_name(f)
         by_domain[f.get("domain") if f.get("domain") in domains else None].append(
-            BreakdownFunction(f.uuid, ident, name, clauses[f.uuid]))
+            BreakdownFunction(f.uuid, ident, name, len(traced[f.uuid])))
     result = []
     for d in sorted(model.of_kind("domain"), key=lambda d: natural_key(d.get("id") or d.get("name") or "")):
         ident, name = ident_and_name(d)

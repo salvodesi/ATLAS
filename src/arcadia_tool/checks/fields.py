@@ -13,7 +13,7 @@ CHECK_FIELDS = {
     "SA1-01": "mission", "SA1-02": "team", "SA1-03": "team", "SA1-04": "team", "SA1-05": SRS_CARD,
     "SA1-06": SRS_CARD, "SA1-07": "name", "SA1-08": "planned_components",
     "SA2-01": "domain", "SA2-02": "id", "SA2-03": "name", "SA2-04": "name", "SA2-05": "name", "SA2-06": "name",
-    "SA2-07": SRS_CARD, "SA2-08": SRS_CARD, "SA2-09": SRS_CARD, "SA2-10": "new_reason", "SA2-11": "adrs",
+    "SA2-07": SRS_CARD, "SA2-08": SRS_CARD, "SA2-09": SRS_CARD, "SA2-10": "new_reason", "SA2-11": "related_adrs",
     "SA2-12": "mode_availability", "SA2-13": "mode_availability", "SA2-14": "mode_availability",
     "SA2-15": "rows_452", "SA2-17": "proposed_component",
     "SA3-01": "requirement", "SA3-02": "requirement", "SA3-03": "outcome", "SA3-04": "b5_question",
