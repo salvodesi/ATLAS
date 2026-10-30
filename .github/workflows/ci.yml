@@ -75,7 +75,9 @@ jobs:
       - uses: actions/upload-artifact@v4
         with:
           name: linux
-          path: ${{ env.ARCHIVE }}
+          path: |
+            ${{ env.ARCHIVE }}
+            ${{ env.ARCHIVE }}.sha256
           retention-days: 30
       - name: Allegato alla release
         if: env.TAG != ''
@@ -84,4 +86,4 @@ jobs:
         run: |
           gh release view "$TAG" -R "$GITHUB_REPOSITORY" > /dev/null 2>&1 || \
             gh release create "$TAG" -R "$GITHUB_REPOSITORY" --title "ATLAS ${TAG#v}" --notes ""
-          gh release upload "$TAG" "$ARCHIVE" -R "$GITHUB_REPOSITORY" --clobber
+          gh release upload "$TAG" "$ARCHIVE" "$ARCHIVE.sha256" -R "$GITHUB_REPOSITORY" --clobber

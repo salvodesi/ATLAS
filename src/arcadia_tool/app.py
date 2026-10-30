@@ -31,6 +31,8 @@ def main():
     else:
         # After the window is shown: offers to restore the edits of a session that ended unexpectedly.
         QTimer.singleShot(0, window.check_interrupted_sessions)
+    # A new version of ATLAS (at most once a day; without network nothing is said), after the start has settled.
+    QTimer.singleShot(4000, window.check_updates_at_start)
     return app.exec()
 
 

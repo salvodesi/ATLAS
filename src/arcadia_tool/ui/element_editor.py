@@ -158,7 +158,10 @@ class RefsWidget(QWidget):
         super().__init__()
         self.model, self.ref_kinds, self.uuids = model, ref_kinds, []
         self.picker = picker  # function(uuids) → new uuids or None: another window to choose (the SRS items)
+        self.open_item = None  # function(uuid): what a double click on a row shows (e.g. the text of an SRS item)
         self.list = QListWidget()
+        self.list.itemDoubleClicked.connect(
+            lambda item: self.open_item is not None and item.data(Qt.UserRole) and self.open_item(item.data(Qt.UserRole)))
         self.list.setMaximumHeight(96)
         self.list.setSelectionMode(QAbstractItemView.ExtendedSelection)
         self.list.setIconSize(QSize(14, 14))
@@ -534,6 +537,9 @@ class ElementEditor(QScrollArea):
             kept_in_step = self.project.update(self.element, previous) or []
             self.element_changed.emit(self.element)
             for other in [*moved, *kept_in_step]:
+                self.element_changed.emit(other)
+        elif self.unsaved_new:  # saved as it was created: the sheets kept in step follow (e.g. an exclusion)
+            for other in self.project.update(self.element, self.element.copy()) or []:
                 self.element_changed.emit(other)
         self.unsaved_new = False
         self._end_editing()
@@ -954,11 +960,13 @@ class ElementEditor(QScrollArea):
                                  "Collega il dominio alle sezioni (es. 3.4.1) o alle clausole (es. 3.4.1.3)")
             columns = (("srsPrincipal", "Sezioni SRS principali", srs_trace.principal_items(model, element)),
                        ("srsContributing", "Sezioni e clausole SRS a cui contribuisce",
-                        srs_trace.contributed_items(model, element)))
+                        srs_trace.contributed_items(model, element)),
+                       ("srsExcluded", "Sezioni e clausole escluse", srs_trace.excluded_items(model, element)))
         elif element.kind == "system_function":
-            title, label, tip = ("Allocazione alle voci SRS", "Alloca a sezioni e clausole SRS…",
+            title, label, tip = ("Allocazione alle voci SRS e ai requisiti derivati", "Alloca a sezioni e clausole SRS…",
                                  "Alloca la funzione a sezioni (es. 3.4.1) o clausole (es. 3.4.1.3)")
-            columns = (("srsAllocated", "Sezioni e clausole SRS", srs_trace.allocated_items(model, element)),)
+            columns = (("srsAllocated", "Sezioni e clausole SRS", srs_trace.allocated_items(model, element)),
+                       ("derivedMapped", "Requisiti derivati (SA-4)", srs_trace.derived_of(model, element)))
         else:  # logical function: also the derived requirements it refines (LA-2)
             title, label, tip = ("Allocazione alle voci SRS e ai requisiti derivati",
                                  "Alloca a sezioni, clausole e requisiti derivati…",
@@ -974,6 +982,15 @@ class ElementEditor(QScrollArea):
         button.clicked.connect(self._trace_srs)
         row = QHBoxLayout()
         row.addWidget(button)
+        if element.kind == "domain":  # the sections and clauses it leaves out within its principal sections
+            has_principal = bool(srs_trace.principal_items(model, element))
+            exclude = QPushButton(icon("mdi6.link-variant-off"), "Escludi sezioni e clausole…")
+            exclude.setEnabled(has_principal)
+            exclude.setToolTip("Esclude di proposito dal dominio sottosezioni o clausole delle sue sezioni principali, "
+                               "ciascuna con l'ADR di esclusione che ne spiega il motivo" if has_principal else
+                               "Il dominio non ha ancora sezioni principali")
+            exclude.clicked.connect(lambda _=False: self._exclude_srs())
+            # Placed between the list of the contributions and that of the exclusions (see below).
         if element.kind == "domain":  # the principal sections written in its SA-1 sheet in Excel
             imported = QPushButton(icon("mdi6.microsoft-excel"), "Importa clausole principali…")
             imported.setEnabled(has_srs)
@@ -982,6 +999,12 @@ class ElementEditor(QScrollArea):
                                 if has_srs else "Importa prima le voci SRS (menu Progetto › Importa voci SRS)")
             imported.clicked.connect(lambda _=False: self._import_principal())
             row.addWidget(imported)
+        if element.kind == "system_function":  # the derived requirements (SA-4) mapped on it, with ticks
+            mapped = QPushButton(icon("mdi6.call-split"), "Mappa requisiti derivati…")
+            mapped.setToolTip("Spunta i requisiti derivati (SA-4) da mappare sulla funzione, sotto le clausole da cui "
+                              "sono derivati (si creano dalla voce SRS: clic destro, «Deriva…»)")
+            mapped.clicked.connect(lambda _=False: self._map_derived())
+            row.addWidget(mapped)
         if element.kind == "system_function":  # the catalogue of the functions of the teams, SA-2 in Excel
             imported = QPushButton(icon("mdi6.microsoft-excel"), "Importa funzioni da Excel SA-2…")
             imported.setToolTip("Legge il catalogo delle funzioni di sistema (un foglio per dominio) e, dopo un "
@@ -991,8 +1014,12 @@ class ElementEditor(QScrollArea):
             row.addWidget(imported)
         row.addStretch()
         layout.addLayout(row)
-        lists = QHBoxLayout()
+        # A domain: its three lists one after the other (principal, contributes, excluded); a system function: the
+        # derived requirements under the SRS items; else side by side.
+        lists = QVBoxLayout() if element.kind in ("domain", "system_function") else QHBoxLayout()
         for name, title, items in columns:
+            if name == "srsExcluded":  # its button right above it, after the contributions
+                lists.addWidget(exclude, 0, Qt.AlignLeft)
             column = QVBoxLayout()
             column.addWidget(QLabel(f"{title} ({len(items)})", objectName="formLabel"))
             view = QListWidget(objectName=name)
@@ -1022,6 +1049,9 @@ class ElementEditor(QScrollArea):
         rows = (
             ("parentItem", "Voce madre", element.get("parent"), "Scegli la voce madre…", self._choose_parent,
              bool(model.of_kind("requirement")), "Importa prima le voci SRS (menu File › Importa SRS)"),
+            ("systemFunction", "Funzione di sistema (SA-2)", element.get("system_function"),
+             "Scegli la funzione di sistema…", self._choose_system_function,
+             bool(model.of_kind("system_function")), "Crea prima le funzioni di sistema (SA-2) nel modello"),
             ("logicalFunction", "Funzione logica (LA-2)", element.get("function"), "Scegli la funzione logica…",
              self._choose_function, bool(model.of_kind("logical_function")),
              "Crea prima le funzioni logiche (LA-2) nel modello"),
@@ -1049,6 +1079,29 @@ class ElementEditor(QScrollArea):
         layout.addLayout(form)
         return frame
 
+    def show_reference(self, uuid):
+        """A double click on an element of a list of the sheet: an SRS item or a derived requirement in a window with
+        its full text (from there, its sheet); another element in its sheet."""
+        from arcadia_tool.ui.srs_trace import SHOWN, SrsItemViewer
+
+        model = self.project.model
+        element = model.get(uuid)
+        if element is None:
+            return None
+        if element.kind not in ("requirement", "derived_requirement"):
+            self.open_requested.emit(uuid)
+            return None
+        sub_items = {}  # its list items, bullets, figures… shown with its text
+        from arcadia_tool.ui.srs_reader import document_order
+        for e in document_order(model):
+            if e.get("item_type") not in SHOWN:
+                sub_items.setdefault(e.get("parent"), []).append(e)
+        viewer = getattr(self, "reference_viewer", None)
+        if viewer is None or viewer.project is not self.project:  # one window, of the project open
+            self.reference_viewer = SrsItemViewer(self.project, self, open_item=self.open_requested.emit)
+        self.reference_viewer.show_item(element, sub_items)
+        return self.reference_viewer
+
     def _open_button(self, target):
         """Opens a referenced element in its own window; usable also on a read-only sheet."""
         read = QPushButton(icon("mdi6.open-in-new"), "")
@@ -1063,6 +1116,17 @@ class ElementEditor(QScrollArea):
         self.flush()
         dialog = TraceParentDialog(self.project, self.draft, self)  # sets the draft, applied with «Salva»
         if dialog.exec() and dialog.changed:
+            self._draft_changed()
+
+    def _choose_system_function(self):
+        """The system function the derived requirement is mapped on (one), grouped by domain; its domain becomes
+        the one of the function with «Salva»."""
+        from arcadia_tool.ui.srs_trace import choose_element
+
+        self.flush()
+        chosen = choose_element(self.project, self.draft, "system_function", self)
+        if chosen is not False and chosen != self.draft.get("system_function"):
+            self.draft.set("system_function", chosen)
             self._draft_changed()
 
     def _choose_function(self):
@@ -1110,6 +1174,37 @@ class ElementEditor(QScrollArea):
         return created, changed, deleted
 
     @local_change
+    def _map_derived(self):
+        """«Mappa requisiti derivati…»: the derived requirements of the function chosen with ticks; applied with
+        «Applica» of the window (they are other sheets), saved with the «Salva» of the sheet or of the toolbar."""
+        from arcadia_tool.ui.srs_trace import TraceDerivedDialog
+
+        self.flush()
+        dialog = TraceDerivedDialog(self.project, self.element, self)
+        if dialog.exec():
+            for item in dialog.changed:
+                self.element_changed.emit(item)
+            self._build()  # shows the new list
+        return dialog
+
+    @local_change
+    def _exclude_srs(self):
+        """«Escludi sezioni e clausole…»: the items the domain leaves out within its principal sections, each with
+        its ADR of exclusion (opened at the tick, written when saved)."""
+        from arcadia_tool.ui.srs_trace import TraceExclusionDialog
+
+        self.flush()
+        dialog = TraceExclusionDialog(self.project, self.element, self)
+        accepted = dialog.exec()
+        if dialog.adrs_saved or getattr(dialog, "adrs_deleted", None):  # the tree, the lists, the ADR tables
+            self.elements_created.emit()
+        for item in (dialog.changed if accepted else []):
+            self.element_changed.emit(item)
+        if accepted or dialog.adrs_saved:
+            self._build()  # shows the new list
+        return dialog
+
+    @local_change
     def _trace_srs(self):
         """The traceability windows apply their choices with their own «Applica» (they change also other
         elements, e.g. the allocation of the SRS items to the domain)."""
@@ -1119,13 +1214,17 @@ class ElementEditor(QScrollArea):
         dialog_class = TraceSrsDialog if self.element.kind == "domain" else TraceFunctionDialog
         dialog = dialog_class(self.project, self.element, self)
         if dialog.exec():
-            if dialog.created:
+            # Derived requirements created, ADR of exclusion written or deleted: the tree, the lists, the tables.
+            if dialog.created or getattr(dialog, "adrs_saved", None) or getattr(dialog, "adrs_deleted", None):
                 self.elements_created.emit()
             for item in dialog.changed:
                 self.element_changed.emit(item)
             if self.element.kind in SRS_FIELD:  # its own list, set by the window
                 self.draft.set(SRS_FIELD[self.element.kind], self.element.get(SRS_FIELD[self.element.kind]))
             self._build()  # shows the new lists
+        elif getattr(dialog, "adrs_saved", None):  # cancelled, but the ADR of exclusion saved meanwhile are written
+            self.elements_created.emit()
+            self._build()
 
     def _picker_widget(self, f, value):
         """A reference chosen in a window with search and ticks (one element): the choice and «Scegli…»."""
@@ -1364,7 +1463,8 @@ class ElementEditor(QScrollArea):
             if f.type == REFS:
                 w = RefsWidget(model, f.ref_kinds)
                 w.set_value(COMPUTED[f.computed](model, self.draft))
-                w.set_read_only("Calcolato dal tool")
+                w.set_read_only("Calcolato dal tool · doppio clic su una riga per leggerla o aprirla")
+                w.open_item = self.show_reference
             elif f.type == REF:  # an element (e.g. the principal domain an SRS item has now)
                 uuid = COMPUTED[f.computed](model, self.draft)
                 w = QLineEdit(readOnly=True, objectName="readonly")
@@ -1482,6 +1582,8 @@ class ElementEditor(QScrollArea):
                     self.project, self.draft, name, uuids, self, sections_only=only)
             w = RefsWidget(model, f.ref_kinds, picker)
             w.set_value(value)
+            w.open_item = self.show_reference
+            w.list.setToolTip("Doppio clic su una riga per leggerne il testo (una voce SRS) o aprirne la scheda")
             w.changed.connect(self._changed)
             return w, w.value
         if f.type == TABLE and self.element.kind == "team" and f.name == MEMBERS:

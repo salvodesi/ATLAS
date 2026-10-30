@@ -32,3 +32,9 @@ if (-not $iscc) {
 $version = & $python -c "import sys; sys.path.insert(0, 'src'); import arcadia_tool; print(arcadia_tool.__version__)"
 & $iscc "/DAppVersion=$version" "installer\atlas.iss"
 if ($LASTEXITCODE -ne 0) { throw "Inno Setup fallito" }
+
+# L'impronta SHA-256, da allegare alla release accanto all'installer: ATLAS la verifica prima di aggiornarsi.
+$setup = "dist\installer\ATLAS-Setup-$version.exe"
+$hash = (Get-FileHash $setup -Algorithm SHA256).Hash.ToLower()
+[IO.File]::WriteAllText("$root\$setup.sha256", "$hash  ATLAS-Setup-$version.exe`n")
+Write-Output "$setup.sha256"

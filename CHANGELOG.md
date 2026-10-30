@@ -6,6 +6,80 @@ l'altra.
 
 ## [Non rilasciato]
 
+### Aggiunto
+- **Aggiornamento automatico di ATLAS.**
+  - **Quando:** all'avvio, al massimo una volta al giorno, e a richiesta da *Aiuto › Verifica aggiornamenti…*.
+    ATLAS legge l'ultima release su GitHub. Senza rete non segnala nulla.
+  - **Finestra:** mostra le note della nuova versione e tre scelte: «Aggiorna ora», «Più tardi» e «Salta questa
+    versione». Una versione saltata non viene più proposta all'avvio.
+  - **Installazione:**
+    - il file viene scaricato con una barra di avanzamento e verificato con l'impronta SHA-256 della release;
+    - ATLAS chiede di salvare le modifiche e si chiude;
+    - l'installer gira in modo silenzioso e riapre ATLAS già aggiornato;
+    - su Linux viene sostituita la cartella dell'archivio, se è modificabile dall'utente.
+  - **Controllo all'avvio:** si disattiva da *Aiuto › Controlla gli aggiornamenti all'avvio*.
+- **Requisiti derivati (SA-4) mappati sulle funzioni di sistema (SA-2).**
+  - **Finestra:** nella scheda della funzione, il pulsante «Mappa requisiti derivati…» apre una finestra con le sole
+    clausole da cui sono derivati dei requisiti e, sotto ciascuna, i suoi derivati da spuntare. Ci sono la ricerca,
+    i capitoli e il filtro «Solo requisiti mappati». Il pulsante è sempre attivo, anche se nel modello non ci sono
+    ancora requisiti derivati; nella scheda l'elenco dei derivati mappati sta sotto quello delle voci SRS.
+  - **Regole:** un derivato ha una sola funzione di sistema. Se è già mappato su un'altra funzione, ATLAS chiede se
+    spostarlo. Un derivato di un altro dominio prende il dominio della funzione, dopo una conferma.
+  - **Schede:** quella della funzione elenca i derivati mappati; quella del derivato ha «Funzione di sistema (SA-2)»,
+    scelta a spunta, accanto alla funzione logica.
+  - **Verifiche:** SA4-11 (derivato non mappato su una funzione di sistema) e SA4-12 (funzione logica che non
+    raffina la funzione di sistema del derivato).
+  - **Report e documenti:** nel report di copertura, la voce da cui il derivato è derivato risulta coperta anche
+    al livello «funzione di sistema». SA-2 e SA-4 (template e documenti generati) hanno le colonne «Requisiti
+    derivati» e «Funzione di sistema».
+- **Sezioni e clausole escluse da un dominio (A4)** con la nuova ADR **«Esclusione di sezione o clausola»**.
+  - **Come si esclude:** la scheda del dominio ha il pulsante **«Escludi sezioni e clausole…»**, tra l'elenco delle voci
+    a cui contribuisce e quello delle escluse, separato da «Traccia sezioni e clausole SRS…» (che resta con
+    «Principale» e «Contribuisce»). Apre una finestra dello stesso aspetto
+    con le sole sezioni principali del dominio, le loro sottosezioni e clausole, e la sola colonna «Esclusa».
+  - **Sezione principale con voci escluse:** finché ha voci escluse non si toglie da «Principale»; prima si tolgono
+    le esclusioni.
+  - **ADR:** al clic su «Esclusa» ATLAS apre subito, in una finestra, l'ADR di esclusione in modifica, per
+    scrivere il motivo della non tracciatura. L'ADR riporta le voci escluse, il dominio, le sezioni principali che
+    le contengono (calcolate) e il dominio che eventualmente le traccia al suo posto.
+  - **Quando la voce è esclusa:** solo quando l'ADR è salvata: la spunta resta e voce e ADR sono scritte su disco.
+    Con «Annulla», o chiudendo la finestra senza salvare, l'ADR sparisce e la spunta non si mette. Eliminando
+    l'ADR, le sue voci non sono più escluse.
+  - **Più voci nella stessa ADR:** le ulteriori sezioni e clausole da escludere si aggiungono nella scheda dell'ADR,
+    scelte a spunta tra quelle delle sezioni principali del dominio. Salvata l'ADR, risultano escluse anche quelle.
+  - **Esclusione tolta** dalla scheda del dominio: la voce esce dalla sua ADR, se l'ADR esclude anche altre voci.
+    Se era l'ultima e l'ADR è ancora «Proposta», ATLAS chiede se eliminarla.
+  - **Scheda del dominio:** elenca anche le voci escluse. I tre elenchi (principali, a cui contribuisce, escluse)
+    stanno uno sotto l'altro.
+  - **Report di copertura:** una voce esclusa non risulta coperta dal dominio della sua sezione.
+  - **Documenti:** il documento SA-1 riporta le voci escluse con la loro ADR, e il tipo ha il suo template
+    (`Template_X-1.11_…`; i tre tipi che venivano dopo sono rinumerati da X-1.12 a X-1.14).
+  - **Verifiche:** SA1-09 (voce esclusa senza ADR di esclusione) e SA1-10 (ADR di esclusione senza motivo).
+- **Elenco delle funzioni di sistema:** il doppio clic su «SA-2 Funzioni di sistema» nell'albero apre, come per i
+  domini, una tab con ID, nome, dominio, numero di sezioni e clausole SRS, numero di requisiti derivati e stato. Lo
+  stato si cambia su ogni riga da un menu a tendina ed è salvato subito.
+- **Lista delle ADR:** la colonna «DF impattati», ordinabile. Riporta i domini che l'ADR indica (da eliminare, da
+  fondere, proposti…) e quelli letti dal modello (delle clausole da riallocare, della funzione da spostare).
+
+### Modificato
+- **Installazione su Windows per il solo utente**, in `%LOCALAPPDATA%\Programs\ATLAS`, senza privilegi di
+  amministratore. Così gli aggiornamenti non chiedono la password di un amministratore.
+  - Se sul PC c'è una versione installata per tutti gli utenti (in *Programmi*), l'installer avvisa di
+    disinstallarla.
+  - L'installer e l'archivio Linux sono accompagnati dalla loro impronta SHA-256 (`.sha256`).
+- **Elenchi di voci nelle schede** (per esempio «Sezioni o clausole da riallocare» di un'ADR, «Voci SRS
+  interessate»): il doppio clic su una voce SRS o su un requisito derivato apre una finestra con il suo testo
+  completo, compresi elenchi e figure, con il pulsante per aprirne la scheda. Il doppio clic su un altro elemento
+  ne apre la scheda. Funziona anche con la scheda in sola lettura.
+- **Tabelle dei domini e delle funzioni:** cambiando lo stato su una riga, la tabella resta dov'era, alla stessa
+  posizione di scorrimento e con la riga selezionata, invece di tornare alla prima riga.
+
+### Rimosso
+- **«Disponibilità nei modi (X / O)» delle funzioni di sistema:** tolta dalla scheda, dai template e dai documenti
+  SA-2. I valori salvati con le versioni precedenti si tolgono all'apertura del progetto.
+- **Verifiche SA2-12, SA2-13 e SA2-14**, che controllavano la disponibilità nei modi. Escono anche dai profili
+  salvati, così «Verifica modello» non le segnala come sconosciute.
+
 ## [0.6.0] - 2026-10-30
 
 ### Aggiunto

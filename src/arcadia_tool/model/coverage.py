@@ -89,6 +89,10 @@ def coverage(model, ordered, category):
     for d in model.of_kind("derived_requirement"):
         if d.get("parent"):
             derived_of.setdefault(d.get("parent"), []).append(d)
+            # Mapped on a system function (SA-2): the item derived from is covered by it too.
+            sf = model.get(d.get("system_function")) if d.get("system_function") else None
+            if sf is not None and sf not in functions_of.get(d.get("parent"), []):
+                functions_of.setdefault(d.get("parent"), []).append(sf)
     rows, by_item = [], {}
     for item in ordered:
         if item.get("item_type") not in COUNTED_TYPES or category not in (item.get("category") or []):
@@ -96,10 +100,12 @@ def coverage(model, ordered, category):
         chain = _chain(model, item)
         row = CoverageRow(item, section=next((e for e in chain if e.get("item_type") == "Sezione"), None))
         row.parent = next((by_item[e.uuid] for e in chain[1:] if e.uuid in by_item), None)
+        excluded = set()  # domains that leave the item out on purpose (on it or on a part between it and the section)
         for part in chain:
+            excluded |= set(part.get("excluded_domains") or [])
             own = [(model.get(part.get("primary_domain")), True)] if part.get("primary_domain") else []
             own += [(model.get(u), False) for u in part.get("contributing_domains") or []]
-            own = [(d, p) for d, p in own if d is not None]
+            own = [(d, p) for d, p in own if d is not None and d.uuid not in excluded]
             if own:
                 row.domains, row.domains_from = own, (part if part is not item else None)
                 break

@@ -506,7 +506,8 @@ class Project:
         - An ADR had «Data e decisore» (a text): its date becomes «Data della decisione»; the decider is always
           the Design Authority.
         - The ADR of a reallocation had one SRS item («Sezione o clausola da riallocare»): now a list, one or
-          more items («Sezioni o clausole da riallocare»)."""
+          more items («Sezioni o clausole da riallocare»).
+        - The system functions had «Disponibilità nei modi (X / O)»: removed from the sheet, its values too."""
         by_id = {}
         for item in self.model.of_kind("requirement"):
             by_id.setdefault(item.get("id"), item.uuid)
@@ -527,10 +528,14 @@ class Project:
                 adr.values["decision_date"] = f"{int(found[1]):02d}/{int(found[2]):02d}/{found[3]}"
             adr.values.pop("date_decider")
             self.update(adr)
-        for adr in self.model.of_kind("adr"):  # the item to reallocate: one, now a list
-            if isinstance(adr.values.get("realloc_item"), str):
-                adr.set("realloc_item", [adr.values["realloc_item"]])
-                self.update(adr)
+        for adr in self.model.of_kind("adr"):  # the item to reallocate, the one excluded: one, now a list
+            for name in ("realloc_item", "excluded_item"):
+                if isinstance(adr.values.get(name), str):
+                    adr.set(name, [adr.values[name]])
+                    self.update(adr)
+        for function in self.model.of_kind("system_function"):  # «Disponibilità nei modi»: removed
+            if function.values.pop("mode_availability", None) is not None:
+                self.update(function)
         teams = self.model.of_kind("team")
         for team in teams:  # members of the first versions (only names): rows, to which the DA adds the ID
             members = team.values.get("members") or []
@@ -658,22 +663,28 @@ class Project:
                             changed.append(other)
         return changed
 
-    def trace_srs(self, domain, principal, contributing):
+    def trace_srs(self, domain, principal, contributing, excluded=None):
         """Matrix sections × domains (A4) seen from a domain: the SRS items (uuids) of which it is the principal
-        domain and those to which it contributes. Returns the SRS items changed."""
+        domain, those to which it contributes and (excluded, if given) those it leaves out on purpose within its
+        principal sections. Returns the SRS items changed."""
         changed = []
         for item in self.model.of_kind("requirement"):
             primary = item.get("primary_domain")
             others = [d for d in item.get("contributing_domains") or [] if d != domain.uuid]
+            left_out = list(item.get("excluded_domains") or [])
+            if excluded is not None:
+                left_out = [d for d in left_out if d != domain.uuid] + ([domain.uuid] if item.uuid in excluded else [])
             if item.uuid in principal:
                 primary = domain.uuid
             elif primary == domain.uuid:
                 primary = None
             if item.uuid in contributing and item.uuid not in principal:
                 others.append(domain.uuid)
-            if primary != item.get("primary_domain") or others != list(item.get("contributing_domains") or []):
+            if primary != item.get("primary_domain") or others != list(item.get("contributing_domains") or []) \
+                    or left_out != list(item.get("excluded_domains") or []):
                 item.set("primary_domain", primary)
                 item.set("contributing_domains", others)
+                item.set("excluded_domains", left_out)
                 self.update(item)
                 changed.append(item)
         return changed
@@ -773,6 +784,14 @@ class Project:
         element = self.model.get(uuid)
         if element is None:
             return
+        if element.kind == "adr" and not self.is_new(element):  # an exclusion goes with its (saved) ADR
+            from arcadia_tool.model.links import EXCLUSION, set_exclusion
+            if element.get("adr_type") == EXCLUSION:
+                from arcadia_tool.model.adr import excluded_items
+                for uuid in excluded_items(element):
+                    item = set_exclusion(self.model, uuid, element.get("excluding_domain"), False)
+                    if item is not None:
+                        self._touch(item.uuid)
         self.model.remove(uuid)
         self._modified.discard(uuid)
         self._deleted[uuid] = self.element_file(element)

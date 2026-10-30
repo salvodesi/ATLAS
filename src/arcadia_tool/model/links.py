@@ -174,8 +174,11 @@ def _domain_of_function(model, function):
 
 
 def _domain_of_derived(model, derived, previous, changed):
-    """«Dominio» of a derived requirement: the one of its logical function (when that is known)."""
-    domain = _domain_of_function(model, model.get(derived.get("function")))
+    """«Dominio» of a derived requirement: the one of its system function (SA-2), else of its logical function
+    (when that is known)."""
+    system = model.get(derived.get("system_function")) if derived.get("system_function") else None
+    domain = (system.get("domain") if system is not None else None) or \
+        _domain_of_function(model, model.get(derived.get("function")))
     if domain:
         _set(derived, "domain", domain, changed)
 
@@ -194,9 +197,51 @@ def _derived_of_logical_function(model, function, previous, changed, seen=None):
 
 
 def _derived_of_system_function(model, function, previous, changed):
+    for derived in model.of_kind("derived_requirement"):  # mapped on it (SA-2): its domain
+        if derived.get("system_function") == function.uuid:
+            _domain_of_derived(model, derived, None, changed)
     for lf in model.of_kind("logical_function"):
         if lf.get("refines") == function.uuid:
             _derived_of_logical_function(model, lf, None, changed)
+
+
+EXCLUSION = "Esclusione di sezione o clausola"  # model.schema.ADR_EXCLUSION
+
+
+def set_exclusion(model, item_uuid, domain_uuid, excluded, changed=None):
+    """The SRS item excluded (or no longer) from the domain; returns the item if it changed."""
+    item = model.get(item_uuid) if item_uuid else None
+    if item is None or not domain_uuid:
+        return None
+    current = list(item.get("excluded_domains") or [])
+    value = (current + [domain_uuid] if domain_uuid not in current else current) if excluded else \
+        [d for d in current if d != domain_uuid]
+    if value == current:
+        return None
+    if changed is not None:
+        _set(item, "excluded_domains", value, changed)
+    else:
+        item.set("excluded_domains", value)
+    return item
+
+
+def _exclusion_of_adr(model, adr, previous, changed):
+    """An ADR of exclusion saved from its sheet (previous known: not just created): its item is excluded from its
+    domain; if it named another item or domain before, that one no longer is. An ADR created and never saved
+    excludes nothing."""
+    if previous is None or adr.get("adr_type") != EXCLUSION:
+        return
+
+    def pairs(element):  # (item, domain) excluded by the ADR
+        items = element.values.get("excluded_item") or []
+        domain = element.values.get("excluding_domain")
+        return {(u, domain) for u in ([items] if isinstance(items, str) else items) if u and domain}
+    old = pairs(previous) if previous.values.get("adr_type") == EXCLUSION else set()
+    new = pairs(adr)
+    for item, domain in old - new:  # no longer in the ADR
+        set_exclusion(model, item, domain, False, changed)
+    for item, domain in new:
+        set_exclusion(model, item, domain, True, changed)
 
 
 def _nature_of_exchange(model, exchange, previous, changed):
@@ -242,4 +287,5 @@ _HANDLERS = {
     "exchange_item": (_exchanges_of_item,),
     "functional_exchange": (_nature_of_exchange,),
     "chain_realization": (_components_of_realization,),
+    "adr": (_exclusion_of_adr,),
 }

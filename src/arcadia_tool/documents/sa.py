@@ -4,7 +4,7 @@ fields are those of the sheets of ATLAS (model.schema), so that template, sheet 
 from dataclasses import dataclass, field as dataclass_field
 
 from arcadia_tool.model.adr import outcome, principal_of, related_adrs, section_of
-from arcadia_tool.model.schema import (B5_QUESTIONS, B6_SCHEMES, ETCS_MODES, KINDS_BY_NAME, NATURES, SHEET_STATES)
+from arcadia_tool.model.schema import B5_QUESTIONS, B6_SCHEMES, KINDS_BY_NAME, NATURES, SHEET_STATES
 from arcadia_tool.documents.values import (by_id, domain_of, end_text, label, plain, short, shorts, table_rows,
                                            text_of)
 
@@ -136,6 +136,8 @@ def write_sa1(w, doc, domain):
         w.heading("Tracciabilità verso le voci SRS (A4)")
         w.field("Sezioni SRS principali", hint="es. 3.11.6, 3.11.7")
         w.field("Sezioni e clausole SRS a cui contribuisce", hint="es. 3.6.3 (DF02)")
+        w.field("Sezioni e clausole escluse", hint="es. 3.11.6.3 (ADR-nnn): voci delle sezioni principali che il "
+                                                   "dominio non traccia, ciascuna con la sua ADR di esclusione")
         w.heading("Relazioni")
         w.field("Funzioni di sistema", hint="Calcolato da ATLAS: SF-DFnn-01 … (catalogo SA-2)")
         w.field("Dati prodotti/posseduti dal dominio",
@@ -164,6 +166,13 @@ def write_sa1(w, doc, domain):
     w.heading("Tracciabilità verso le voci SRS (A4)")
     w.field("Sezioni SRS principali", ", ".join(principal))
     w.field("Sezioni e clausole SRS a cui contribuisce", ", ".join(contributes))
+    from arcadia_tool.model.adr import exclusion_adr
+    excluded = []
+    for item in doc.ordered():
+        if domain.uuid in (item.get("excluded_domains") or []):
+            adr = exclusion_adr(model, item, domain)
+            excluded.append(f"{item.get('id')} ({adr.get('id')})" if adr is not None else item.get("id") or "")
+    w.field("Sezioni e clausole escluse", ", ".join(excluded))
     w.heading("Relazioni")
     w.field("Funzioni di sistema", "\n".join(f"{f.get('id') or ''} {f.get('name') or ''}".strip()
                                              for f in functions))
@@ -176,20 +185,19 @@ def write_sa1(w, doc, domain):
 # --- SA-2 ----------------------------------------------------------------------------------------------------------
 
 SA2_COLUMNS = [("ID", 1, ()), ("Nome (verbo + oggetto)", 1, ()), ("Descrizione", 1, ()), ("Sezioni SRS", 1, ()),
-               ("Righe 4.5.2", 1, ()), ("Disponibilità nei modi (X / O)", 1, ()),
+               ("Requisiti derivati (SA-4)", 1, ()), ("Righe 4.5.2", 1, ()),
                ("Componente logico proposto", 1, ()), ("Voci di bordo tracciate", 1, ()),
                ("Funzione nuova", 1, ("Sì", "No")), ("Motivo", 1, ()), ("Note e decisioni", 1, ()),
                ("Decisioni architetturali (ADR)", 1, ()), ("Stato", 1, ("Proposta", "Rivista", "Approvata"))]
-SA2_EXAMPLE = ["SF-DF06-04", "Supervisionare lo standstill", "Cosa fa la funzione", "3.14.4", "4.5.2-R49",
-               "FS: X, SR: O", "LC-12", "Calcolato da ATLAS", "No", "", "", "Calcolato da ATLAS", "Proposta"]
+SA2_EXAMPLE = ["SF-DF06-04", "Supervisionare lo standstill", "Cosa fa la funzione", "3.14.4", "3.14.4.2-D1",
+               "4.5.2-R49", "LC-12", "Calcolato da ATLAS", "No", "", "", "Calcolato da ATLAS", "Proposta"]
 
 
 def sa2_row(doc, f):
     model = doc.model
-    modes = f.get("mode_availability") or {}
+    derived = by_id(d for d in model.of_kind("derived_requirement") if d.get("system_function") == f.uuid)
     return [f.get("id") or "", f.get("name") or "", plain(f.get("description")), shorts(model, f.get("sections")),
-            ", ".join(f.get("rows_452") or []),
-            ", ".join(f"{m}: {modes[m]}" for m in ETCS_MODES if modes.get(m)),
+            ", ".join(d.get("id") or "" for d in derived), ", ".join(f.get("rows_452") or []),
             label(model, f.get("proposed_component")), str(doc.board_items(f.get("sections"))),
             "Sì" if f.get("is_new") else "No", plain(f.get("new_reason")), plain(f.get("notes")),
             ", ".join(a.get("id") or "" for a in related_adrs(model, f)), f.get("status") or ""]
@@ -257,10 +265,10 @@ def write_sa3(w, doc, records):
 # --- SA-4 ----------------------------------------------------------------------------------------------------------
 
 SA4_COLUMNS = [("ID derivato", 1, ()), ("Nome sintetico", 1, ()), ("Voce madre", 1, ()), ("Obbligo (una frase)", 1, ()),
-               ("Funzione logica", 1, ()), ("Dominio", 1, ()), ("Motivazione della derivazione", 1, B6_SCHEMES),
+               ("Funzione di sistema", 1, ()), ("Funzione logica", 1, ()), ("Dominio", 1, ()), ("Motivazione della derivazione", 1, B6_SCHEMES),
                ("Stato", 1, _f("derived_requirement", "status").options)]
 SA4_EXAMPLE = ["5.11.2.2-A030-D1", "Evento di report di posizione", "5.11.2.2-A030",
-               "Il cambio di modo genera un evento di report di posizione", "LF-DF02-11-01", "DF02", B6_SCHEMES[1],
+               "Il cambio di modo genera un evento di report di posizione", "SF-DF02-11", "LF-DF02-11-01", "DF02", B6_SCHEMES[1],
                "Proposto"]
 
 
@@ -277,7 +285,8 @@ def write_sa4(w, doc, items):
         w.table(SA4_COLUMNS, example=SA4_EXAMPLE, empty=15)
         return
     w.table(SA4_COLUMNS, [[d.get("id") or "", d.get("name") or "", short(model, d.get("parent")),
-                           plain(d.get("obligation")), short(model, d.get("function")), short(model, d.get("domain")),
+                           plain(d.get("obligation")), short(model, d.get("system_function")),
+                           short(model, d.get("function")), short(model, d.get("domain")),
                            text_of(model, d, _f("derived_requirement", "b6_scheme")), d.get("status") or ""]
                           for d in items])
 
@@ -509,14 +518,14 @@ ARTIFACTS = (
              "Template_SA-2_Catalogo_funzioni_di_sistema.xlsx", "Catalogo_funzioni_di_sistema",
              "Chi compila: team del dominio · Livello: SA · Ordine di compilazione: 2",
              "Elencare le funzioni di sistema del dominio, unità di allocazione e di tracciabilità.",
-             "Un foglio per dominio. Nome con verbo e oggetto, senza sigle di modo, livello o paragrafo (D5). La "
-             "disponibilità per modo si prende dalle righe 4.5.2-R01–R77. Una funzione nuova va proposta qui con la "
+             "Un foglio per dominio. Nome con verbo e oggetto, senza sigle di modo, livello o paragrafo (D5). Le "
+             "righe 4.5.2 sono quelle della tabella 4.5.2-R01–R77. Una funzione nuova va proposta qui con la "
              "motivazione. In ATLAS è la scheda della funzione di sistema (SA-2); voci di bordo e ADR sono calcolate.",
              ("Ogni funzione ha almeno una voce di bordo tracciata, oppure un riferimento alla specifica di "
               "interfaccia (SUBSET-034, -035, -041, cap. 7–8)",
               "Ogni funzione ha un solo dominio e un solo componente proposto",
               "Le funzioni nuove sono approvate dalla Design Authority"),
-             (14, 30, 30, 16, 12, 16, 14, 10, 10, 22, 22, 14, 12), ("dominio", "domini"), "domain",
+             (14, 30, 30, 16, 16, 12, 14, 10, 10, 22, 22, 14, 12), ("dominio", "domini"), "domain",
              lambda doc: [d for d in _domains(doc) if any(f.get("domain") == d.uuid
                                                          for f in doc.model.of_kind("system_function"))],
              write_sa2),
@@ -545,7 +554,8 @@ ARTIFACTS = (
              ("Ogni derivato ha un solo obbligo e un solo dominio",
               "Il dominio assegnato è il proprietario del dato o dell'azione",
               "Nessun derivato crea un secondo produttore per un dato esistente"),
-             (18, 22, 16, 40, 16, 10, 30, 12), ("requisito derivato", "requisiti derivati"), "", sa4_items, write_sa4),
+             (18, 22, 16, 40, 16, 16, 10, 30, 12), ("requisito derivato", "requisiti derivati"), "", sa4_items,
+             write_sa4),
     Artifact("SA-5", "Accordo di scambio tra domini (Functional Exchanges)",
              "Template_SA-5_Accordo_di_scambio_tra_domini_FE.xlsx", "Accordo_di_scambio_tra_domini_FE",
              "Chi compila: responsabili dei team dei due/k domini · Livello: SA, LA · Ordine di compilazione: 4",

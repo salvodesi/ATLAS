@@ -222,8 +222,8 @@ def test_the_panel_reports_the_sheet_and_opens_it(app, tmp_path, problems_shown)
 
 def test_double_click_goes_to_the_field_and_the_run_shows_its_progress(app, tmp_path, problems_shown):
     project = Project.create(tmp_path / "p", "Prova")
-    function = project.new_element("system_function", name="Supervisionare lo standstill")
-    set_checks(project, ["SA2-01", "SA2-07", "SA2-12"])
+    function = project.new_element("system_function", name="Supervisionare lo standstill", is_new=True)
+    set_checks(project, ["SA2-01", "SA2-07", "SA2-10"])
     window = MainWindow()
     window.resize(1300, 800)
     window.show()
@@ -238,10 +238,10 @@ def test_double_click_goes_to_the_field_and_the_run_shows_its_progress(app, tmp_
     assert not progress.isVisible()
 
     fields = {f.code: f.field for f in window.checks.findings}
-    assert fields == {"SA2-01": "domain", "SA2-07": "@srs", "SA2-12": "mode_availability"}
+    assert fields == {"SA2-01": "domain", "SA2-07": "@srs", "SA2-10": "new_reason"}
     group = window.checks.tree.topLevelItem(0)
     rows = {group.child(i).text(1): group.child(i) for i in range(group.childCount())}
-    for code in ("SA2-01", "SA2-07", "SA2-12"):
+    for code in ("SA2-01", "SA2-07", "SA2-10"):
         window.checks._open(rows[code])  # double click: the sheet, at the field with the problem
         app.processEvents()
         editor = window.editors[function.uuid]
@@ -256,8 +256,8 @@ def test_double_click_goes_to_the_field_and_the_run_shows_its_progress(app, tmp_
 def test_the_run_can_be_stopped(app, tmp_path, problems_shown, monkeypatch):
     import arcadia_tool.ui.checks_panel as checks_panel
     project = Project.create(tmp_path / "p", "Prova")
-    project.new_element("system_function", name="Funzione")
-    set_checks(project, ["SA2-01", "SA2-07", "SA2-12"])
+    project.new_element("system_function", name="Funzione", is_new=True)
+    set_checks(project, ["SA2-01", "SA2-07", "SA2-10"])
     original = checks_panel.CheckProgress.step
 
     def step(self, done, total, check):
@@ -276,7 +276,7 @@ def test_the_run_can_be_stopped(app, tmp_path, problems_shown, monkeypatch):
 
     window.save()  # once run, the checks follow the saves: all of them, without the window
     assert window.checks.progress is progress and window.checks.stopped_at is None
-    assert {f.code for f in window.checks.findings} == {"SA2-01", "SA2-07", "SA2-12"}
+    assert {f.code for f in window.checks.findings} == {"SA2-01", "SA2-07", "SA2-10"}
     window.close()
 
 

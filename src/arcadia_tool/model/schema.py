@@ -33,6 +33,7 @@ ADR_MERGE_DOMAINS = "Fusione di domini"
 ADR_SPLIT_DOMAIN = "Scissione di dominio"
 ADR_DOMAIN_SCOPE = "Ridefinizione dello scopo del dominio"
 ADR_SECTION = "Riallocazione di sezione o clausola"
+ADR_EXCLUSION = "Esclusione di sezione o clausola"
 ADR_FUNCTION = "Spostamento di una funzione tra domini"
 ADR_OWNER = "Proprietà di un'informazione / confine tra domini"
 ADR_IMPLEMENTATION = "Scelta lasciata all'implementazione"
@@ -48,11 +49,13 @@ ADR_TYPES = (
     (ADR_SPLIT_DOMAIN, "Lo scopo del dominio non sta in una frase o la dimensione è eccessiva: si divide."),
     (ADR_DOMAIN_SCOPE, "Il perimetro di un dominio cambia: estensione, riduzione o cambio totale di scopo."),
     (ADR_SECTION, "Dubbio sul dominio principale o sui contributori di una sezione o clausola (A4)."),
+    (ADR_EXCLUSION, "Una sezione o clausola, contenuta in una sezione di cui il dominio è principale, è esclusa di "
+                    "proposito dal dominio: perché non la traccia (A4)."),
     (ADR_FUNCTION, "Una funzione di sistema appartiene allo scopo di un altro dominio."),
     (ADR_OWNER, "Chi produce un'informazione non è evidente (B4, D10), o una catena rimbalza ma il confine resta "
                 "(A5)."),
     (ADR_IMPLEMENTATION, "La voce SRS lascia una scelta all'implementazione (B5, domanda 1)."),
-    (ADR_PRODUCT_OPTION, "Una funzione è opzionale («O» nella disponibilità nei modi): decisione di prodotto."),
+    (ADR_PRODUCT_OPTION, "Una funzione è opzionale in uno o più modi: decisione di prodotto."),
     (ADR_LOGICAL, "Architettura logica: allocazione di funzioni, scissione o fusione di componenti, interfacce."),
     (ADR_WAIVER, "Una regola della metodologia non viene rispettata, consapevolmente e con una motivazione."),
     (ADR_OTHER, "Una scelta non ovvia che vincola le altre fasi e non rientra nei tipi precedenti."),
@@ -63,7 +66,7 @@ DOMAIN_ADR_TYPES = (ADR_NEW_DOMAIN, ADR_DELETE_DOMAIN, ADR_MERGE_DOMAINS, ADR_SP
 ADR_AREAS = (
     ("Domini funzionali (SA)", DOMAIN_ADR_TYPES),
     ("Voci SRS, funzioni e scambi (SA)", (ADR_SECTION, ADR_FUNCTION, ADR_OWNER, ADR_IMPLEMENTATION,
-                                          ADR_PRODUCT_OPTION)),
+                                          ADR_PRODUCT_OPTION, ADR_EXCLUSION)),
     ("Architettura logica (LA)", (ADR_LOGICAL,)),
     ("Generali", (ADR_WAIVER, ADR_OTHER)),
 )
@@ -232,6 +235,10 @@ KINDS = (
         Field("primary_domain", "Dominio principale (A4)", REF, ref_kinds=("domain",), significant=True,
               analysis=True),
         Field("contributing_domains", "Domini che contribuiscono (A4)", REFS, ref_kinds=("domain",), analysis=True),
+        # Left out on purpose by the domains principal of a section containing it (with an ADR of exclusion):
+        # chosen with ticks from the sheet of the domain.
+        Field("excluded_domains", "Esclusa dai domini (A4)", REFS, ref_kinds=("domain",), analysis=True,
+              hidden=True),
         Field("srs_refs", "Riferimenti SRS (righe di tabella)", STRLIST),
         Field("figure", "Figura / formula", IMAGE),
         Field("baseline", "Baseline"),
@@ -266,7 +273,10 @@ KINDS = (
         # Voce madre and Funzione logica are chosen with their windows (search and ticks) from the sheet's card.
         Field("parent", "Voce madre", REF, ref_kinds=("requirement",), hidden=True),
         Field("obligation", "Obbligo (una frase)", TEXT),
-        # Allocated to one logical function (LA-2), not to a system function.
+        # Mapped on one system function (SA-2) and allocated to one logical function (LA-2), each chosen with its
+        # window from the sheet's card (the system function also from the sheet of the function).
+        Field("system_function", "Funzione di sistema", REF, ref_kinds=("system_function",), significant=True,
+              hidden=True),
         Field("function", "Funzione logica", REF, ref_kinds=("logical_function",), significant=True, hidden=True),
         Field("domain", "Dominio", REF, ref_kinds=("domain",), significant=True),
         Field("b6_scheme", "Motivazione della derivazione", ENUM, B6_SCHEMES),
@@ -295,7 +305,6 @@ KINDS = (
         # Shown and edited in the traceability card of the sheet, with the derived requirements of the function.
         Field("sections", "Sezioni SRS", REFS, ref_kinds=("requirement",), hidden=True),
         Field("rows_452", "Righe 4.5.2", STRLIST),
-        Field("mode_availability", "Disponibilità nei modi (X / O)", MAP, options=ETCS_MODES),
         Field("proposed_component", "Componente logico proposto", REF, ref_kinds=("logical_component",)),
         Field("is_new", "Funzione nuova", BOOL),
         Field("new_reason", "Motivo", TEXT),
@@ -462,23 +471,23 @@ KINDS = (
         Field("decision_date", "Data della decisione", by_tool=True),
         # Description, relations and options: not in a new domain, whose details say it all (its sections); the
         # deletion of a domain has only the motivation and the observations of the DA (and its domain, above).
-        _adr_except(Field("context", "Contesto", TEXT), ADR_NEW_DOMAIN, ADR_DELETE_DOMAIN, ADR_MERGE_DOMAINS, ADR_SPLIT_DOMAIN, ADR_DOMAIN_SCOPE, ADR_SECTION, ADR_FUNCTION, ADR_OWNER, ADR_IMPLEMENTATION, ADR_PRODUCT_OPTION),
+        _adr_except(Field("context", "Contesto", TEXT), ADR_NEW_DOMAIN, ADR_DELETE_DOMAIN, ADR_MERGE_DOMAINS, ADR_SPLIT_DOMAIN, ADR_DOMAIN_SCOPE, ADR_SECTION, ADR_FUNCTION, ADR_OWNER, ADR_IMPLEMENTATION, ADR_PRODUCT_OPTION, ADR_EXCLUSION),
         # The SRS sections and clauses the decision is about, chosen with ticks; the other elements in a text.
         _adr_except(Field("srs_items", "Voci SRS interessate", REFS, ref_kinds=("requirement",)), ADR_NEW_DOMAIN,
-                    ADR_DELETE_DOMAIN, ADR_MERGE_DOMAINS, ADR_SPLIT_DOMAIN, ADR_DOMAIN_SCOPE, ADR_SECTION, ADR_FUNCTION, ADR_OWNER, ADR_IMPLEMENTATION, ADR_PRODUCT_OPTION),
+                    ADR_DELETE_DOMAIN, ADR_MERGE_DOMAINS, ADR_SPLIT_DOMAIN, ADR_DOMAIN_SCOPE, ADR_SECTION, ADR_FUNCTION, ADR_OWNER, ADR_IMPLEMENTATION, ADR_PRODUCT_OPTION, ADR_EXCLUSION),
         _adr_except(Field("affected", "Altri elementi del modello interessati", TEXT), ADR_NEW_DOMAIN,
-                    ADR_DELETE_DOMAIN, ADR_MERGE_DOMAINS, ADR_SPLIT_DOMAIN, ADR_DOMAIN_SCOPE, ADR_SECTION, ADR_FUNCTION, ADR_OWNER, ADR_IMPLEMENTATION, ADR_PRODUCT_OPTION),
+                    ADR_DELETE_DOMAIN, ADR_MERGE_DOMAINS, ADR_SPLIT_DOMAIN, ADR_DOMAIN_SCOPE, ADR_SECTION, ADR_FUNCTION, ADR_OWNER, ADR_IMPLEMENTATION, ADR_PRODUCT_OPTION, ADR_EXCLUSION),
         _adr_except(Field("options", "Opzioni", TABLE, columns=(
             Column("option", "Opzione"), Column("description", "Descrizione"),
-            Column("pros", "Vantaggi"), Column("cons", "Svantaggi e rischi"))), ADR_NEW_DOMAIN, ADR_DELETE_DOMAIN, ADR_MERGE_DOMAINS, ADR_SPLIT_DOMAIN, ADR_DOMAIN_SCOPE, ADR_SECTION, ADR_FUNCTION, ADR_OWNER, ADR_IMPLEMENTATION, ADR_PRODUCT_OPTION),
-        _adr_except(Field("decision", "Decisione", TEXT), ADR_NEW_DOMAIN, ADR_DELETE_DOMAIN, ADR_MERGE_DOMAINS, ADR_SPLIT_DOMAIN, ADR_DOMAIN_SCOPE, ADR_SECTION, ADR_FUNCTION, ADR_OWNER, ADR_IMPLEMENTATION, ADR_PRODUCT_OPTION),
-        _adr_except(Field("rationale", "Motivazione", TEXT), ADR_NEW_DOMAIN, ADR_MERGE_DOMAINS, ADR_SPLIT_DOMAIN, ADR_DOMAIN_SCOPE, ADR_SECTION, ADR_FUNCTION, ADR_OWNER, ADR_IMPLEMENTATION, ADR_PRODUCT_OPTION),
+            Column("pros", "Vantaggi"), Column("cons", "Svantaggi e rischi"))), ADR_NEW_DOMAIN, ADR_DELETE_DOMAIN, ADR_MERGE_DOMAINS, ADR_SPLIT_DOMAIN, ADR_DOMAIN_SCOPE, ADR_SECTION, ADR_FUNCTION, ADR_OWNER, ADR_IMPLEMENTATION, ADR_PRODUCT_OPTION, ADR_EXCLUSION),
+        _adr_except(Field("decision", "Decisione", TEXT), ADR_NEW_DOMAIN, ADR_DELETE_DOMAIN, ADR_MERGE_DOMAINS, ADR_SPLIT_DOMAIN, ADR_DOMAIN_SCOPE, ADR_SECTION, ADR_FUNCTION, ADR_OWNER, ADR_IMPLEMENTATION, ADR_PRODUCT_OPTION, ADR_EXCLUSION),
+        _adr_except(Field("rationale", "Motivazione", TEXT), ADR_NEW_DOMAIN, ADR_MERGE_DOMAINS, ADR_SPLIT_DOMAIN, ADR_DOMAIN_SCOPE, ADR_SECTION, ADR_FUNCTION, ADR_OWNER, ADR_IMPLEMENTATION, ADR_PRODUCT_OPTION, ADR_EXCLUSION),
         # The decision of the Design Authority on the proposal, in every ADR (changed only by its members, see
         # model.teams).
         Field("da_decision", "Esito della decisione DA", ENUM, DA_DECISIONS, section=DA_DECISION),
         Field("da_notes", "Osservazioni DA", TEXT, section=DA_DECISION),
-        _adr_except(Field("consequences", "Conseguenze", TEXT), ADR_NEW_DOMAIN, ADR_DELETE_DOMAIN, ADR_MERGE_DOMAINS, ADR_SPLIT_DOMAIN, ADR_DOMAIN_SCOPE, ADR_SECTION, ADR_FUNCTION, ADR_OWNER, ADR_IMPLEMENTATION, ADR_PRODUCT_OPTION),
-        _adr_except(Field("review_when", "Da rivedere quando", TEXT), ADR_NEW_DOMAIN, ADR_DELETE_DOMAIN, ADR_MERGE_DOMAINS, ADR_SPLIT_DOMAIN, ADR_DOMAIN_SCOPE, ADR_SECTION, ADR_FUNCTION, ADR_OWNER, ADR_IMPLEMENTATION, ADR_PRODUCT_OPTION),
+        _adr_except(Field("consequences", "Conseguenze", TEXT), ADR_NEW_DOMAIN, ADR_DELETE_DOMAIN, ADR_MERGE_DOMAINS, ADR_SPLIT_DOMAIN, ADR_DOMAIN_SCOPE, ADR_SECTION, ADR_FUNCTION, ADR_OWNER, ADR_IMPLEMENTATION, ADR_PRODUCT_OPTION, ADR_EXCLUSION),
+        _adr_except(Field("review_when", "Da rivedere quando", TEXT), ADR_NEW_DOMAIN, ADR_DELETE_DOMAIN, ADR_MERGE_DOMAINS, ADR_SPLIT_DOMAIN, ADR_DOMAIN_SCOPE, ADR_SECTION, ADR_FUNCTION, ADR_OWNER, ADR_IMPLEMENTATION, ADR_PRODUCT_OPTION, ADR_EXCLUSION),
         # --- details of the type (see ADR_TYPES) ---------------------------------------------------------
         _adr(Field("domain", "Dominio interessato", REF, ref_kinds=("domain",)), ADR_DOMAIN_SCOPE),
         _adr(Field("merged_domains", "Domini da fondere", REFS, ref_kinds=("domain",)), ADR_MERGE_DOMAINS),
@@ -531,6 +540,16 @@ KINDS = (
         _adr(Field("primary_proposed", "Dominio principale proposto", REF, ref_kinds=("domain",)), ADR_SECTION),
         _adr(Field("contributors_proposed", "Contributori proposti", REFS, ref_kinds=("domain",)), ADR_SECTION),
         _adr(Field("realloc_reason", "Motivazione della riallocazione", TEXT), ADR_SECTION),
+        # The exclusion of SRS items from a domain principal of the sections containing them: the items (one or more,
+        # chosen with ticks), the domain, the sections they are excluded from (read from the model), why the domain
+        # does not trace them, who traces them.
+        _adr(Field("excluded_item", "Sezioni o clausole escluse", REFS, ref_kinds=("requirement",)), ADR_EXCLUSION),
+        _adr(Field("excluding_domain", "Dominio che le esclude", REF, ref_kinds=("domain",)), ADR_EXCLUSION),
+        _adr(Field("excluded_within", "Sezioni principali che le contengono", REFS, ref_kinds=("requirement",),
+                   stored=False, computed="excluded_within"), ADR_EXCLUSION),
+        _adr(Field("exclusion_reason", "Motivo della non tracciatura", TEXT), ADR_EXCLUSION),
+        _adr(Field("traced_by", "Dominio che le traccia al suo posto (se c'è)", REF, ref_kinds=("domain",)),
+             ADR_EXCLUSION),
 
         _adr(Field("function", "Funzione di sistema", REF, ref_kinds=("system_function",)), ADR_FUNCTION,
              ADR_PRODUCT_OPTION),

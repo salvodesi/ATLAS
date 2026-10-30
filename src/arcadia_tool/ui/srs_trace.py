@@ -7,7 +7,7 @@
 from html import escape
 
 from PySide6.QtCore import Qt, QUrl
-from PySide6.QtGui import QBrush, QColor, QTextDocument
+from PySide6.QtGui import QBrush, QColor, QIcon, QTextDocument
 from PySide6.QtWidgets import (QCheckBox, QDialog, QFrame, QHBoxLayout, QHeaderView, QInputDialog, QLabel, QLineEdit,
                                QMenu, QMessageBox, QPushButton, QTabBar, QTextBrowser, QTreeWidget, QTreeWidgetItem,
                                QTreeWidgetItemIterator, QVBoxLayout)
@@ -23,12 +23,13 @@ VIEWER_IMAGE_WIDTH = 760  # fits the viewer with the indentation of the list ite
 # table rows and figures («Voce») are traced through their clause.
 TRACEABLE = ("Sezione", "Titolo", "Requisito")
 SHOWN = ("Capitolo",) + TRACEABLE
-PRINCIPAL, CONTRIBUTES = 1, 2  # domain
+PRINCIPAL, CONTRIBUTES, EXCLUDED = 1, 2, 3  # domain
 ALLOCATED = 1  # function
 PARENT = 1  # derived requirement
 UUID_ROLE = Qt.UserRole
 CATEGORY_COLUMN = 1  # chapter 9 category of the item, right after it
-ROW_COLORS = {1: "#DCE8FA", 2: "#DDF3E4"}  # rows of the first column (principal, allocated) / of the second
+# Rows of the first column (principal, allocated), of the second (contributes), of the third (excluded).
+ROW_COLORS = {1: "#DCE8FA", 2: "#DDF3E4", 3: "#FDE2E1"}
 SRS_FIELD = {"system_function": "sections", "logical_function": "detail_requirements"}  # SA-2 / LA-2
 
 
@@ -40,6 +41,11 @@ def contributed_items(model, domain):
     return [e for e in document_order(model) if domain.uuid in (e.get("contributing_domains") or [])]
 
 
+def excluded_items(model, domain):
+    """The sections and clauses the domain leaves out on purpose within its principal sections."""
+    return [e for e in document_order(model) if domain.uuid in (e.get("excluded_domains") or [])]
+
+
 def allocated_items(model, function):
     """SRS sections and clauses of a system or logical function, in specification order."""
     sections = set(function.get(SRS_FIELD[function.kind]) or [])
@@ -47,8 +53,10 @@ def allocated_items(model, function):
 
 
 def derived_of(model, function):
-    """Derived requirements (SA-4) allocated to a logical function (LA-2): their «Funzione logica»."""
-    return [d for d in model.of_kind("derived_requirement") if d.get("function") == function.uuid]
+    """Derived requirements (SA-4) of a function: allocated to a logical function (LA-2, their «Funzione logica»),
+    mapped on a system function (SA-2, their «Funzione di sistema»)."""
+    field = "system_function" if function.kind == "system_function" else "function"
+    return [d for d in model.of_kind("derived_requirement") if d.get(field) == function.uuid]
 
 
 def _haystack(e):
@@ -181,6 +189,7 @@ class _TraceDialog(QDialog):
     HINT = ""
     WITH_DERIVED = False  # derived requirements (SA-4) listed under their clause
     CHOOSABLE = TRACEABLE  # the kinds of item that can be chosen (e.g. only the sections, see TraceSectionsDialog)
+    TRACED_WORD = "tracciate"  # in the tab of a chapter: how many rows are chosen
 
     def __init__(self, project, owner, parent=None):
         super().__init__(parent)
@@ -200,6 +209,8 @@ class _TraceDialog(QDialog):
         for e in document_order(model):
             if e.get("item_type") not in SHOWN:
                 self.sub_items.setdefault(e.get("parent"), []).append(e)
+                continue
+            if not self.shows(e):
                 continue
             self.by_chapter.setdefault(chapter_of(e), []).append(e)
             if e.get("item_type") in self.CHOOSABLE:
@@ -331,6 +342,10 @@ class _TraceDialog(QDialog):
         return self.owner.uuid if self.owner is not None else None
 
     # --- what the columns mean (subclasses) ------------------------------------------------------------
+
+    def shows(self, e):
+        """The SRS item is listed (e.g. only the clauses some requirements are derived from)."""
+        return True
 
     def initial_state(self, e):
         raise NotImplementedError
@@ -498,7 +513,7 @@ class _TraceDialog(QDialog):
             label = f"Capitolo {chapter}" if chapter is not None else "Requisiti derivati senza voce madre"
             traced = sum(1 for e in items if self.state.get(e.uuid))
             if traced:
-                label += f" · {traced} tracciate"
+                label += f" · {traced} {self.TRACED_WORD}"
             derived = sum(1 for e in items if e.kind == "derived_requirement")
             if derived and chapter is not None:
                 label += f" · {derived} derivati"
@@ -869,8 +884,38 @@ class TraceReallocItemsDialog(TraceItemsDialog):
         super().click(item, choice)
 
 
+class TraceExclusionItemsDialog(TraceItemsDialog):
+    """ADR of an exclusion (X-1): the SRS sections and clauses the domain leaves out, one or more, each within a
+    section of which the domain is principal."""
+
+    def __init__(self, project, owner, field, parent=None):
+        super().__init__(project, owner, field, parent)
+        self.HINT = ("Spunta le sezioni (es. 3.4.1.2) e le clausole (es. 3.4.1.3) che il dominio esclude: una o più, "
+                     "purché contenute in una sezione di cui il dominio è principale. Doppio clic su una riga per "
+                     "leggerne il testo completo.")
+
+    def click(self, item, choice):
+        from arcadia_tool.model.adr import principal_container
+
+        model = self.project.model
+        uuid = item.data(0, UUID_ROLE)
+        domain = self.owner.get("excluding_domain")
+        if self.state[uuid] != PARENT:
+            if not domain:
+                QMessageBox.information(self, "Sezioni o clausole escluse",
+                                        "Indica prima nella scheda il dominio che le esclude.")
+                return
+            if principal_container(model, model.get(uuid), domain) is None:
+                QMessageBox.warning(
+                    self, "Sezioni o clausole escluse",
+                    f"«{model.label_of(uuid)}» non è contenuta in una sezione di cui {model.label_of(domain)} è "
+                    "principale: si escludono solo le voci delle sezioni principali del dominio.")
+                return
+        super().click(item, choice)
+
+
 # Windows for a list field of SRS items with a rule of its own.
-ITEMS_DIALOGS = {"realloc_item": TraceReallocItemsDialog}
+ITEMS_DIALOGS = {"realloc_item": TraceReallocItemsDialog, "excluded_item": TraceExclusionItemsDialog}
 
 
 def choose_items(project, element, field, current, parent=None, sections_only=False):
@@ -883,8 +928,24 @@ def choose_items(project, element, field, current, parent=None, sections_only=Fa
     return dialog.selected if dialog.exec() else None
 
 
+def under_principal(model, uuid, domain_uuid, state=None):
+    """The item is within a section or clause of which the domain is principal (state: the choices of a window not
+    applied yet, {uuid: PRINCIPAL…}, when they say otherwise than the model)."""
+    item, seen = model.get(uuid), set()
+    part = model.get(item.get("parent")) if item is not None and item.get("parent") else None
+    while part is not None and part.uuid not in seen:
+        seen.add(part.uuid)
+        principal = state[part.uuid] == PRINCIPAL if state is not None and part.uuid in state else \
+            part.get("primary_domain") == domain_uuid
+        if principal:
+            return True
+        part = model.get(part.get("parent")) if part.get("parent") else None
+    return False
+
+
 class TraceSrsDialog(_TraceDialog):
-    """Functional domain (SA-1): principal and contributing domain of sections and clauses (A4)."""
+    """Functional domain (SA-1): principal and contributing domain of sections and clauses (A4). The sections and
+    clauses it leaves out on purpose are chosen in their own window (TraceExclusionDialog)."""
     TITLE = "sezioni e clausole SRS"
     COLUMNS = ((PRINCIPAL, "Principale"), (CONTRIBUTES, "Contribuisce"))
     OWNER_HEADER = "Dominio principale attuale"
@@ -920,8 +981,161 @@ class TraceSrsDialog(_TraceDialog):
         """(uuids of which the domain is principal, uuids to which it contributes)."""
         return self.chosen(PRINCIPAL), self.chosen(CONTRIBUTES)
 
+    def accept(self):
+        """A principal section with sections or clauses excluded from it is no longer principal: the exclusions are
+        removed first (in their window)."""
+        model = self.project.model
+        stranded = [e for e in excluded_items(model, self.domain)
+                    if not under_principal(model, e.uuid, self.domain.uuid, self.state)]
+        if stranded:
+            QMessageBox.information(
+                self, "Sezioni e clausole escluse",
+                "Queste voci sono escluse dal dominio e non sarebbero più in una sezione principale del dominio: "
+                "togli prima la loro esclusione con «Escludi sezioni e clausole…», o lascia principale la sezione."
+                "\n\n" + "\n".join(model.label(e) for e in stranded))
+            return
+        super().accept()
+
     def apply(self):
         return self.project.trace_srs(self.domain, *self.selection())
+
+
+class TraceExclusionDialog(_TraceDialog):
+    """Functional domain (SA-1): the sections and clauses it leaves out on purpose within those of which it is
+    principal (A4). Only the principal sections are listed, with what they contain; a tick on «Esclusa» opens at
+    once the ADR of exclusion, to write the reason: the item is excluded when the ADR is saved."""
+    TITLE = "sezioni e clausole escluse"
+    COLUMNS = ((EXCLUDED, "Esclusa"),)
+    OWNER_HEADER = ""
+    TRACED_WORD = "escluse"
+    HINT = ("Sono elencate le sezioni di cui il dominio è principale, con le loro sottosezioni e clausole. Clic su "
+            "«Esclusa» per escludere di proposito dal dominio una sottosezione o clausola: si apre l'ADR di "
+            "esclusione, in cui spiegare perché il dominio non la traccia, e la voce risulta esclusa quando l'ADR è "
+            "salvata. Altre voci si aggiungono alla stessa ADR dalla sua scheda. Doppio clic su una riga per "
+            "leggerne il testo completo.")
+
+    def __init__(self, project, owner, parent=None):
+        super().__init__(project, owner, parent)
+        self.setWindowTitle("Sezioni e clausole escluse dal dominio")
+        self.edit_denied = getattr(parent, "edit_denied", None)  # the sheet of the ADR: the fields of the DA
+        self.adrs_saved = []  # the ADR of exclusion written from this window
+        self.sections_only.setVisible(False)
+        self.only_traced.setText("Solo voci escluse")
+        for uuid in [u for u in self.state if not under_principal(project.model, u, owner.uuid)]:
+            del self.state[uuid]  # the principal sections themselves: where the items are excluded from
+        self._update_counts()
+        self._show_chapter(self.tabs.currentIndex())
+
+    @property
+    def domain(self):
+        return self.owner
+
+    def shows(self, e):
+        """The principal sections of the domain and what they contain."""
+        return e.get("primary_domain") == self.domain.uuid or under_principal(self.project.model, e.uuid,
+                                                                             self.domain.uuid)
+
+    def _paint(self, item):
+        super()._paint(item)
+        if item.data(0, UUID_ROLE) not in self.state:  # a principal section: nothing to tick
+            for column in self.column_of.values():
+                item.setIcon(column, QIcon())
+                item.setToolTip(column, "Sezione principale del dominio: se ne escludono le sottosezioni e le "
+                                        "clausole")
+
+    def initial_state(self, e):
+        return EXCLUDED if self.domain.uuid in (e.get("excluded_domains") or []) else None
+
+    def stored_owner(self, e):
+        return None
+
+    def owner_after_apply(self, e, state):
+        return None
+
+    def count_text(self):
+        n = len(self.chosen(EXCLUDED))
+        return "Nessuna voce esclusa" if not n else "1 voce esclusa" if n == 1 else f"{n} voci escluse"
+
+    def click(self, item, choice):
+        from arcadia_tool.model.adr import exclusion_adr
+
+        uuid = item.data(0, UUID_ROLE)
+        if uuid not in self.state:
+            return
+        if self.state.get(uuid) != EXCLUDED:
+            element = self.project.model.get(uuid)
+            if exclusion_adr(self.project.model, element, self.domain) is None and not self.write_exclusion(element):
+                return  # its ADR not saved: not excluded
+        super().click(item, choice)
+
+    def write_exclusion(self, item):
+        """The ADR of exclusion of the item, opened at once in its window, in edit mode, to write the reason.
+        Saved: written to disk with the item, now excluded (True). «Annulla» or closed without saving: the ADR goes
+        away and the item is not excluded (False)."""
+        from arcadia_tool.model.adr import exclusion_defaults
+        from arcadia_tool.ui.element_editor import ElementWindow
+
+        project = self.project
+        adr = project.new_element("adr", **{k: v for k, v in exclusion_defaults(project.model, item, self.domain)
+                                             .items() if v})
+        window = ElementWindow(parent=self)
+        editor = window.editor
+        editor.edit_denied = self.edit_denied
+        editor.edit(project, adr, editing=True)
+        editor.unsaved_new = True  # «Annulla»: the ADR goes away
+        saved = []
+        editor.saved.connect(lambda: (saved.append(True), window.accept()))
+        editor.abandoned.connect(lambda _element: window.reject())
+        window.setWindowTitle(f"ADR di esclusione · {project.model.label(item)}")
+        window.setModal(True)
+        self.open_window(window)
+        if saved:
+            project.save(only={adr.uuid, item.uuid})  # the ADR and the item excluded by it
+            self.adrs_saved.append(adr)
+            return True
+        project.discard_new(adr.uuid)
+        return False
+
+    def open_window(self, window):
+        """The window of the ADR, until it is saved or closed (a separate step, replaced by the tests)."""
+        window.exec()
+
+    def apply(self):
+        """The items excluded from the domain as ticked (each with its ADR saved). An exclusion removed: the item out
+        of its ADR, if the ADR leaves out other items too; else the ADR, still «Proposta», deleted after asking."""
+        from arcadia_tool.model.adr import excluded_items as items_of, exclusion_adr
+        from arcadia_tool.model.links import set_exclusion
+
+        model = self.project.model
+        changed, removed = [], set()
+        for uuid, state in self.state.items():
+            was = self.domain.uuid in (model.get(uuid).get("excluded_domains") or [])
+            item = set_exclusion(model, uuid, self.domain.uuid, state == EXCLUDED)
+            if item is not None:
+                self.project.update(item)
+                changed.append(item)
+                if was:
+                    removed.add(uuid)
+        lone = {}  # ADR whose items are all no longer excluded
+        for uuid in removed:
+            adr = exclusion_adr(model, model.get(uuid), self.domain)
+            if adr is None:
+                continue
+            left = [u for u in items_of(adr) if u not in removed]
+            if left:
+                previous = adr.copy()
+                adr.set("excluded_item", left)
+                changed += [adr, *(self.project.update(adr, previous) or [])]
+            else:
+                lone[adr.uuid] = adr
+        dropped = [a for a in lone.values() if a.get("status") in (None, "Proposta")]
+        if dropped and QMessageBox.question(
+                self, "Esclusioni tolte",
+                f"L'esclusione è stata tolta per {len(dropped)} voci: eliminare anche le loro ADR di esclusione "
+                "ancora proposte?\n\n" + "\n".join(model.label(a) for a in dropped)) == QMessageBox.Yes:
+            self.project.delete_elements([a.uuid for a in dropped])
+            self.adrs_deleted = dropped
+        return changed
 
 
 class TraceFunctionDialog(_TraceDialog):
@@ -990,3 +1204,106 @@ class TraceFunctionDialog(_TraceDialog):
         chosen = self.chosen(ALLOCATED)
         srs = {u for u in chosen if model.get(u).kind == "requirement"}
         return self.project.allocate_function(self.function, srs, chosen - srs, shown=set(self.state))
+
+
+def parent_clause(model, derived):
+    """The clause a derived requirement is listed under: its «Voce madre», or the clause containing it (a list
+    item, a bullet…); None without one."""
+    item = model.get(derived.get("parent")) if derived.get("parent") else None
+    seen = set()
+    while item is not None and item.uuid not in seen and item.get("item_type") not in SHOWN:
+        seen.add(item.uuid)
+        item = model.get(item.get("parent")) if item.get("parent") else None
+    return item
+
+
+class TraceDerivedDialog(_TraceDialog):
+    """System function (SA-2): the derived requirements (SA-4) mapped on it, with ticks. Only the clauses some
+    requirements are derived from are listed, each with its derived requirements under it. A derived requirement
+    has one system function: choosing it here moves it, after a confirmation; one of another domain takes the domain
+    of the function, after a confirmation too."""
+    COLUMNS = ((ALLOCATED, "Mappato"),)
+    WITH_DERIVED = True
+    CHOOSABLE = ()  # only the derived requirements: the clauses are where they come from
+    TRACED_WORD = "mappati"
+    OWNER_HEADER = "Funzione di sistema del requisito derivato"
+    TITLE = "mappatura dei requisiti derivati"
+    HINT = ("Clic su «Mappato» per mappare sulla funzione il requisito derivato (sotto la sua voce madre, con l'icona "
+            "a forcella; una sola funzione di sistema per requisito). Sono elencate solo le clausole da cui sono "
+            "derivati dei requisiti. Doppio clic su una riga per leggerne il testo completo.")
+    REPLACE_TITLE = "Requisito derivato già mappato"
+    REPLACE_TEXT = ("{n} requisiti derivati sono già mappati su un'altra funzione di sistema ({names}). Un requisito "
+                    "derivato ha una sola funzione di sistema: spostarli su questa?")
+
+    def shows(self, e):
+        if not hasattr(self, "_parents"):
+            model = self.project.model
+            self._parents = {c.uuid for c in (parent_clause(model, d) for d in model.of_kind("derived_requirement"))
+                             if c is not None}
+        return e.uuid in self._parents
+
+    def __init__(self, project, function, parent=None):
+        super().__init__(project, function, parent)
+        self.setWindowTitle("Requisiti derivati della funzione di sistema")
+        for box in (self.sections_only, self.only_derived):  # all the rows that can be ticked are derived
+            box.setVisible(False)
+        self.tree.setContextMenuPolicy(Qt.NoContextMenu)
+        self.only_traced.setText("Solo requisiti mappati")
+
+    def _paint(self, item):
+        super()._paint(item)
+        if item.data(0, UUID_ROLE) not in self.state:  # a parent clause: nothing to tick
+            for column in self.column_of.values():
+                item.setIcon(column, QIcon())
+                item.setToolTip(column, "")
+
+    def initial_state(self, e):
+        return ALLOCATED if e.get("system_function") == self.owner.uuid else None
+
+    def stored_owner(self, e):
+        return e.get("system_function") if e.kind == "derived_requirement" else None
+
+    def owner_after_apply(self, e, state):
+        if e.kind != "derived_requirement":
+            return None
+        if state == ALLOCATED:
+            return self.owner.uuid
+        stored = e.get("system_function")
+        return stored if stored != self.owner.uuid else None
+
+    def count_text(self):
+        n = len(self.chosen(ALLOCATED))
+        return "Nessun requisito derivato mappato" if not n else (
+            "1 requisito derivato mappato" if n == 1 else f"{n} requisiti derivati mappati")
+
+    def accept(self):
+        """Those of another domain take the domain of the function: asked first."""
+        model = self.project.model
+        domain = self.owner.get("domain")
+        moved = [model.get(u) for u in self.chosen(ALLOCATED)
+                 if model.get(u).get("system_function") != self.owner.uuid and domain
+                 and model.get(u).get("domain") not in (None, domain)]
+        if moved and QMessageBox.question(
+                self, "Requisiti derivati di un altro dominio",
+                f"{len(moved)} requisiti derivati sono di un altro dominio ("
+                + ", ".join(sorted({model.label_of(d.get('domain')) for d in moved})) + "). Mappati su questa "
+                f"funzione prendono il suo dominio ({model.label_of(domain)}). Continuare?") != QMessageBox.Yes:
+            return
+        super().accept()
+
+    def apply(self):
+        """Each derived requirement shown: mapped on the function if ticked, no longer if it was and is not."""
+        model, changed = self.project.model, {}
+        for uuid, state in self.state.items():
+            derived = model.get(uuid)
+            if derived is None:
+                continue
+            value = self.owner.uuid if state == ALLOCATED else (
+                None if derived.get("system_function") == self.owner.uuid else derived.get("system_function"))
+            if value != derived.get("system_function"):
+                previous = derived.copy()
+                derived.set("system_function", value)
+                changed[derived.uuid] = derived
+                for other in self.project.update(derived, previous) or []:  # e.g. its domain, its SA-3 record
+                    changed[other.uuid] = other
+        return list(changed.values())

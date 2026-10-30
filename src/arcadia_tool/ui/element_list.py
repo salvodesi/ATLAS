@@ -2,7 +2,7 @@
 X-2, the requests for clarification): their main fields, a button to open each of them (and one to delete it), and
 one to create a new one. The status of a domain is changed on its row. Opened with a double click on the kind in
 the model tree."""
-from PySide6.QtCore import Qt, Signal
+from PySide6.QtCore import Qt, QTimer, Signal
 from PySide6.QtGui import QBrush, QColor
 from PySide6.QtWidgets import (QAbstractItemView, QComboBox, QFileDialog, QFrame, QHBoxLayout, QHeaderView, QLabel,
                                QLineEdit,
@@ -17,16 +17,22 @@ UUID_ROLE = Qt.UserRole
 # The kinds shown as a table: their columns (fields of the schema); the first wide one takes the free space.
 LIST_COLUMNS = {
     "domain": ("id", "name", "team", "referent", "status"),
+    "system_function": ("id", "name", "domain", "srs_count", "derived_count", "status"),
     "clarification": ("id", "recipient", "status"),
-    "adr": ("id", "title", "adr_type", "proposer", "proposer_member", "status", "da_decision"),
+    "adr": ("id", "title", "adr_type", "adr_domains", "proposer", "proposer_member", "status", "da_decision"),
 }
 WIDE = ("recipient", "title", "name")
-STATUS_ON_ROW = ("domain",)  # the status chosen on the row, from a drop-down list
-NOT_DELETED_HERE = ("domain",)  # only «Apri»: a domain is deleted from its sheet, the tree or the views
+STATUS_ON_ROW = ("domain", "system_function")  # the status chosen on the row, from a drop-down list
+# Only «Apri»: a domain or a function is deleted from its sheet, the tree or the views.
+NOT_DELETED_HERE = ("domain", "system_function")
+# Columns computed from the model, not fields of the sheet.
+COMPUTED_COLUMNS = ("srs_count", "derived_count", "adr_domains")
 # How an element is called: one, many, the button to create one, the empty list, the search.
 NAMES = {
     "domain": ("dominio", "domini", "Nuovo dominio", "Nessun dominio funzionale",
                "Cerca per ID, nome, team, responsabile o stato", "Nuovo dominio funzionale"),
+    "system_function": ("funzione", "funzioni", "Nuova funzione", "Nessuna funzione di sistema",
+                        "Cerca per ID, nome, dominio o stato", "Nuova funzione di sistema"),
     "clarification": ("richiesta", "richieste", "Nuova richiesta", "Nessuna richiesta di chiarimento",
                       "Cerca per ID, destinatario o stato", "Nuova richiesta di chiarimento"),
     "adr": ("ADR", "ADR", "Nuova ADR", "Nessuna decisione architetturale",
@@ -34,12 +40,15 @@ NAMES = {
 }
 COLUMN_LABELS = {"id": "ID", "recipient": "Destinatario della richiesta", "adr_type": "Tipo",
                  "name": "Nome del dominio", "referent": "Responsabile", "proposer": "Team proponente",
-                 "proposer_member": "Membro proponente", "da_decision": "Decisione DA"}
+                 "proposer_member": "Membro proponente", "da_decision": "Decisione DA", "adr_domains": "DF impattati",
+                 "srs_count": "Sezioni e clausole SRS", "derived_count": "Requisiti derivati"}
+# The heading of a column for a kind, when not the general one.
+KIND_LABELS = {("system_function", "name"): "Nome (verbo + oggetto)"}
 # Shown in colour like the status (the decision of the DA: accolta, respinta…).
 COLOURED = ("status", "da_decision")
 TOOLTIP_FIELDS = {"clarification": "problem", "adr": "context", "domain": "mission"}
 # Columns the list is sorted by, with a click on their heading (at first: by ID).
-SORTABLE = {"adr": ("id", "adr_type", "proposer", "proposer_member", "status", "da_decision")}
+SORTABLE = {"adr": ("id", "adr_type", "adr_domains", "proposer", "proposer_member", "status", "da_decision")}
 
 
 class ElementListPage(QWidget):
@@ -56,6 +65,7 @@ class ElementListPage(QWidget):
         self.columns = LIST_COLUMNS[kind]
         self.one, self.many, new_label, empty_label, search_label, first_label = NAMES[kind]
         self.wide = next((c for c in self.columns if c in WIDE), self.columns[-1])
+        self._kept_row = None  # the row whose status was just chosen: kept selected when the list is rebuilt
 
         header = QFrame(objectName="card")
         header_layout = QVBoxLayout(header)
@@ -103,7 +113,7 @@ class ElementListPage(QWidget):
             elif name == "status" and kind in STATUS_ON_ROW:  # its drop-down list
                 columns.setSectionResizeMode(c, QHeaderView.Interactive)
                 columns.resizeSection(c, 170)
-            elif name in ("id", "status", "da_decision"):
+            elif name in ("id", "status", "da_decision", *COMPUTED_COLUMNS):
                 columns.setSectionResizeMode(c, QHeaderView.ResizeToContents)
             else:  # another text (the decider of an ADR): a width of its own, changeable by dragging
                 columns.setSectionResizeMode(c, QHeaderView.Interactive)
@@ -154,12 +164,20 @@ class ElementListPage(QWidget):
         self.reload()
 
     def _header(self, column):
-        return COLUMN_LABELS.get(column) or self.schema.field(column).label
+        return KIND_LABELS.get((self.kind, column)) or COLUMN_LABELS.get(column) or self.schema.field(column).label
 
     def _text(self, element, column):
         """What a cell shows: the label of a referenced element (the team recipient of a request), else the
-        value; a recipient written as text by earlier versions."""
+        value; a recipient written as text by earlier versions; the columns computed from the model."""
         model = self.project.model
+        if column == "srs_count":  # the sections and clauses of a function
+            return str(len(element.get("sections") or []))
+        if column == "derived_count":  # the derived requirements mapped on it
+            return str(sum(1 for d in model.of_kind("derived_requirement")
+                           if d.get("system_function") == element.uuid))
+        if column == "adr_domains":  # the domains an ADR is about
+            from arcadia_tool.model.adr import impacted_domains
+            return ", ".join(d.get("id") or model.label(d) for d in impacted_domains(model, element))
         field = self.schema.field(column)
         value = derived_value(model, element, field) if field is not None and field.derived_from else             element.get(column)  # the referent of a domain: from its team
         if field is not None and field.type == "ref":
@@ -203,6 +221,7 @@ class ElementListPage(QWidget):
         choice.setEnabled(not reason)
         choice.setToolTip(reason or f"Stato di {self.project.model.label(element)}")
         choice.currentTextChanged.connect(lambda text, c=choice: self._color_choice(c))
+        choice.currentTextChanged.connect(lambda text, u=element.uuid: setattr(self, "_kept_row", u))
         choice.currentTextChanged.connect(lambda text, u=element.uuid: self.status_changed.emit(u, text))
         return choice
 
@@ -244,9 +263,14 @@ class ElementListPage(QWidget):
         return filled + [e for e in by_id if not self._text(e, self.sort_column)]
 
     def reload(self):
-        """The elements of the kind, from the model (after a change, a creation or a deletion)."""
+        """The elements of the kind, from the model (after a change, a creation or a deletion). The list stays where
+        it was: the same scroll position and the same row (the one selected, or whose status was just chosen)."""
         model = self.project.model
         elements = self._sorted(model.of_kind(self.kind))
+        scroll = self.table.verticalScrollBar().value()
+        current = self.table.item(self.table.currentRow(), 0) if self.table.currentRow() >= 0 else None
+        keep = self._kept_row or (current.data(UUID_ROLE) if current is not None else None)
+        self._kept_row = None
         self.table.setRowCount(0)
         actions_width = 0
         for e in elements:
@@ -278,6 +302,19 @@ class ElementListPage(QWidget):
         self.body.setCurrentWidget(self.table if elements else self.empty)
         self.search.setVisible(bool(elements))  # nothing to search in an empty list
         self._filter(self.search.text())
+        row = next((r for r in range(self.table.rowCount()) if self.table.item(r, 0).data(UUID_ROLE) == keep), None)
+        if row is not None:
+            self.table.blockSignals(True)
+            self.table.setCurrentCell(row, 0)
+            self.table.blockSignals(False)
+
+        def restore():  # once the rows are laid out (the range of the scroll bar is known)
+            try:
+                self.table.verticalScrollBar().setValue(scroll)
+            except RuntimeError:  # the tab was closed meanwhile
+                pass
+        restore()
+        QTimer.singleShot(0, restore)
 
     def _filter(self, text):
         words = text.lower().split()

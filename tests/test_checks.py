@@ -51,11 +51,11 @@ def coherent():
     g.oe01 = add("external_actor", id="OE-01", name="Treno")
     g.sf06 = add("system_function", id="SF-DF06-01", name="Supervisionare lo standstill", domain=g.df06.uuid,
                  description="Impedisce il movimento del treno fermo.", sections=[g.sec314.uuid],
-                 rows_452=["4.5.2-R49"], mode_availability={"SB": "X"}, proposed_component=g.lc12.uuid,
+                 rows_452=["4.5.2-R49"], proposed_component=g.lc12.uuid,
                  status="Approvata")
     g.sf02 = add("system_function", id="SF-DF02-01", name="Determinare la velocità del treno", domain=g.df02.uuid,
                  description="Stima la velocità.", sections=[g.sec361.uuid], rows_452=["4.5.2-R10"],
-                 mode_availability={"FS": "X"}, proposed_component=g.lc06.uuid, status="Approvata")
+                 proposed_component=g.lc06.uuid, status="Approvata")
     g.lf02 = add("logical_function", id="LF-DF02-01-01", name="Calcolare la velocità", refines=g.sf02.uuid,
                  component=g.lc06.uuid, description="Calcola la velocità.", detail_requirements=[g.cl3611.uuid],
                  status="Approvata")
@@ -249,6 +249,9 @@ MUTATIONS = {
     "SA1-06": lambda g: g.add("requirement", id="3.14.5", item_type="Sezione", primary_domain=g.df06.uuid),
     "SA1-07": lambda g: g.lc06.set("name", g.df02.get("name")),
     "SA1-08": lambda g: g.df06.set("planned_components", [g.lc06.uuid]),
+    "SA1-09": lambda g: g.cl3142.set("excluded_domains", [g.df06.uuid]),  # excluded without its ADR
+    "SA1-10": lambda g: g.add("adr", id="ADR-009", title="Esclusione", adr_type="Esclusione di sezione o clausola",
+                              status="Proposta", excluded_item=[g.cl3142.uuid], excluding_domain=g.df06.uuid),
     "SA1-09": lambda g: domain(g, "DF07"),
     "SA2-01": lambda g: g.sf06.set("domain", None),
     "SA2-02": lambda g: g.sf06.set("id", "SF-DF02-09"),
@@ -262,9 +265,6 @@ MUTATIONS = {
         "requirement", id="3.15.1", item_type="Sezione", primary_domain=g.df06.uuid).uuid]),
     "SA2-10": lambda g: g.sf06.set("is_new", True),
     "SA2-11": lambda g: (g.sf06.set("is_new", True), g.sf06.set("new_reason", "Non in tabella 4.5.2")),
-    "SA2-12": lambda g: g.sf06.set("mode_availability", None),
-    "SA2-13": lambda g: g.sf06.set("mode_availability", {"SB": "Z"}),
-    "SA2-14": lambda g: g.sf06.set("mode_availability", {"SB": "O"}),
     "SA2-15": lambda g: g.sf02.set("rows_452", ["4.5.2-R49"]),
     "SA2-16": lambda g: g.add("system_function", name="Gestire la manovra", domain=g.df06.uuid,
                               sections=[g.sec314.uuid]),
@@ -303,6 +303,8 @@ MUTATIONS = {
     "SA4-08": lambda g: derived(g, b6_scheme=None),
     "SA4-09": lambda g: derived(g),
     "SA4-10": lambda g: derived(g, function=None),
+    "SA4-11": lambda g: derived(g),  # no system function
+    "SA4-12": lambda g: derived(g, system_function=g.sf02.uuid),  # its logical function refines SF-DF06-01
     "SA5-01": lambda g: g.fe3.set("target", None),
     "SA5-02": lambda g: g.fe3.set("target", g.sf06.uuid),
     "SA5-03": lambda g: g.fe1.set("target", g.add("external_actor", id="OE-02", name="RBC").uuid),

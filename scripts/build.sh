@@ -17,4 +17,6 @@ cd "$root"
 version="$("$python" -c "import sys; sys.path.insert(0, 'src'); import arcadia_tool; print(arcadia_tool.__version__)")"
 cp src/arcadia_tool/resources/icon_256.png dist/ATLAS/atlas.png
 tar -czf "dist/ATLAS-$version-linux-x86_64.tar.gz" -C dist ATLAS
+# The SHA-256 fingerprint, attached to the release next to the archive: ATLAS checks it before updating itself.
+(cd dist && sha256sum "ATLAS-$version-linux-x86_64.tar.gz" > "ATLAS-$version-linux-x86_64.tar.gz.sha256")
 echo "dist/ATLAS-$version-linux-x86_64.tar.gz"

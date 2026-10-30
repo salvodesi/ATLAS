@@ -61,11 +61,11 @@ def test_trace_sections_and_clauses_from_the_domain(app, tmp_path):
     # Another domain cannot silently take a section that already has a principal domain.
     dialog = TraceSrsDialog(p, e["odometry"])
     section_item = dialog._items[e["section"].uuid]
-    assert section_item.text(4) == p.model.label(e["location"])
+    assert section_item.text(dialog.owner_column) == p.model.label(e["location"])
     dialog.click(section_item, PRINCIPAL)
-    assert section_item.text(4) == p.model.label(e["odometry"])  # shown before «Applica»
+    assert section_item.text(dialog.owner_column) == p.model.label(e["odometry"])  # shown before «Applica»
     dialog.click(section_item, PRINCIPAL)
-    assert section_item.text(4) == p.model.label(e["location"])  # unchecked: back to the current one
+    assert section_item.text(dialog.owner_column) == p.model.label(e["location"])  # unchecked: back to the current one
     dialog.click(section_item, PRINCIPAL)
     dialog.accept()  # the question is answered No by the test fixture
     assert e["section"].get("primary_domain") == loc

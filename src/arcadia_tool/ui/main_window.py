@@ -40,6 +40,7 @@ from arcadia_tool.ui.start_page import StartPage
 from arcadia_tool.ui.theme import ACCENT, CHANGE_COLORS, TEXT, icon, kind_icon
 from arcadia_tool.ui.branches import BranchesDialog
 from arcadia_tool.ui.versions import CompareDialog, HistoryDialog, PublishDialog
+from arcadia_tool.ui import updates as updates_ui
 
 MAX_RECENT = 8
 
@@ -133,6 +134,7 @@ class MainWindow(QMainWindow):
 
         self.tree.edit_denied = self.edit_denied
         self._just_created = set()  # elements created with «Nuovo…» whose sheet has not opened yet
+        self._domain_refresh_pending = False  # the lists of the domain sheets to draw again (SRS items changed)
         self.tree.element_created.connect(self._just_created.add)
         self.tree.locks_out = self.locks_out
         self.tree.element_selected.connect(self._select)
@@ -165,6 +167,7 @@ class MainWindow(QMainWindow):
         self.addDockWidget(Qt.BottomDockWidgetArea, self.checks_dock)
         self.checks_dock.hide()  # no project yet
 
+        self.updates = updates_ui.UpdateChecker(self, self.install_update)  # new versions of ATLAS
         self._build_actions()
         self._build_status_bar()
         self._refresh_recent()
@@ -292,6 +295,14 @@ class MainWindow(QMainWindow):
         user_menu = self.menuBar().addMenu("&Utente")
         user_menu.addAction(self.account_action)
         user_menu.addAction(self.switch_user_action)
+        help_menu = self.menuBar().addMenu("&Aiuto")
+        self.updates_action = help_menu.addAction(icon("mdi6.update"), "Verifica aggiornamenti…",
+                                                  lambda: self.updates.start(manual=True))
+        self.updates_action.setToolTip("Cerca una nuova versione di ATLAS su GitHub e, se c'è, la installa")
+        self.auto_updates_action = help_menu.addAction("Controlla gli aggiornamenti all'avvio")
+        self.auto_updates_action.setCheckable(True)
+        self.auto_updates_action.setChecked(updates_ui.checks_at_start())
+        self.auto_updates_action.toggled.connect(updates_ui.set_checks_at_start)
 
     def _build_status_bar(self):
         self.status_user = QLabel()
@@ -1336,6 +1347,12 @@ class MainWindow(QMainWindow):
             return
         self.tree.create("adr", {**adr_defaults(self.project.model, dialog.adr_type, element), "concerns": [uuid]})
 
+    def _refresh_domain_sheets(self):
+        self._domain_refresh_pending = False
+        for editor in list(self.editors.values()):
+            if editor.element is not None and editor.element.kind == "domain" and not editor.dirty:
+                editor.refresh()  # its lists of SRS items
+
     def _refresh_adr_tables(self):
         """The tables of the ADR of the domain and function sheets open, as the ADR are now."""
         editors = list(self.editors.values()) + ([self.item_window.editor] if self.item_window is not None else [])
@@ -1345,6 +1362,11 @@ class MainWindow(QMainWindow):
     def _element_changed(self, element):
         if element.kind == "adr":
             self._refresh_adr_tables()
+        if element.kind == "requirement" and not self._domain_refresh_pending:
+            # E.g. excluded from a domain by the save of its ADR: the lists of the domain sheets open, once for
+            # all the items changed together.
+            self._domain_refresh_pending = True
+            QTimer.singleShot(0, self._refresh_domain_sheets)
         self.tree.refresh_label(element)
         editor = self.editors.get(element.uuid)
         if editor is not None:
@@ -1357,6 +1379,8 @@ class MainWindow(QMainWindow):
             self.reader.element_changed(element)
         if element.kind in self.list_pages:
             self.list_pages[element.kind].reload()
+        if element.kind == "derived_requirement" and "system_function" in self.list_pages:
+            self.list_pages["system_function"].reload()  # the derived requirements of each function
         if self.diagram_pages:
             self._refresh_diagrams()  # e.g. a name or an exchange changed in a sheet
         self._refresh_state()
@@ -1592,8 +1616,32 @@ class MainWindow(QMainWindow):
             return not self.project.has_unpublished_changes()
         return box.clickedButton() is discard
 
-    def closeEvent(self, event):
+    # --- updates of ATLAS ---------------------------------------------------------------------------
+
+    def check_updates_at_start(self):
+        """At the start, at most once a day and if not turned off: a new version shows its window."""
+        if updates_ui.due_today():
+            self.updates.start()
+
+    def install_update(self, path):
+        """The new version downloaded: the edits saved (or discarded), ATLAS closes and the installation starts
+        (it opens ATLAS again at the end)."""
+        from arcadia_tool.updates import UpdateError, start_install
+
         if not self._confirm_discard():
+            return False
+        try:
+            start_install(path)
+        except UpdateError as exc:
+            QMessageBox.warning(self, "Aggiornamento di ATLAS", str(exc))
+            return False
+        self._closing_for_update = True  # already asked about the edits
+        self.close()
+        QApplication.quit()
+        return True
+
+    def closeEvent(self, event):
+        if not getattr(self, "_closing_for_update", False) and not self._confirm_discard():
             event.ignore()
             return
         if self.project:

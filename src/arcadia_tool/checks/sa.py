@@ -28,7 +28,7 @@ ID_FORMATS = {
 # Fields that an approved sheet should have (GEN-08).
 MAIN_FIELDS = {
     "domain": ("mission", "team"),
-    "system_function": ("domain", "description", "mode_availability"),
+    "system_function": ("domain", "description"),
     "trace_record": ("requirement", "b5_question", "outcome"),
     "derived_requirement": ("parent", "obligation", "function", "domain", "b6_scheme"),
     "exchange_item": ("nature", "meaning", "srs_origin"),
@@ -339,6 +339,29 @@ def sa1_planned_components(ctx):
             yield issue(d, f"Funzioni del dominio allocate a {ctx.label(c)}, non tra i componenti previsti.", [c])
 
 
+@check("SA1-09", "Sezione o clausola esclusa dal dominio senza ADR di esclusione", "A", "A4, X-1")
+def sa1_exclusion_without_adr(ctx):
+    from arcadia_tool.model.adr import exclusion_adr
+
+    for item in ctx.of("requirement"):
+        for uuid in item.get("excluded_domains") or []:
+            domain = ctx.get(uuid)
+            if domain is not None and exclusion_adr(ctx.model, item, domain) is None:
+                yield issue(domain, f"{ctx.label(item)} è esclusa dal dominio senza un'ADR di esclusione che ne "
+                                    "spieghi il motivo.", [item])
+
+
+@check("SA1-10", "ADR di esclusione senza il motivo della non tracciatura", "A", "A4, X-1")
+def sa1_exclusion_without_reason(ctx):
+    from arcadia_tool.model.adr import excluded_items
+    from arcadia_tool.model.schema import ADR_EXCLUSION
+
+    for adr in ctx.of("adr"):
+        if adr.get("adr_type") == ADR_EXCLUSION and not (adr.get("exclusion_reason") or "").strip():
+            yield issue(adr, "Manca il motivo per cui il dominio non traccia la voce esclusa.",
+                        [u for u in (*excluded_items(adr), adr.get("excluding_domain")) if ctx.get(u)])
+
+
 @check("SA1-09", "Dominio senza funzioni di sistema", "A", "A3, B1")
 def sa1_no_functions(ctx):
     with_functions = {sf.get("domain") for sf in ctx.of("system_function")}
@@ -471,34 +494,6 @@ def sa2_new_without_adr(ctx):
     for sf in ctx.of("system_function"):
         if sf.get("is_new") and ctx.approved(sf) and not related_adrs(ctx.model, sf):
             yield issue(sf, "Funzione nuova approvata senza ADR: se la scelta non è ovvia va registrata.")
-
-
-def _modes(sf):
-    return {mode: str(value).strip().upper() for mode, value in (sf.get("mode_availability") or {}).items()
-            if str(value).strip()}
-
-
-@check("SA2-12", "Disponibilità nei modi non compilata", "A", "B2")
-def sa2_no_modes(ctx):
-    for sf in ctx.of("system_function"):
-        if not _modes(sf):
-            yield issue(sf, "Disponibilità nei modi non compilata (righe della tabella 4.5.2).")
-
-
-@check("SA2-13", "Disponibilità nei modi con valori diversi da X, O o vuoto", "E", "B2")
-def sa2_mode_values(ctx):
-    for sf in ctx.of("system_function"):
-        wrong = [f"{m}={v}" for m, v in _modes(sf).items() if v not in ("X", "O")]
-        if wrong:
-            yield issue(sf, f"Valori non ammessi nella disponibilità nei modi: {', '.join(wrong)} (solo X o O).")
-
-
-@check("SA2-14", "Modo opzionale («O») senza ADR collegata", "E", "B2")
-def sa2_optional_without_adr(ctx):
-    for sf in ctx.of("system_function"):
-        optional = [m for m, v in _modes(sf).items() if v == "O"]
-        if optional and not related_adrs(ctx.model, sf):
-            yield issue(sf, f"Funzione opzionale in {', '.join(optional)} senza ADR: è una decisione di prodotto.")
 
 
 @check("SA2-15", "Riga 4.5.2 non nel formato 4.5.2-Rnn o assegnata a più funzioni", "A", "B1")
@@ -843,6 +838,29 @@ def sa4_parent_covered(ctx):
 
 def _ends(ctx, fe):
     return ctx.get(fe.get("source")), ctx.get(fe.get("target"))
+
+
+@check("SA4-11", "Requisito derivato non mappato su una funzione di sistema", "A", "SA-2 ↔ SA-4")
+def sa4_no_system_function(ctx):
+    for d in ctx.of("derived_requirement"):
+        if not d.get("system_function"):
+            yield issue(d, "Requisito derivato non mappato su una funzione di sistema (SA-2).")
+
+
+@check("SA4-12", "Funzione logica che non raffina la funzione di sistema del requisito derivato", "A",
+       "SA-2 ↔ SA-4 ↔ LA-2")
+def sa4_functions_apart(ctx):
+    for d in ctx.of("derived_requirement"):
+        sf, lf = ctx.get(d.get("system_function")), ctx.get(d.get("function"))
+        if sf is None or lf is None:
+            continue
+        refined, seen = lf, set()  # the system function the logical one refines (directly or through its parents)
+        while refined is not None and refined.kind == "logical_function" and refined.uuid not in seen:
+            seen.add(refined.uuid)
+            refined = ctx.get(refined.get("refines")) or ctx.get(refined.get("parent"))
+        if refined is not None and refined.uuid != sf.uuid:
+            yield issue(d, f"Mappato su {ctx.label(sf)}, ma la sua funzione logica {ctx.label(lf)} raffina "
+                           f"{ctx.label(refined)}.", [sf, lf, refined])
 
 
 @check("SA5-01", "Produttore o utilizzatore mancante", "E", "B4")

@@ -189,9 +189,9 @@ def test_x1_lists_the_architectural_decisions(app, tmp_path, monkeypatch):
     window.tree._double_clicked(window.tree._kind_items["adr"], 0)
     page = window.list_pages["adr"]
     table = page.table
-    assert [table.horizontalHeaderItem(c).text() for c in range(6)] == ["ID", "Titolo", "Tipo", "Team proponente",
-                                                                        "Membro proponente", "Stato"]
-    assert [table.item(0, c).text() for c in range(6)] == ["ADR-001", "MRSP in un dominio autonomo", "",
+    assert [table.horizontalHeaderItem(c).text() for c in range(7)] == [
+        "ID", "Titolo", "Tipo", "DF impattati", "Team proponente", "Membro proponente", "Stato"]
+    assert [table.item(0, c).text() for c in range(7)] == ["ADR-001", "MRSP in un dominio autonomo", "", "",
                                                            "T2 Odometria", "Luca Neri", "Decisa"]
     assert "rimbalza" in table.item(0, 0).toolTip() and page.count.text() == "1 ADR"
     import arcadia_tool.ui.adr_types as adr_types
@@ -278,6 +278,81 @@ def test_the_list_of_the_adr_is_sorted_by_id_and_by_a_click_on_a_heading(app, tm
     p.new_element("adr", title="Nuova", status="Proposta")
     page.reload()  # a new ADR: the order chosen is kept
     assert ids()[0] == "ADR-011"
+
+
+def test_the_system_functions_open_as_a_table_with_their_status_on_the_row(app, tmp_path):
+    p = Project.create(tmp_path / "p", "Prova")
+    d1 = p.new_element("domain", id="DF01", name="Protezione")
+    clause = p.new_element("requirement", id="3.4.1.1", item_type="Requisito")
+    sf = p.new_element("system_function", name="Proteggere dal Roll Away", domain=d1.uuid, sections=[clause.uuid],
+                       status="Proposta")
+    p.new_element("derived_requirement", parent=clause.uuid, obligation="Frena.", system_function=sf.uuid)
+    p.save()
+    window = MainWindow()
+    window.show()
+    window._set_project(p)
+    window.tree._double_clicked(window.tree._kind_items["system_function"], 0)  # a tab, not the branch
+    page = window.list_pages["system_function"]
+    table = page.table
+    assert [table.horizontalHeaderItem(c).text() for c in range(6)] == [
+        "ID", "Nome (verbo + oggetto)", "Dominio", "Sezioni e clausole SRS", "Requisiti derivati", "Stato"]
+    assert [table.item(0, c).text() for c in range(5)] == ["SF-DF01-01", "Proteggere dal Roll Away",
+                                                           "DF01 Protezione", "1", "1"]
+    choice = table.cellWidget(0, 5)  # the status chosen on the row, saved at once
+    assert "Elimina" not in [b.text() for b in table.cellWidget(0, 6).findChildren(QPushButton)]
+    choice.setCurrentText("Rivista")
+    app.processEvents()
+    assert sf.get("status") == "Rivista" and sf.uuid not in p.pending()
+    window.close()
+
+
+def test_the_list_stays_where_it_is_when_a_status_is_chosen(app, tmp_path):
+    p = Project.create(tmp_path / "p", "Prova")
+    d1 = p.new_element("domain", id="DF01", name="Protezione")
+    functions = [p.new_element("system_function", name=f"Funzione {n:02d}", domain=d1.uuid, status="Proposta")
+                 for n in range(1, 41)]
+    p.save()
+    window = MainWindow()
+    window.resize(1200, 600)
+    window.show()
+    window._set_project(p)
+    window.tree._double_clicked(window.tree._kind_items["system_function"], 0)
+    page = window.list_pages["system_function"]
+    table, status = page.table, page.columns.index("status")
+    app.processEvents()
+    row = 30
+    table.scrollToItem(table.item(row, 0))
+    app.processEvents()
+    scroll = table.verticalScrollBar().value()
+    assert scroll > 0
+    table.cellWidget(row, status).setCurrentText("Rivista")  # saved, the list rebuilt
+    app.processEvents()
+    app.processEvents()
+    uuid = table.item(row, 0).data(Qt.UserRole)
+    assert p.model.get(uuid).get("status") == "Rivista"
+    assert table.currentRow() == row and table.verticalScrollBar().value() == scroll  # still there
+    assert table.cellWidget(row, status).currentText() == "Rivista"
+    window._set_project(None)
+    window.close()
+
+
+def test_the_list_of_the_adr_shows_the_domains_they_are_about(app, tmp_path):
+    p = Project.create(tmp_path / "p", "Prova")
+    d1 = p.new_element("domain", id="DF01", name="Protezione")
+    d2 = p.new_element("domain", id="DF02", name="Localizzazione")
+    section = p.new_element("requirement", id="3.4.1", item_type="Sezione", primary_domain=d1.uuid)
+    clause = p.new_element("requirement", id="3.4.1.1", item_type="Requisito", parent=section.uuid)
+    p.new_element("adr", title="Spostare", adr_type="Riallocazione di sezione o clausola", status="Proposta",
+                  realloc_item=[clause.uuid], primary_proposed=d2.uuid)  # DF01: from its section, DF02: proposed
+    p.new_element("adr", title="Eliminare", adr_type="Eliminazione di dominio", status="Proposta",
+                  deleted_domain=d2.uuid)
+    p.new_element("adr", title="Altro", status="Proposta")
+    page = ElementListPage(p, "adr")
+    c = page.columns.index("adr_domains")
+    assert page.table.horizontalHeaderItem(c).text() == "DF impattati"
+    assert [page.table.item(r, c).text() for r in range(3)] == ["DF01, DF02", "DF02", ""]
+    page.sort_by("adr_domains")
+    assert [page.table.item(r, c).text() for r in range(3)] == ["DF01, DF02", "DF02", ""]
 
 
 @pytest.mark.parametrize("kind, text", [("clarification", "0 richieste"), ("adr", "0 ADR")])

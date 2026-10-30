@@ -479,6 +479,35 @@ def test_the_reallocation_of_clauses_takes_their_domains_from_their_section_and_
     p.close()
 
 
+def test_a_double_click_on_an_srs_item_of_an_adr_shows_its_text(app, tmp_path):
+    p = Project.create(tmp_path / "p", "Prova")
+    d1 = p.new_element("domain", id="DF01", name="Protezione")
+    section = p.new_element("requirement", id="3.11.6", item_type="Sezione", sequence=1, primary_domain=d1.uuid)
+    clause = p.new_element("requirement", id="3.11.6.3", item_type="Requisito", parent=section.uuid, sequence=2,
+                           text="The speed restriction shall be valid until a new signalling related one.")
+    p.new_element("requirement", id="3.11.6.3 a)", item_type="Voce", parent=clause.uuid, sequence=3,
+                  text="unless revoked")
+    adr = p.new_element("adr", title="Spostare", adr_type=ADR_SECTION, status="Proposta", realloc_item=[clause.uuid],
+                        primary_proposed=d1.uuid)
+    editor = ElementEditor()
+    editor.edit(p, adr)  # also on the sheet in read-only mode
+    items = editor.widgets["realloc_item"].list
+    items.itemDoubleClicked.emit(items.item(0))
+    viewer = editor.reference_viewer
+    text = viewer.browser.toPlainText()
+    assert viewer.isVisible() and "3.11.6.3" in text and "shall be valid" in text and "unless revoked" in text
+    opened = []
+    editor.open_requested.connect(opened.append)
+    viewer.sheet_button.click()  # from there, its sheet
+    assert opened == [clause.uuid]
+    domains = editor.widgets["contributors_proposed"]  # not an SRS item: its sheet
+    domains.set_value([d1.uuid])
+    domains.list.itemDoubleClicked.emit(domains.list.item(0))
+    assert opened == [clause.uuid, d1.uuid]
+    viewer.close()
+    p.close()
+
+
 def test_the_proposer_member_is_chosen_among_the_members_of_the_proposing_team(app, tmp_path):
     p = Project.create(tmp_path / "p", "Prova")
     t1 = p.new_element("team", id="T1", name="Odometria", members=[{"name": "Anna Bianchi"}, {"name": "Luca Neri"}])
@@ -600,8 +629,17 @@ def test_an_adr_with_one_item_to_reallocate_is_migrated_to_a_list(tmp_path):
     adr = p.new_element("adr", title="Spostare", adr_type=ADR_SECTION, status="Proposta")
     adr.values["realloc_item"] = item.uuid  # as written by earlier versions: one item
     assert item_primary(p.model, adr) == d1.uuid  # read also so
+    sf = p.new_element("system_function", name="Proteggere", domain=d1.uuid)
+    sf.values["mode_availability"] = {"SB": "X"}  # «Disponibilità nei modi», removed
     p._migrate()
     assert adr.get("realloc_item") == [item.uuid] and adr.uuid in p.pending()  # saved with the next save
+    assert "mode_availability" not in sf.values and sf.uuid in p.pending()
+    from arcadia_tool.checks.config import ChecksConfig
+    from arcadia_tool.model.schema import KINDS_BY_NAME as kinds
+    assert kinds["system_function"].field("mode_availability") is None
+    config = ChecksConfig.from_data({"profiles": {"Predefinito": {"enabled": ["SA2-01", "SA2-12", "SA2-14"],
+                                                                 "severity": {"SA2-13": "E"}}}})
+    assert config.profile.enabled == ["SA2-01"] and not config.profile.severity  # the checks removed: left out
     p.close()
 
 

@@ -64,7 +64,7 @@ def build(tmp_path):
     c2 = p.new_element("requirement", id="3.4.1.2", item_type="Requisito", parent=s1.uuid, sequence=3,
                        category=["Bordo"])
     sf1 = p.new_element("system_function", name="Stimare la velocità", domain=d1.uuid, sections=[s1.uuid],
-                        rows_452=["4.5.2-R01"], mode_availability={"FS": "X", "SR": "O"}, is_new=True,
+                        rows_452=["4.5.2-R01"], is_new=True,
                         new_reason="Manca nel catalogo", status="Proposta")
     sf2 = p.new_element("system_function", name="Comandare i freni", domain=d2.uuid, sections=[c1.uuid])
     lf = p.new_element("logical_function", name="Calcolare la frenata", refines=sf2.uuid)  # of DF02
@@ -147,9 +147,9 @@ def test_the_artefacts_are_filled_in_from_the_model(tmp_path):
     # SA-2: a sheet per domain, read again by «Importa funzioni»: nothing to change.
     sa2 = book["SA-2"]["DF01"]
     row = table(sa2, "ID")[0]
-    assert [row["Sezioni SRS"], row["Righe 4.5.2"], row["Disponibilità nei modi (X / O)"],
-            row["Voci di bordo tracciate"], row["Funzione nuova"], row["Motivo"]] == [
-        "3.4.1", "4.5.2-R01", "FS: X, SR: O", "2", "Sì", "Manca nel catalogo"]
+    assert [row["Sezioni SRS"], row["Righe 4.5.2"], row["Voci di bordo tracciate"], row["Funzione nuova"],
+            row["Motivo"]] == ["3.4.1", "4.5.2-R01", "2", "Sì", "Manca nel catalogo"]
+    assert "Disponibilità nei modi (X / O)" not in row
     from arcadia_tool.ui.import_functions import PRESENT, plan
     functions = read_function_sheets(files[1])
     assert [(f.sheet, f.name, f.clauses, f.origin, f.notes) for f in functions] == [

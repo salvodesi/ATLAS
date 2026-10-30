@@ -4,7 +4,8 @@ from datetime import date
 
 from arcadia_tool.model.element import Element
 from arcadia_tool.model.schema import (ADR_DELETE_DOMAIN, ADR_DETAILS, ADR_DOMAIN_SCOPE, ADR_FUNCTION,
-                                       ADR_IMPLEMENTATION, ADR_MERGE_DOMAINS, ADR_NEW_DOMAIN, ADR_OWNER,
+                                       ADR_EXCLUSION, ADR_IMPLEMENTATION, ADR_MERGE_DOMAINS, ADR_NEW_DOMAIN,
+                                       ADR_OWNER,
                                        ADR_PRODUCT_OPTION,
                                        ADR_SECTION, ADR_SPLIT_DOMAIN, KINDS_BY_NAME)
 from arcadia_tool.model.teams import person_key
@@ -131,10 +132,56 @@ def item_producers(model, adr):
                               if fe.get("exchange_item") == uuid and fe.get("source")))
 
 
+def excluded_items(adr):
+    """The SRS items (uuids) an ADR of exclusion leaves out (one, as written by the first versions, or a list)."""
+    value = adr.get("excluded_item") or []
+    return [value] if isinstance(value, str) else list(value)
+
+
+def excluded_within(model, adr):
+    """The sections (or clauses) containing the excluded items of which the excluding domain is principal."""
+    domain = adr.get("excluding_domain")
+    found = []
+    for uuid in excluded_items(adr):
+        item = model.get(uuid)
+        part = principal_container(model, item, domain) if item is not None and domain else None
+        if part is not None and part.uuid not in found:
+            found.append(part.uuid)
+    return found
+
+
+def principal_container(model, item, domain_uuid):
+    """The section or clause containing the item (not the item itself) of which the domain is principal; None."""
+    seen = set()
+    part = model.get(item.get("parent")) if item.get("parent") else None
+    while part is not None and part.uuid not in seen:
+        seen.add(part.uuid)
+        if part.get("primary_domain") == domain_uuid:
+            return part
+        part = model.get(part.get("parent")) if part.get("parent") else None
+    return None
+
+
+def exclusion_adr(model, item, domain):
+    """The ADR of the exclusion of the item from the domain, if any (the latest one)."""
+    found = [a for a in model.of_kind("adr") if a.get("adr_type") == ADR_EXCLUSION
+             and item.uuid in excluded_items(a) and a.get("excluding_domain") == domain.uuid]
+    return found[-1] if found else None
+
+
+def exclusion_defaults(model, item, domain):
+    """The values of the ADR of exclusion of an SRS item from a domain (its reason: written by the team; other
+    items it leaves out: added in its sheet)."""
+    return {"adr_type": ADR_EXCLUSION, "status": PROPOSED, "excluded_item": [item.uuid],
+            "excluding_domain": domain.uuid,
+            "concerns": [domain.uuid], "proposer": domain.get("team"),
+            "title": f"Esclusione di {item.get('id') or ''} da {domain.get('id') or model.label(domain)}"}
+
+
 # Fields computed from the others (see Field.computed).
 COMPUTED = {"merged_srs_items": merged_srs_items, "current_mission": current_mission,
             "item_primary": item_primary, "item_contributors": item_contributors,
-            "function_domain": function_domain, "item_producers": item_producers}
+            "function_domain": function_domain, "item_producers": item_producers, "excluded_within": excluded_within}
 
 
 def split_domain_items(model, adr):
@@ -191,6 +238,8 @@ def adr_defaults(model, adr_type, element=None):
         values["merged_domains"] = [element.uuid]  # the others: added in the sheet
     elif kind == "requirement" and adr_type == ADR_SECTION:
         values["realloc_item"] = [element.uuid]  # its domains now: read from it (see item_primary)
+    elif kind == "requirement" and adr_type == ADR_EXCLUSION:
+        values["excluded_item"] = [element.uuid]
     elif kind == "requirement" and adr_type == ADR_IMPLEMENTATION:
         values["impl_item"] = element.uuid  # its domain: read from it (see item_primary)
     elif kind == "system_function" and adr_type in (ADR_FUNCTION, ADR_PRODUCT_OPTION):
@@ -243,6 +292,24 @@ def related_adrs(model, element):
             found[adr.uuid] = adr
     adrs = [a for a in found.values() if a is not None and a.kind == "adr"]
     return sorted(adrs, key=lambda a: (OUTCOMES.index(outcome(a)), natural_key(a.get("id") or "")))
+
+
+def impacted_domains(model, adr):
+    """The functional domains an ADR is about: those named in its fields of its type (the domain to delete, to
+    merge, proposed…, «Riguarda»), and those read from the model (of the clauses to reallocate, of the function to
+    move); in the order of their IDs."""
+    from arcadia_tool.model.element import natural_key
+
+    found = {}
+    for f in adr.schema.fields:
+        if "domain" not in f.ref_kinds or f.type not in ("ref", "refs") or not (f.applies(adr) or f.name == "concerns"):
+            continue
+        value = COMPUTED[f.computed](model, adr) if f.computed in COMPUTED else adr.values.get(f.name)
+        for uuid in ([value] if isinstance(value, str) else value or []):
+            domain = model.get(uuid)
+            if domain is not None and domain.kind == "domain":
+                found[domain.uuid] = domain
+    return sorted(found.values(), key=lambda d: natural_key(d.get("id") or d.get("name") or ""))
 
 
 def related_adrs_ids(model, element):

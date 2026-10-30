@@ -21,6 +21,9 @@ SCOPE_STATUS = {"all": "Tutte le schede", "review": "Solo schede in revisione o 
                 "approved": "Solo schede approvate"}
 REVIEW_WORDS = ("revision", "rivist", "approvat", "decisa", "concordat")
 APPROVED_WORDS = ("approvat", "decisa")
+# Checks no longer in the catalogue: left out of the settings saved before (else «Verifica modello» would stop
+# on unknown checks). SA2-12…14: the availability in the modes of the system functions, removed.
+RETIRED = ("SA2-12", "SA2-13", "SA2-14")
 
 
 @dataclass
@@ -33,8 +36,11 @@ class Profile:
     @classmethod
     def from_data(cls, data):
         data = data if isinstance(data, dict) else {}
-        return cls(list(data.get("enabled") or []), dict(data.get("params") or {}),
-                   dict(data.get("severity") or {}), dict(data.get("scope") or {}))
+
+        def kept(values):
+            return {c: v for c, v in dict(values or {}).items() if c not in RETIRED}
+        return cls([c for c in data.get("enabled") or [] if c not in RETIRED], kept(data.get("params")),
+                   kept(data.get("severity")), kept(data.get("scope")))
 
     def to_data(self, order=None):
         enabled = sorted(set(self.enabled), key=lambda c: order.get(c, 10 ** 6)) if order else list(self.enabled)

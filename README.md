@@ -38,7 +38,11 @@ repository serve solo per scaricare e pubblicare le versioni.
     clic sul nodo dell'albero) da cui crearle, aprirle ed eliminarle;
   - domini funzionali (SA-1): il doppio clic sul nodo dell'albero apre una tab con ID, nome, team assegnatario,
     responsabile e stato di ogni dominio, il pulsante «Apri» della scheda e lo stato modificabile su ogni riga da un
-    menu a tendina (colorato secondo lo stato; salvato subito, solo quel dominio).
+    menu a tendina (colorato secondo lo stato; salvato subito, solo quel dominio). Allo stesso modo «SA-2 Funzioni
+    di sistema» apre l'elenco delle funzioni, con dominio, numero di clausole e di requisiti derivati e stato;
+  - funzioni di sistema (SA-2) e requisiti derivati (SA-4): «Mappa requisiti derivati…» nella scheda della
+    funzione mappa i derivati sulla funzione, scelti a spunta sotto le clausole da cui sono derivati (una funzione
+    di sistema per derivato).
 - Le richieste di chiarimento sono indirizzate alla Design Authority o a un team, scelto alla creazione. La clausola
   si sceglie con una finestra a spunta.
 - Negli ADR le voci SRS interessate si scelgono a spunta e «Superata da» da un elenco con ricerca.
@@ -50,10 +54,17 @@ repository serve solo per scaricare e pubblicare le versioni.
 - I tipi di ADR sono raggruppati per ambito (domini SA; voci SRS, funzioni e scambi SA; LA; generali). I dati che
   ATLAS conosce già (la missione attuale, i domini di una voce, il dominio di una funzione, i produttori di
   un'informazione) sono letti dal modello e non si riscrivono. La data della decisione la imposta ATLAS.
+- Un dominio può escludere di proposito sezioni o clausole contenute nelle sue sezioni principali.
+  - **Dove:** il pulsante «Escludi sezioni e clausole…» della scheda, tra l'elenco delle voci a cui il dominio
+    contribuisce e quello delle escluse. Apre una finestra con le sole sezioni principali del dominio e il loro
+    contenuto.
+  - **ADR:** la spunta «Esclusa» apre subito l'ADR «Esclusione di sezione o clausola», per scriverne il motivo. La
+    voce risulta esclusa solo quando l'ADR è salvata.
+  - **Più voci:** la stessa ADR può escluderne altre, aggiunte dalla sua scheda.
 - Ogni ADR ha il team e il membro proponente e una sezione «Decisione della DA», con l'esito e le osservazioni,
   modificabile solo dalla DA. Gli stati sono Proposta, In revisione DA, Revisionato DA, Decisa e Superata. Una
   riallocazione può riguardare più clausole, purché della stessa sezione.
-- L'elenco X-1 mostra team, membro proponente, stato e decisione della DA, ordinabile con un clic sulle intestazioni.
+- L'elenco X-1 mostra team, membro proponente, domini impattati, stato e decisione della DA, ordinabile con un clic sulle intestazioni.
   Le schede di dominio e di funzione elencano le ADR che le riguardano, con «Nuova ADR…» per crearne una.
 - La Design Authority approva un'ADR di nuovo dominio con «Approva e crea il dominio»: ATLAS crea il dominio con
   il primo ID libero e gli alloca le sezioni indicate.
@@ -251,12 +262,32 @@ novità di ogni versione sono nel [CHANGELOG](CHANGELOG.md).
 
 ### Windows (10/11, 64 bit)
 
-1. Scaricare ed eseguire `ATLAS-Setup-<versione>.exe`. L'installazione per il solo utente non richiede
-   privilegi di amministratore.
+1. Scaricare ed eseguire `ATLAS-Setup-<versione>.exe`. ATLAS si installa per il solo utente, in
+   `%LOCALAPPDATA%\Programs\ATLAS`, e non richiede privilegi di amministratore.
 2. Avviare **ATLAS** dal menu Start, oppure dall'icona sul desktop se scelta durante l'installazione.
 
 Installato sopra una versione precedente («ARCADIA Tool»), la sostituisce e mantiene i dati degli utenti. Si
-disinstalla da *Impostazioni → App*.
+disinstalla da *Impostazioni → App*. Le versioni fino alla 0.6.0 potevano essere installate per tutti gli utenti, in
+*Programmi*: in quel caso l'installer lo segnala, e la versione precedente va disinstallata a mano una volta.
+
+### Aggiornamenti
+
+All'avvio, al massimo una volta al giorno, ATLAS controlla se su GitHub c'è una nuova versione. Si può anche
+controllare a mano da *Aiuto → Verifica aggiornamenti…*. Se c'è, una finestra ne mostra le note, con tre scelte:
+**Aggiorna ora**, **Più tardi** e **Salta questa versione**.
+
+Con **Aggiorna ora**:
+
+1. ATLAS scarica il file della nuova versione e ne verifica l'impronta SHA-256 della release. Un file alterato o
+   scaricato male non viene installato.
+2. ATLAS chiede di salvare le modifiche e si chiude.
+3. L'aggiornamento si installa e ATLAS si riapre già aggiornato.
+
+Su Linux ATLAS sostituisce la cartella dell'archivio, se l'utente può modificarla. Altrimenti apre la pagina della
+release.
+
+Senza rete il controllo non segnala nulla. Il controllo all'avvio si disattiva da *Aiuto → Controlla gli
+aggiornamenti all'avvio*.
 
 ### Linux (x86_64)
 
@@ -365,7 +396,9 @@ variabile `ARCADIA_SRS_PDF_DIR`. I test non toccano le impostazioni né il porta
 ```
 
 L'installer richiede [Inno Setup 6](https://jrsoftware.org/isinfo.php) e viene scritto in
-`dist\installer\ATLAS-Setup-<versione>.exe`.
+`dist\installer\ATLAS-Setup-<versione>.exe`, insieme alla sua impronta `ATLAS-Setup-<versione>.exe.sha256`.
+L'aggiornamento automatico usa l'impronta che GitHub calcola per ogni file della release. Il file `.sha256`, se
+allegato, serve solo come riserva.
 
 **Linux**: richiede `binutils`.
 

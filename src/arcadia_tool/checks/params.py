@@ -84,7 +84,7 @@ ID_FORMATS = {
 }
 MAIN_FIELDS = {
     "domain": ["mission", "team"],
-    "system_function": ["domain", "description", "mode_availability"],
+    "system_function": ["domain", "description"],
     "trace_record": ["requirement", "b5_question", "outcome"],
     "derived_requirement": ["parent", "obligation", "function", "domain", "b6_scheme"],
     "exchange_item": ["nature", "meaning", "srs_origin"],
