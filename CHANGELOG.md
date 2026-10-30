@@ -6,6 +6,8 @@ l'altra.
 
 ## [Non rilasciato]
 
+## [0.7.0] - 2026-10-30
+
 ### Aggiunto
 - **Aggiornamento automatico di ATLAS.**
   - **Quando:** all'avvio, al massimo una volta al giorno, e a richiesta da *Aiuto › Verifica aggiornamenti…*.
@@ -513,7 +515,8 @@ Prima versione pubblicata su GitLab.
 - Nome ATLAS (Arcadia Traceability, Logical Architecture Software), icona e logo.
 - Installer Windows e archivio Linux. La pipeline GitLab esegue i test e compila la versione Linux.
 
-[Non rilasciato]: https://github.com/salvodesi/ATLAS/compare/v0.6.0...main
+[Non rilasciato]: https://github.com/salvodesi/ATLAS/compare/v0.7.0...main
+[0.7.0]: https://github.com/salvodesi/ATLAS/compare/v0.6.0...v0.7.0
 [0.6.0]: https://github.com/salvodesi/ATLAS/compare/v0.5.0...v0.6.0
 [0.5.0]: https://github.com/salvodesi/ATLAS/compare/v0.4.0...v0.5.0
 [0.4.0]: https://github.com/salvodesi/ATLAS/compare/v0.3.0...v0.4.0
