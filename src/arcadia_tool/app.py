@@ -1,9 +1,10 @@
+import os
 import sys
 
 from PySide6.QtCore import QTimer
 from PySide6.QtWidgets import QApplication
 
-from arcadia_tool import APP_NAME
+from arcadia_tool import APP_NAME, __version__
 from arcadia_tool.ui.accounts import require_login
 from arcadia_tool.ui.branding import app_icon
 from arcadia_tool.ui.main_window import MainWindow
@@ -20,6 +21,11 @@ def main():
     window = MainWindow()
     window.showMaximized()  # the default size (1440x880) is used when the window is restored
     app.processEvents()  # maximized before the login window is centered on it
+    if os.environ.get("ATLAS_SMOKE_TEST"):
+        # The test of a build (e.g. the macOS app in the workflow): the window opens, then ATLAS closes, no login.
+        window.close()
+        print(f"ATLAS {__version__}: avvio riuscito")
+        return 0
     # A local account is mandatory: every published change is associated with a user, and the account holds
     # the credentials for the Git remotes. Without it the tool closes.
     account = require_login(window)

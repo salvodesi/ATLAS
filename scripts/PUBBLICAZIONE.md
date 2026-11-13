@@ -74,7 +74,7 @@ $env:PYTHONPATH = "src"
 ```
 
 Invia `main` e tutti i tag, senza forzare. Con il push del tag parte da solo il workflow di GitHub che esegue i test e
-costruisce il pacchetto Linux.
+costruisce il pacchetto Linux e l'app macOS (Apple Silicon, `scripts/build_macos.sh`), allegandoli alla release.
 
 ## 6. Pubblica la release
 

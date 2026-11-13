@@ -1,6 +1,6 @@
-# ATLAS — test and Linux build. The Windows installer is built on a Windows PC (scripts/build.ps1).
-# Debian 12 (glibc 2.36): the executable runs also on distributions that are not the latest ones.
-# On a tag (or run by hand with the tag) the archive is attached to the GitHub release of the tag.
+# ATLAS — test, Linux and macOS (Apple Silicon) builds. The Windows installer is built on a Windows PC
+# (scripts/build.ps1). Debian 12 (glibc 2.36): the Linux executable runs also on distributions that are not the latest
+# ones. On a tag (or run by hand with the tag) the archives are attached to the GitHub release of the tag.
 name: CI
 
 on:
@@ -10,7 +10,7 @@ on:
   workflow_dispatch:
     inputs:
       tag:
-        description: "Tag di cui compilare e allegare l'archivio Linux (es. v0.4.0)"
+        description: "Tag di cui compilare e allegare gli archivi Linux e macOS (es. v0.4.0)"
         required: true
 
 permissions:
@@ -86,4 +86,39 @@ jobs:
         run: |
           gh release view "$TAG" -R "$GITHUB_REPOSITORY" > /dev/null 2>&1 || \
             gh release create "$TAG" -R "$GITHUB_REPOSITORY" --title "ATLAS ${TAG#v}" --notes ""
+          gh release upload "$TAG" "$ARCHIVE" "$ARCHIVE.sha256" -R "$GITHUB_REPOSITORY" --clobber
+
+  macos:
+    needs: test
+    runs-on: macos-14  # Apple Silicon (arm64)
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ env.TAG || github.sha }}
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.14"
+      - run: pip install -q -e ".[dev]" pillow
+      - name: App macOS
+        run: |
+          PYTHON=python sh scripts/build_macos.sh
+          VERSION=$(python -c "import arcadia_tool; print(arcadia_tool.__version__)")
+          echo "ARCHIVE=dist/ATLAS-$VERSION-macos-arm64.zip" >> "$GITHUB_ENV"
+      - name: Avvio di prova
+        # The app starts (offscreen) and closes by itself: a bundle that cannot even start is not published.
+        run: |
+          QT_QPA_PLATFORM=offscreen ATLAS_SMOKE_TEST=1 dist/ATLAS.app/Contents/MacOS/ATLAS
+      - uses: actions/upload-artifact@v4
+        with:
+          name: macos
+          path: |
+            ${{ env.ARCHIVE }}
+            ${{ env.ARCHIVE }}.sha256
+          retention-days: 30
+      - name: Allegato alla release
+        if: env.TAG != ''
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release view "$TAG" -R "$GITHUB_REPOSITORY" > /dev/null 2>&1 ||             gh release create "$TAG" -R "$GITHUB_REPOSITORY" --title "ATLAS ${TAG#v}" --notes ""
           gh release upload "$TAG" "$ARCHIVE" "$ARCHIVE.sha256" -R "$GITHUB_REPOSITORY" --clobber

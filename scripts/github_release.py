@@ -26,7 +26,7 @@ def section(version):
     return match.group(1).strip()
 
 
-def notes(version, installer, linux, extra):
+def notes(version, installer, linux, extra, mac=None):
     sha = hashlib.sha256(installer.read_bytes()).hexdigest()
     return f"""> **ATLAS è ancora in corso di sviluppo**: funzionalità, formato dei progetti e interfaccia possono cambiare.
 
@@ -54,6 +54,22 @@ Distribuzione con glibc 2.36 o successiva (ad esempio Ubuntu 24.04, Debian 12, F
 tar -xzf {linux}
 ./ATLAS/ATLAS
 ```
+
+## Installazione (macOS, Apple Silicon: M1 e successivi)
+
+Scaricare **{mac or f"ATLAS-{version}-macos-arm64.zip"}** e aprirlo: si estrae **ATLAS.app**, da trascinare nella
+cartella *Applicazioni*. I Mac con processore Intel non sono supportati.
+
+L'app **non è firmata da Apple**: al primo avvio macOS la blocca («Impossibile aprire ATLAS» o «Apple non può
+verificare…»). Per aprirla, una volta sola:
+
+1. chiudere il messaggio;
+2. aprire *Impostazioni di Sistema › Privacy e sicurezza* e, in fondo alla pagina, accanto a «ATLAS è stato
+   bloccato…», premere **Apri comunque**;
+3. confermare con la password del Mac.
+
+In alternativa, dal Terminale: `xattr -dr com.apple.quarantine /Applications/ATLAS.app`. Gli aggiornamenti
+successivi si installano da ATLAS (*Info › Verifica aggiornamenti…*) senza chiedere di nuovo.
 
 ## Novità della {version}
 

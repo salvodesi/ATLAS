@@ -1,9 +1,11 @@
 """The updates of ATLAS: the latest release published on GitHub, its file for this system downloaded and checked
 with its SHA-256 fingerprint, then installed in place of the running version (the installer on Windows, the archive
-on Linux). Without network nothing happens: ATLAS works offline as before."""
+on Linux, the zip of the app on macOS Apple Silicon). Without network nothing happens: ATLAS works offline as
+before."""
 import hashlib
 import json
 import os
+import platform as _machine
 import re
 import shlex
 import subprocess
@@ -11,6 +13,7 @@ import sys
 import tarfile
 import tempfile
 import urllib.request
+import zipfile
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -50,13 +53,16 @@ def is_newer(version, than=__version__):
     return a is not None and b is not None and a > b
 
 
-def asset_name(version, platform=None):
-    """The file of the release for the system: the installer on Windows, the archive on Linux, else None."""
+def asset_name(version, platform=None, machine=None):
+    """The file of the release for the system: the installer on Windows, the archive on Linux, the zip of the app on
+    macOS with Apple Silicon (not on Intel Macs: no build for them), else None."""
     platform = platform or sys.platform
     if platform.startswith("win"):
         return f"ATLAS-Setup-{version}.exe"
     if platform.startswith("linux"):
         return f"ATLAS-{version}-linux-x86_64.tar.gz"
+    if platform == "darwin" and (machine or _machine.machine()) == "arm64":
+        return f"ATLAS-{version}-macos-arm64.zip"
     return None
 
 
@@ -171,6 +177,13 @@ def app_folder():
     return Path(sys.executable).resolve().parent if getattr(sys, "frozen", False) else None
 
 
+def app_bundle(executable=None):
+    """macOS: the app (…/ATLAS.app) the executable is in (…/ATLAS.app/Contents/MacOS/ATLAS), else None."""
+    path = Path(executable or sys.executable).resolve()
+    bundle = path.parents[2] if len(path.parents) > 2 else None
+    return bundle if bundle is not None and bundle.suffix == ".app" else None
+
+
 def can_install(platform=None):
     """Why this copy cannot update itself (it runs from the source code, or its folder cannot be written), or None."""
     platform = platform or sys.platform
@@ -181,6 +194,12 @@ def can_install(platform=None):
         return "Aggiornamento automatico non disponibile per questo sistema."
     if platform.startswith("linux") and not os.access(folder.parent, os.W_OK):
         return f"La cartella di ATLAS ({folder}) non è modificabile dall'utente."
+    if platform == "darwin":
+        bundle = app_bundle()
+        if bundle is None:
+            return "ATLAS non è in esecuzione da ATLAS.app: scarica la nuova versione dalla pagina della release."
+        if not os.access(bundle.parent, os.W_OK):
+            return f"La cartella di ATLAS ({bundle.parent}) non è modificabile dall'utente."
     return None
 
 
@@ -205,6 +224,35 @@ nohup {q(str(folder / 'ATLAS'))} >/dev/null 2>&1 &
 """
 
 
+def macos_script(archive, bundle, pid):
+    """Shell script: waits for ATLAS (pid) to close, puts the app of the zip in place of the installed one (the old
+    one kept until the new one is there), opens ATLAS again."""
+    bundle = Path(bundle)
+    new, old = bundle.parent / f".{bundle.stem}.new", bundle.parent / f".{bundle.name}.old"
+    q = shlex.quote
+    return f"""#!/bin/sh
+while kill -0 {pid} 2>/dev/null; do sleep 0.5; done
+rm -rf {q(str(new))} {q(str(old))}
+mkdir -p {q(str(new))} && ditto -x -k {q(str(archive))} {q(str(new))} || exit 1
+mv {q(str(bundle))} {q(str(old))} && mv {q(str(new / 'ATLAS.app'))} {q(str(bundle))} || {{ mv {q(str(old))} {q(str(bundle))}; exit 1; }}
+xattr -dr com.apple.quarantine {q(str(bundle))} 2>/dev/null
+rm -rf {q(str(new))} {q(str(old))} {q(str(archive))}
+open {q(str(bundle))}
+"""
+
+
+def check_zip(archive):
+    """The zip holds the app ATLAS.app with its executable, and nothing outside it."""
+    try:
+        with zipfile.ZipFile(archive) as z:
+            names = [n.rstrip("/") for n in z.namelist()]
+    except (OSError, zipfile.BadZipFile) as exc:
+        raise UpdateError(f"Archivio non leggibile: {exc}") from exc
+    if "ATLAS.app/Contents/MacOS/ATLAS" not in names or any(
+            (n != "ATLAS.app" and not n.startswith("ATLAS.app/")) or ".." in n.split("/") for n in names):
+        raise UpdateError("L'archivio non contiene l'app ATLAS attesa")
+
+
 def check_archive(archive):
     """The archive holds the folder ATLAS with its executable, and nothing outside it."""
     try:
@@ -225,6 +273,12 @@ def start_install(path, platform=None, popen=subprocess.Popen):
         if platform.startswith("win"):
             flags = getattr(subprocess, "DETACHED_PROCESS", 0) | getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
             popen(installer_command(path), creationflags=flags, close_fds=True)
+        elif platform == "darwin":
+            check_zip(path)
+            script = Path(path).with_name("install.sh")
+            script.write_text(macos_script(path, app_bundle(), os.getpid()), encoding="utf-8")
+            popen(["/bin/sh", str(script)], start_new_session=True, close_fds=True,
+                  stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         else:
             check_archive(path)
             script = Path(path).with_name("install.sh")

@@ -6,6 +6,16 @@ l'altra.
 
 ## [Non rilasciato]
 
+## [0.13.1] - 2026-11-13
+
+### Aggiunto
+- **ATLAS per macOS (Apple Silicon).** Ogni release contiene anche `ATLAS-<versione>-macos-arm64.zip`, con l'app
+  ATLAS.app per i Mac con processore M1 o successivo; i Mac Intel non sono supportati. L'app non è firmata da Apple:
+  al primo avvio va aperta da *Impostazioni di Sistema › Privacy e sicurezza › Apri comunque* (istruzioni nelle
+  note della release). Gli aggiornamenti successivi si installano da ATLAS, come su Windows e Linux.
+- L'app macOS è costruita dal workflow di GitHub (`scripts/build_macos.sh`), che la avvia per prova e la allega
+  alla release del tag.
+
 ## [0.13.0] - 2026-11-13
 
 ### Aggiunto
@@ -1164,7 +1174,8 @@ Prima versione pubblicata su GitLab.
 - Nome ATLAS (Arcadia Traceability, Logical Architecture Software), icona e logo.
 - Installer Windows e archivio Linux. La pipeline GitLab esegue i test e compila la versione Linux.
 
-[Non rilasciato]: https://github.com/salvodesi/ATLAS/compare/v0.13.0...main
+[Non rilasciato]: https://github.com/salvodesi/ATLAS/compare/v0.13.1...main
+[0.13.1]: https://github.com/salvodesi/ATLAS/compare/v0.13.0...v0.13.1
 [0.13.0]: https://github.com/salvodesi/ATLAS/compare/v0.12.0...v0.13.0
 [0.12.0]: https://github.com/salvodesi/ATLAS/compare/v0.11.0...v0.12.0
 [0.11.0]: https://github.com/salvodesi/ATLAS/compare/v0.10.1...v0.11.0

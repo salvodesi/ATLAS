@@ -5,6 +5,8 @@ import io
 import tarfile
 from datetime import date
 
+from pathlib import Path
+
 import pytest
 from PySide6.QtWidgets import QApplication, QDialog, QMessageBox
 
@@ -114,6 +116,31 @@ def test_the_linux_archive_must_hold_the_folder_of_ATLAS(tmp_path):
             updates.check_archive(archive("bad.tar.gz", bad))
     script = updates.linux_script(tmp_path / "a.tar.gz", tmp_path / "opt" / "ATLAS", 1234)
     assert "kill -0 1234" in script and "nohup" in script  # waits for ATLAS to close, then starts it again
+
+
+def test_the_macos_app_for_apple_silicon(tmp_path):
+    import zipfile
+
+    assert updates.asset_name("99.0.0", "darwin", "arm64") == "ATLAS-99.0.0-macos-arm64.zip"
+    assert updates.asset_name("99.0.0", "darwin", "x86_64") is None  # Intel Macs: no build for them
+    assert updates.app_bundle("/Applications/ATLAS.app/Contents/MacOS/ATLAS").name == "ATLAS.app"
+    assert updates.app_bundle("/opt/ATLAS/ATLAS") is None
+
+    def archive(name, members):
+        path = tmp_path / name
+        with zipfile.ZipFile(path, "w") as z:
+            for member in members:
+                z.writestr(member, "x")
+        return path
+    updates.check_zip(archive("ok.zip", ["ATLAS.app/Contents/MacOS/ATLAS", "ATLAS.app/Contents/Info.plist"]))
+    for bad in (["ATLAS.app/Contents/Info.plist"], ["ATLAS.app/Contents/MacOS/ATLAS", "../evil"],
+                ["ATLAS.app/Contents/MacOS/ATLAS", "Other.app/x"]):
+        with pytest.raises(updates.UpdateError):
+            updates.check_zip(archive("bad.zip", bad))
+    script = updates.macos_script(tmp_path / "a.zip", Path("/Applications/ATLAS.app"), 1234)
+    assert "kill -0 1234" in script and "ditto -x -k" in script and "ATLAS.app" in script
+    assert any(line.startswith("open ") for line in script.splitlines())  # ATLAS opens again
+    assert "com.apple.quarantine" in script  # the app put in place opens without asking again
 
 
 def test_from_the_source_code_it_cannot_install_itself():
