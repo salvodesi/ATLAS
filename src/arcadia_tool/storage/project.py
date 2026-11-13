@@ -998,6 +998,30 @@ class Project:
         if element.kind == "requirement":  # who had analysed it goes with it
             for mark in [m for m in self.model.of_kind("analysis") if m.get("requirement") == uuid]:
                 self.delete_element(mark.uuid)
+        if element.kind == "domain" and element.get("id"):
+            self._realigned = [*self._realigned, *self.realign_domains(element.get("id"))]
+
+    _realigned = ()
+
+    def take_realigned(self):
+        """The identifiers changed by the deletions of domains since the last call: [(element, old, new)], each
+        element once, with the identifier it had before the first of them and the one it has now."""
+        first = {}
+        for element, old, _new in self._realigned:
+            first.setdefault(element.uuid, (element, old))
+        self._realigned = []
+        return [(e, old, e.get("id")) for e, old in first.values() if old != e.get("id")]
+
+    def realign_domains(self, deleted_code):
+        """The numbering of the domains without the gap left by the one deleted, and the identifiers depending on
+        them (see identifiers.realign_domains): saved as changes of the elements, so they reach the other branches
+        as any change."""
+        from arcadia_tool.model.identifiers import realign_domains
+
+        changes = realign_domains(self.model, deleted_code)
+        for element, _old, _new in changes:
+            self.update(element)
+        return changes
 
     def _forget_derived(self, derived):
         """A derived requirement removed: its SA-3 record no longer lists it. With the last one the item is no longer

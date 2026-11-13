@@ -917,10 +917,20 @@ class ModelTree(QFrame):
                 from arcadia_tool.ui.team_members import own_id_error
                 own_id_error(self)
                 return False
-        answer = QMessageBox.question(self, "Elimina", f"Eliminare «{self.project.model.label(element)}»?")
-        if answer != QMessageBox.Yes:
-            return False
-        self.project.delete_element(element.uuid)
+        if element.kind == "domain":  # its impact on the model shown, what it leaves behind resolved
+            from arcadia_tool.model.domain_deletion import delete_domain
+            from arcadia_tool.ui.domain_deletion import DomainDeletionDialog
+
+            dialog = DomainDeletionDialog(self.project, element, self, approving=False)
+            if not dialog.exec():
+                return False
+            delete_domain(self.project, element, dialog.choices)
+        else:
+            answer = QMessageBox.question(self, "Elimina", f"Eliminare «{self.project.model.label(element)}»?")
+            if answer != QMessageBox.Yes:
+                return False
+            self.project.delete_element(element.uuid)
+        self.project.take_realigned()  # shown before, in the window of the deletion
         self.reload()
         self.element_selected.emit(None)
         self.model_changed.emit()

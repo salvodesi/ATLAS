@@ -1041,7 +1041,16 @@ def test_a_right_click_on_a_domain_shows_what_can_be_done_and_canc_deletes_it(ap
     assert b not in page.placed and f[(6, 6)].uuid not in page.placed and a in page.placed  # only out of the view
     assert p.model.get(d[6].uuid) is not None
     page.undo()
-    # From the model too: the domain goes, its functions stay (without a domain) unless asked.
+    # From the model too: the domain goes, its functions stay (without a domain) as chosen in the window of the
+    # deletion of a domain.
+    from arcadia_tool.model.domain_deletion import KEEP
+    from arcadia_tool.ui.domain_deletion import DomainDeletionDialog
+
+    def keep_all(dialog):
+        for combo in dialog.combos.values():
+            combo.setCurrentIndex(combo.findData(KEEP))
+        return True
+    monkeypatch.setattr(DomainDeletionDialog, "exec", keep_all)
     choice = ["model"]
     page.domain_menu(d[6].uuid, None)
     assert page.delete_elements([d[6].uuid]) == "model"

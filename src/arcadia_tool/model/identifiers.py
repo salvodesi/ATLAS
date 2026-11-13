@@ -131,6 +131,46 @@ def compute_id(element, model, reserved=()):
     return candidate
 
 
+DOMAIN_CODE = re.compile(r"\bDF\d+\b")
+# The kinds whose identifier holds the code of a domain, in the order they are realigned (a logical function after
+# its system function).
+DOMAIN_DEPENDENT = ("system_function", "logical_function", "functional_exchange")
+
+
+def realign_domains(model, deleted_code):
+    """A domain deleted (its code, e.g. «DF03»): the domains after it move down so that the numbering has no gap
+    (DF04 → DF03, DF05 → DF04…), and the identifiers holding their codes follow, each keeping its own number
+    (SF-DF04-02 → SF-DF03-02, LF-DF04-02-01 → LF-DF03-02-01, FE-DF05-DF04-01 → FE-DF04-DF03-01). What still had the code
+    of the deleted domain (passed to another domain, or left without one) gets a new identifier in its context, or
+    none until it has one. The model is changed; returns [(element, old id, new id)], new id None if removed."""
+    domains = sorted((d for d in model.of_kind("domain") if re.fullmatch(r"DF\d+", d.get("id") or "")),
+                     key=lambda d: int(d.get("id")[2:]))
+    mapping = {}
+    for n, domain in enumerate(domains, start=1):
+        code = f"DF{n:02d}"
+        if domain.get("id") != code:
+            mapping[domain.get("id")] = code
+    changes = [(d, d.get("id"), mapping[d.get("id")]) for d in domains if d.get("id") in mapping]
+    dependent = [e for kind in DOMAIN_DEPENDENT for e in model.of_kind(kind) if e.get("id")]
+    stale = [e for e in dependent if deleted_code in DOMAIN_CODE.findall(e.get("id"))]
+    stale_uuids = {e.uuid for e in stale}
+    for e in dependent:
+        if e.uuid in stale_uuids:
+            continue
+        new = DOMAIN_CODE.sub(lambda m: mapping.get(m.group(0), m.group(0)), e.get("id"))
+        if new != e.get("id"):
+            changes.append((e, e.get("id"), new))
+    for element, _old, new in changes:  # all together: DF04 → DF03 while DF05 → DF04, without clashes in between
+        element.set("id", new)
+    for e in stale:  # in the order of DOMAIN_DEPENDENT: a function before what depends on it
+        old = e.get("id")
+        e.set("id", None)
+        new = compute_id(e, model)
+        e.set("id", new)
+        changes.append((e, old, new))
+    return changes
+
+
 def matches_context(element, model):
     """True if the current identifier is consistent with the element's context (no renumbering needed)."""
     r = rule(element, model)

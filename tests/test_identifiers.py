@@ -73,7 +73,7 @@ def test_the_first_free_number_is_given_also_after_a_deletion(tmp_path):
     domains = [p.new_element("domain") for _ in range(3)]
     assert [d.get("id") for d in domains] == ["DF01", "DF02", "DF03"]
     p.delete_element(domains[0].uuid)
-    assert p.new_element("domain").get("id") == "DF01"  # the gap left by the deleted one
+    assert p.new_element("domain").get("id") == "DF03"  # no gap: the following domains moved down
     assert p.new_element("domain").get("id") == "DF04"
     p.close()
 

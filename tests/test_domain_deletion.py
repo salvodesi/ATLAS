@@ -112,7 +112,8 @@ def test_the_sheet_shows_the_orphans_and_approves_the_deletion(app, tmp_path, mo
     editor.approve()
     assert p.model.get(e["gone"].uuid) is None and p.model.get(e["free"].uuid) is None
     assert e["section"].get("primary_domain") is None  # left without, as chosen at first
-    assert "il dominio DF01 Radio è stato eliminato; eliminato anche 1 elemento orfano" in seen[-1]
+    assert "il dominio DF01 Radio è stato eliminato; eliminato anche 1 elemento orfano; 1 dominio successivo "            "rinumerato" in seen[-1]
+    assert e["kept"].get("id") == "DF01"  # the following domain moved down
     editor = ElementEditor()
     editor.edit(p, e["adr"])  # decided: no more orphans to show, the name of the domain kept
     assert editor.findChild(QFrame, "domainOrphans") is None
@@ -126,7 +127,8 @@ def test_the_choice_for_a_whole_group(app, tmp_path):
     p, e = build(tmp_path)
     dialog = DomainDeletionDialog(p, e["gone"])
     assert set(dialog.choices) == {e[k].uuid for k in ("section", "free", "used", "derived", "chain")}
-    assert set(dialog.choices.values()) == {KEEP}
+    assert set(dialog.choices.values()) == {None}  # each to be chosen
+    assert not dialog.ok.isEnabled()
     top = dialog.tree.topLevelItem(1)  # the system functions
     assert top.text(0) == "Funzioni di sistema (2)"
     all_combo = dialog.tree.itemWidget(top, 1)

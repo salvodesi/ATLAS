@@ -258,6 +258,9 @@ def renumber_ids(result, base, theirs, main=None):
         fixed = [p for p in paths if p in keeping and elements[p].get("id") == _id_of(keeping[p])]
         keep = fixed[0] if fixed else sorted(paths, key=lambda p: p not in new_only)[0]
         renumber |= {p for p in paths if p != keep and p in movable}
+    # The domains have no gaps (see identifiers.realign_domains): a new one takes the first free number, also when the
+    # other side has deleted a domain meanwhile and moved the following ones down.
+    renumber |= {p for p in new_only if p in movable and elements[p].kind == "domain"}
     for _ in range(5):  # a renumbered parent changes the identifiers of its children: a few rounds
         if not renumber:
             break

@@ -18,7 +18,8 @@ from PySide6.QtWidgets import (QApplication, QCheckBox, QComboBox, QDialog, QDia
 
 from arcadia_tool.model import diagrams as dg
 from arcadia_tool.model.element import Element, natural_key
-from arcadia_tool.model.identifiers import compute_id
+from arcadia_tool.model.domain_deletion import delete_domain
+from arcadia_tool.model.identifiers import DOMAIN_DEPENDENT, compute_id
 from arcadia_tool.model.schema import (DIAGRAM_BREAKDOWN, DIAGRAM_CHAIN, DIAGRAM_DATAFLOW, DIAGRAM_FUNCTIONS,
                                        DIAGRAM_LEVELS, DIAGRAM_SCENARIO, NATURES)
 from arcadia_tool.storage.project import local_change
@@ -1468,11 +1469,13 @@ class _Undo:
         for keys, slot in ((QKeySequence.Undo, self.undo), (QKeySequence.Redo, self.redo)):
             QShortcut(keys, self, activated=slot, context=Qt.WidgetWithChildrenShortcut)
 
-    def remember(self, remove=(), add=(), state=None):
+    def remember(self, remove=(), add=(), state=None, restore=()):
         """Before a change: the view as it is (or state, taken before); remove, add: the elements of the model to
-        delete and to put back to undo it (those created, those deleted)."""
+        delete and to put back to undo it (those created, those deleted); restore: elements changed with it, as they
+        were (e.g. renumbered by the deletion of a domain)."""
         self._undo.append({"state": self._view_state() if state is None else state,
-                           "remove": [e.copy() for e in remove], "add": [e.copy() for e in add]})
+                           "remove": [e.copy() for e in remove], "add": [e.copy() for e in add],
+                           "restore": [e.copy() for e in restore]})
         del self._undo[:-UNDO_DEPTH]
         self._redo.clear()
 
@@ -1490,14 +1493,17 @@ class _Undo:
         if not source:
             return False
         entry = source.pop()
-        target.append({"state": self._view_state(), "remove": entry["add"], "add": entry["remove"]})
         model = self.project.model
+        restore = entry.get("restore", [])
+        target.append({"state": self._view_state(), "remove": entry["add"], "add": entry["remove"],
+                       "restore": [model.get(e.uuid).copy() for e in restore if model.get(e.uuid) is not None]})
         changed = False
         for element in entry["remove"]:
             if model.get(element.uuid) is not None:
                 self.project.delete_element(element.uuid)
                 changed = True
-        for element in entry["add"]:
+        self.project.take_realigned()  # a domain deleted again: renumbered as the first time, restored below anyway
+        for element in [*entry["add"], *restore]:
             self.project.update(element.copy())
             changed = True
         self._restore_state(entry["state"])
@@ -1572,12 +1578,35 @@ class _NewFunctions:
             self.remove_from_view(uuids)
         elif choice == "model":
             elements = [model.get(u) for u in targets]
+            domains = [e for e in elements if e.kind == "domain"]
+            choices = {}
+            from arcadia_tool.ui.domain_deletion import DomainDeletionDialog
+
+            for domain in domains:  # its impact on the model shown, what it leaves behind resolved
+                dialog = DomainDeletionDialog(self.project, domain, self, approving=False, skip=targets)
+                if not dialog.exec():
+                    return None
+                choices[domain.uuid] = dialog.choices
+            # What the deletion of a domain changes besides (orphans, mentions, renumbered identifiers): undone too.
+            before = {}
+            if domains:
+                touched = [*model.referencing([d.uuid for d in domains]),
+                           *(e for kind in ("domain", *DOMAIN_DEPENDENT) for e in model.of_kind(kind))]
+                before = {e.uuid: e.copy() for e in touched if e.uuid not in targets}
             label = model.label(elements[0])
             self.remember(add=elements)
             for uuid in targets:  # gone from the view with them, without the notice of elements gone
                 getattr(self, "placed", {}).pop(uuid, None)
                 self.opened.discard(uuid)
-            self.project.delete_elements(targets)
+            self.project.delete_elements([u for u in targets if model.get(u).kind != "domain"])
+            for domain in domains:
+                delete_domain(self.project, domain, choices[domain.uuid], skip=targets)
+            self.project.take_realigned()  # shown before, in the window of the deletion
+            if before:
+                entry = self._undo[-1]
+                entry["add"] += [e for u, e in before.items() if model.get(u) is None]
+                entry["restore"] = [e for u, e in before.items()
+                                    if model.get(u) is not None and model.get(u).values != e.values]
             self.select_function(None)
             if hasattr(self, "_set_dirty"):
                 self._set_dirty(self._view_state() != self._clean)

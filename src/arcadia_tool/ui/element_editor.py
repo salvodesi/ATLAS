@@ -708,6 +708,8 @@ class ElementEditor(QScrollArea):
         if not dialog.exec():
             return
         changed, deleted = approve_domain_deletion(self.project, element, dialog.choices)
+        realigned = self.project.take_realigned()
+        changed = [*changed, *(e for e, _old, _new in realigned)]
         self.draft = element.copy()
         for e in [*changed, element]:
             self.element_changed.emit(e)
@@ -717,6 +719,9 @@ class ElementEditor(QScrollArea):
         others = len(deleted) - 1
         extra = ("; eliminato anche 1 elemento orfano" if others == 1 else
                  f"; eliminati anche {others} elementi orfani" if others else "")
+        moved = sum(1 for e, _old, _new in realigned if e.kind == "domain")
+        extra += f"; {moved} domini successivi rinumerati" if moved > 1 else "; 1 dominio successivo rinumerato" \
+            if moved else ""
         QMessageBox.information(self, "Approva ADR", f"ADR approvata: il dominio {name} è stato eliminato{extra}.")
 
     def _approve_reallocation(self):

@@ -6,6 +6,31 @@ l'altra.
 
 ## [Non rilasciato]
 
+## [0.14.0] - 2026-11-13
+
+### Modificato
+- **Eliminazione di un dominio guidata.** Da qualunque punto si elimini un dominio funzionale (albero, vista, ADR di
+  eliminazione) si apre la stessa finestra, che mostra l'impatto sul modello: gli elementi che lo hanno come
+  dominio (sezioni e clausole SRS di cui è principale, funzioni di sistema, requisiti derivati, functional chain) e
+  le ADR non ancora decise che lo citano. Per ognuno va scelto cosa farne (passa a un altro dominio, resta senza,
+  o, se nessuno lo usa, si elimina): «Elimina il dominio» si abilita solo quando sono tutti risolti. La finestra
+  dice anche dove il dominio è solo citato (tolto in automatico) e quali ADR decise lo citano (restano invariate).
+- **Nessun buco nella numerazione dei domini.** Eliminando un dominio funzionale (dall'albero, da una vista o
+  approvando l'ADR di eliminazione) i domini successivi scalano di un numero (DF04 → DF03, DF05 → DF04…) e gli
+  identificativi che ne contengono il codice li seguono, ognuno con il proprio numero: funzioni di sistema
+  (SF-DF04-02 → SF-DF03-02), funzioni logiche e scambi funzionali. Le funzioni passate a un altro dominio prendono
+  un numero nel nuovo dominio; quelle rimaste senza dominio restano senza ID finché non ne hanno uno. La finestra
+  di eliminazione mostra in anteprima la nuova numerazione; dalla vista, Ctrl+Z annulla tutto insieme.
+- I nuovi numeri si salvano come modifiche degli elementi e raggiungono gli altri rami con «Pubblica», «Ricevi» e
+  «Propaga». Un dominio creato nel frattempo su un altro ramo prende, all'integrazione, il primo numero libero, e
+  le funzioni create in un dominio rinumerato si adeguano al suo nuovo codice.
+
+### Corretto
+- **macOS:** l'app scaricata non risulta più «danneggiata». Lo script di build la firma di nuovo (firma ad hoc)
+  dopo aver scritto la versione nell'Info.plist e ne verifica la firma; al primo avvio basta «Apri comunque».
+- **macOS:** l'app è costruita sul runner `macos-latest` (il runner `macos-14` non è più disponibile su GitHub), e
+  un errore della build compare tra le annotazioni del workflow.
+
 ## [0.13.1] - 2026-11-13
 
 ### Aggiunto
@@ -1174,7 +1199,8 @@ Prima versione pubblicata su GitLab.
 - Nome ATLAS (Arcadia Traceability, Logical Architecture Software), icona e logo.
 - Installer Windows e archivio Linux. La pipeline GitLab esegue i test e compila la versione Linux.
 
-[Non rilasciato]: https://github.com/salvodesi/ATLAS/compare/v0.13.1...main
+[Non rilasciato]: https://github.com/salvodesi/ATLAS/compare/v0.14.0...main
+[0.14.0]: https://github.com/salvodesi/ATLAS/compare/v0.13.1...v0.14.0
 [0.13.1]: https://github.com/salvodesi/ATLAS/compare/v0.13.0...v0.13.1
 [0.13.0]: https://github.com/salvodesi/ATLAS/compare/v0.12.0...v0.13.0
 [0.12.0]: https://github.com/salvodesi/ATLAS/compare/v0.11.0...v0.12.0
