@@ -1189,7 +1189,7 @@ class MainWindow(QMainWindow):
             return
         index = self.pages.indexOf(editor)
         if index < 0:
-            index = self.pages.insertTab(self._element_tab_count(), editor, "")
+            index = self.pages.insertTab(self.pages.currentIndex() + 1, editor, "")
         label = self.project.model.label(element)
         short = label if len(label) <= TAB_TITLE_LENGTH else label[:TAB_TITLE_LENGTH - 1] + "…"
         self.pages.setTabText(index, f"● {short}" if editor.dirty else short)  # ●: changes not saved

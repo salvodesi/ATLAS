@@ -278,6 +278,7 @@ class CoverageReportDialog(QDialog):
             if e.get("item_type") not in SHOWN:
                 self.sub_items.setdefault(e.get("parent"), []).append(e)
         self.setWindowTitle("Report di copertura delle voci SRS")
+        self.setWindowFlags(self.windowType() | Qt.WindowType.WindowMaximizeButtonHint | Qt.WindowType.WindowCloseButtonHint)
         self.reports = [coverage(model, ordered, c) for c in REPORT_CATEGORIES]
         covered, total, percent = subset_coverage(self.reports)
         layout = QVBoxLayout(self)
