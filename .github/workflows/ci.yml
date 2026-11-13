@@ -101,7 +101,12 @@ jobs:
       - run: pip install -q -e ".[dev]" pillow
       - name: App macOS
         run: |
-          PYTHON=python sh scripts/build_macos.sh
+          # On failure the end of the log becomes an annotation of the run (readable without logging in).
+          if ! PYTHON=python sh scripts/build_macos.sh > build.log 2>&1; then
+            cat build.log
+            echo "::error title=Build macOS::$(tail -40 build.log | awk '{printf "%s%%0A", $0}')"
+            exit 1
+          fi
           VERSION=$(python -c "import arcadia_tool; print(arcadia_tool.__version__)")
           echo "ARCHIVE=dist/ATLAS-$VERSION-macos-arm64.zip" >> "$GITHUB_ENV"
       - name: Avvio di prova
