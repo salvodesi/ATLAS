@@ -29,6 +29,10 @@ for key in CFBundleShortVersionString CFBundleVersion; do
     /usr/libexec/PlistBuddy -c "Set :$key $version" "$plist" 2>/dev/null ||
         /usr/libexec/PlistBuddy -c "Add :$key string $version" "$plist"
 done
+# The Info.plist is sealed by the signature PyInstaller made: changed, the app reads as "damaged" once downloaded.
+# Signed again (ad hoc, no Apple identity) and checked.
+codesign --force --deep --sign - dist/ATLAS.app
+codesign --verify --deep --strict dist/ATLAS.app
 
 archive="ATLAS-$version-macos-arm64.zip"
 rm -f "dist/$archive"
