@@ -2,7 +2,7 @@
 # Crea l'app macOS (Apple Silicon) con PyInstaller e lo zip da distribuire.
 #   ./scripts/build_macos.sh   -> dist/ATLAS.app + dist/ATLAS-<versione>-macos-arm64.zip (+ .sha256)
 # PYTHON sceglie l'interprete (default: il venv di sviluppo). Va eseguito su un Mac Apple Silicon (o dal workflow
-# di GitHub, su macos-14). L'app non è firmata: al primo avvio macOS chiede conferma (vedi le note della release).
+# di GitHub, su macos-latest). L'app non è firmata: al primo avvio macOS chiede conferma (vedi le note della release).
 set -e
 root="$(cd "$(dirname "$0")/.." && pwd)"
 python="${PYTHON:-$root/.venv/bin/python}"
