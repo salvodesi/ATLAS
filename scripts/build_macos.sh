@@ -23,8 +23,12 @@ version="$("$python" -c "import sys; sys.path.insert(0, 'src'); import arcadia_t
     src/arcadia_tool/__main__.py
 
 # The version shown by macOS (Finder › Informazioni).
-/usr/libexec/PlistBuddy -c "Set :CFBundleShortVersionString $version" dist/ATLAS.app/Contents/Info.plist
-/usr/libexec/PlistBuddy -c "Set :CFBundleVersion $version" dist/ATLAS.app/Contents/Info.plist
+plist=dist/ATLAS.app/Contents/Info.plist
+for key in CFBundleShortVersionString CFBundleVersion; do
+    # PyInstaller does not always write both keys: set the existing one, add the missing one.
+    /usr/libexec/PlistBuddy -c "Set :$key $version" "$plist" 2>/dev/null ||
+        /usr/libexec/PlistBuddy -c "Add :$key string $version" "$plist"
+done
 
 archive="ATLAS-$version-macos-arm64.zip"
 rm -f "dist/$archive"

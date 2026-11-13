@@ -98,9 +98,15 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.14"
+      # The build script of the workflow's commit (fixes included), the code of the tag: an older tag can be built.
+      - uses: actions/checkout@v4
+        with:
+          path: ci-scripts
+          sparse-checkout: scripts
       - run: pip install -q -e ".[dev]" pillow
       - name: App macOS
         run: |
+          cp ci-scripts/scripts/build_macos.sh scripts/build_macos.sh
           # On failure the end of the log becomes an annotation of the run (readable without logging in).
           if ! PYTHON=python sh scripts/build_macos.sh > build.log 2>&1; then
             cat build.log
