@@ -72,7 +72,7 @@ def test_a_point_excluded_and_a_point_shared(tmp_path):
     assert set(map(lambda i: i.uuid, mixed_points(p.model)[e["clause"].uuid])) == {e["b"].uuid, e["bullet"].uuid}
 
 
-def test_the_points_are_chosen_under_their_clause_in_three_kinds_of_adr(app, tmp_path):
+def test_the_points_are_chosen_under_their_clause_in_four_kinds_of_adr(app, tmp_path):
     p, e = build(tmp_path)
     points = {e["a"].uuid, e["b"].uuid, e["bullet"].uuid}
     realloc = srs_trace.TraceReallocItemsDialog(p, p.new_element("adr", adr_type=ADR_SECTION), "realloc_item")
@@ -89,8 +89,9 @@ def test_the_points_are_chosen_under_their_clause_in_three_kinds_of_adr(app, tmp
     shared = srs_trace.TraceClausesDialog(p, p.new_element("adr", adr_type=ADR_SHARED), "shared_items")
     assert points <= set(shared.state)
     unmapped = srs_trace.TraceClausesDialog(p, p.new_element("adr", adr_type=ADR_UNMAPPED), "unmapped_items")
-    assert not points & set(unmapped.state) and e["clause"].uuid in unmapped.state  # whole clauses only
-    assert e["a"].uuid not in unmapped._items
+    assert points <= set(unmapped.state) and e["clause"].uuid in unmapped.state  # a point not mapped on its own
+    unmapped.click(unmapped._items[e["bullet"].uuid], srs_trace.PARENT)
+    assert unmapped.selected == [e["bullet"].uuid]
     for dialog in (realloc, exclusion, shared, unmapped):
         dialog.reject()
 
@@ -122,3 +123,10 @@ def test_the_sheets_of_the_adrs_name_the_points_also_a_bullet(tmp_path):
     assert items == [e["bullet"], e["b"]] and problems == []
     items, _written, problems = r.requirements("3.6.2.2 3rd bullet")  # not in the project: its clause, told
     assert items == [e["clause"]] and problems
+
+
+def test_a_point_is_shared_or_not_mapped_from_its_row(app, tmp_path):
+    from arcadia_tool.ui.srs_reader import QUICK_ACTIONS
+
+    names = [a[0] for a in QUICK_ACTIONS["item"] if a]
+    assert "share" in names and "exclude" in names

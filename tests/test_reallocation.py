@@ -214,6 +214,7 @@ def test_the_sheets_show_the_approval_and_the_clauses_received_and_ceded(app, tm
     actions[0].trigger()
     assert opened == [decision.uuid]
     actions[-1].trigger()  # the SRS list, at the clause
+    window.editor.clause_menu.close()  # a popup: not left open for the next tests
     assert window.pages.currentWidget() is window.reader
     window.tree.select(e["df1"].uuid)
     every = window.editor.findChild(QListWidget, "srsAll")  # the ceded one: no longer among those of DF01

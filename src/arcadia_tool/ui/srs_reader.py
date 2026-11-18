@@ -138,6 +138,10 @@ QUICK_ACTIONS = {
              ("links", "Collega…", "mdi6.link-variant", "Le altre voci SRS che la voce richiama, include o da cui "
                                                         "dipende"),
              None,
+             ("share", "Condividi tra domini…", "mdi6.share-variant-outline",
+              "Propone di condividere il punto tra più domini: crea l'ADR già compilata (Clausole condivise)"),
+             ("exclude", "Escludi (non mappata)…", "mdi6.cancel",
+              "Propone di non mappare il punto su nessun dominio: crea l'ADR già compilata (Clausole non mappate)"),
              (NEW_ADR, "Crea ADR…", "mdi6.scale-balance", "Una decisione architetturale sul punto: scegli il tipo, "
                                                           "la scheda nasce già compilata")),
 }

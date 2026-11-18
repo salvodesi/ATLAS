@@ -6,6 +6,15 @@ l'altra.
 
 ## [Non rilasciato]
 
+## [0.18.1] - 2026-11-18
+
+### Modificato
+- **Punti di clausola anche nelle ADR di non mappatura.** Nelle ADR «Clausole non mappate», come già in quelle di
+  riallocazione, esclusione e condivisione, si può scegliere un singolo punto di una clausola (es. «3.18.2.5 1st
+  bullet»), sotto la sua clausola.
+  - Nell'elenco SRS il menu «Azioni ▾» di un punto (e il clic destro) ha anche «Condividi tra domini…» e «Escludi
+    (non mappata)…», che creano l'ADR già compilata con il punto.
+
 ## [0.18.0] - 2026-11-18
 
 ### Aggiunto
@@ -1513,7 +1522,8 @@ Prima versione pubblicata su GitLab.
 - Nome ATLAS (Arcadia Traceability, Logical Architecture Software), icona e logo.
 - Installer Windows e archivio Linux. La pipeline GitLab esegue i test e compila la versione Linux.
 
-[Non rilasciato]: https://github.com/salvodesi/ATLAS/compare/v0.18.0...main
+[Non rilasciato]: https://github.com/salvodesi/ATLAS/compare/v0.18.1...main
+[0.18.1]: https://github.com/salvodesi/ATLAS/compare/v0.18.0...v0.18.1
 [0.18.0]: https://github.com/salvodesi/ATLAS/compare/v0.17.0...v0.18.0
 [0.17.0]: https://github.com/salvodesi/ATLAS/compare/v0.16.0...v0.17.0
 [0.16.0]: https://github.com/salvodesi/ATLAS/compare/v0.15.0...v0.16.0

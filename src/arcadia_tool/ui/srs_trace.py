@@ -26,7 +26,7 @@ VIEWER_IMAGE_WIDTH = 760  # fits the viewer with the indentation of the list ite
 # table rows and figures («Voce») are traced through their clause.
 TRACEABLE = ("Sezione", "Titolo", "Requisito")
 SHOWN = ("Capitolo",) + TRACEABLE
-POINT = "Voce"  # a point of a clause: chosen on its own only by the ADR of reallocation, exclusion, sharing
+POINT = "Voce"  # a point of a clause: chosen on its own by the ADR of reallocation, exclusion, sharing, not mapped
 POINT_HINT = (" Anche i punti di una clausola (es. 3.6.2.2.2 a), 3.6.2.2.2 a) 1st bullet), sotto la clausola: il punto "
               "scelto avrà domini propri.")
 PRINCIPAL, CONTRIBUTES, EXCLUDED = 1, 2, 3  # domain
@@ -1129,18 +1129,17 @@ class TraceClausesDialog(_TeamFilter, TraceItemsDialog):
     """ADR of clauses shared or mapped to no domain (X-1): only clauses (four numbers or more, e.g. 3.8.4.1), not the
     sections (three numbers, e.g. 3.8.2); «Propri domini», ticked at first, shows only those of the domains of the
     team (principal or contributor, see model.adr.item_domains), unticked all of them."""
-    CHOOSABLE = ("Titolo", "Requisito")
+    CHOOSABLE = ("Titolo", "Requisito", POINT)  # a point of a clause too: shared or not mapped on its own
+    POINTS = True
     TEAM_TIP = "Mostra solo le clausole dei domini del team proponente (principale o contributore)"
 
     def __init__(self, project, owner, field, parent=None):
-        if field == "shared_items":  # a point of a clause can be shared on its own; not mapped: whole clauses
-            self.CHOOSABLE, self.POINTS = self.CHOOSABLE + (POINT,), True
         super().__init__(project, owner, field, parent)
         self._add_team_filter(project)
 
     def hint(self, label):
         return (f"Spunta le clausole (es. 3.8.4.1) di «{label}»: solo clausole, non le sezioni (es. 3.8.2); un clic "
-                "sulla spunta la toglie." + (POINT_HINT if self.POINTS else "") + " «Propri domini» mostra solo "
+                "sulla spunta la toglie." + POINT_HINT + " «Propri domini» mostra solo "
                 "quelle dei domini del tuo team: togli la spunta per vederle tutte. Doppio clic su una riga per "
                 "leggerne il testo completo.")
 

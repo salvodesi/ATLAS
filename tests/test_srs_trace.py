@@ -118,6 +118,7 @@ def test_domain_sheet_shows_the_traced_items(app, tmp_path, monkeypatch):
     assert window.editor.findChild(QListWidget, "srsContributing").item(0).data(Qt.UserRole) == e["clause"].uuid
     window.save()
     window.close()
+    window.deleteLater()  # shown: not left among the top-level widgets restyled by the next tests
 
 
 def test_system_function_allocated_to_sections_and_clauses_only(app, tmp_path):
