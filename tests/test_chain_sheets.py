@@ -305,8 +305,14 @@ def test_the_sheets_sa1_sa2_sa3_have_the_question_mark_on_every_field(app, tmp_p
         editor.edit(p, element, editing=True)
         helps = {b.toolTip().split("</b>")[0].split("<b>")[1]
                  for b in editor.findChildren(QToolButton) if b.objectName() == "fieldHelp"}
-        expected = {f.label for f in element.schema.fields if not f.hidden and f.applies(element)}
+        expected = {f.label for f in element.schema.fields if not f.hidden and f.applies(element)
+                    and not (element.kind == "domain" and f.name == "related_adrs")}  # a domain: its ADR in a tab
         assert helps == expected, element.kind  # every field shown, and the state
+    from PySide6.QtWidgets import QTabWidget
+    editor = ElementEditor()
+    editor.edit(p, domain, editing=True)
+    tabs = editor.findChild(QTabWidget, "srsTabs")  # the help of the ADR of the domain: on its tab
+    assert tabs.tabToolTip(tabs.count() - 1) == domain.schema.field("related_adrs").guide
 
 
 def test_the_views_of_a_chain_show_its_sheet(app, tmp_path):

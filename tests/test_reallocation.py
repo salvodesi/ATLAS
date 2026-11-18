@@ -203,7 +203,22 @@ def test_the_sheets_show_the_approval_and_the_clauses_received_and_ceded(app, tm
     assert received.item(0).data(Qt.UserRole) == e["clause"].uuid and "ADR-001" in received.item(0).text()
     assert window.editor.findChild(QListWidget, "srsPrincipal").count() == 1  # «Nessuna voce»: not the clause
     assert not window.editor.findChild(QListWidget, "srsPrincipal").isEnabled()
+    every = window.editor.findChild(QListWidget, "srsAll")  # «Tutte le clausole»: the received one too
+    texts = [every.item(i).text() for i in range(every.count())]
+    assert texts == [f"{p.model.label(e['clause'])} · ricevuta per ADR-001"]
+    opened = []
+    window.editor.open_requested.connect(opened.append)
+    received.itemClicked.emit(received.item(0))  # a clause with an ADR: a menu, the ADR or the SRS item
+    actions = [a for a in window.editor.clause_menu.actions() if a.text()]
+    assert actions[0].text().startswith("Apri l'ADR ADR-001") and actions[-1].text().startswith("Vai alla voce")
+    actions[0].trigger()
+    assert opened == [decision.uuid]
+    actions[-1].trigger()  # the SRS list, at the clause
+    assert window.pages.currentWidget() is window.reader
     window.tree.select(e["df1"].uuid)
+    every = window.editor.findChild(QListWidget, "srsAll")  # the ceded one: no longer among those of DF01
+    ids = [every.item(i).data(Qt.UserRole) for i in range(every.count())]
+    assert e["clause"].uuid not in ids and e["other"].uuid in ids
     ceded = window.editor.findChild(QListWidget, "srsCeded")
     assert ceded.item(0).data(Qt.UserRole) == e["clause"].uuid and "ADR-001" in ceded.item(0).text()
     window.save()

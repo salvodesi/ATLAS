@@ -66,6 +66,22 @@ def ceded_items(model, domain):
             and e.get("item_type") not in GROUPS and of_domain(e)]
 
 
+def domain_clauses(model, domain):
+    """All the clauses of which the domain is principal, in specification order: those of its principal sections
+    (not ceded, not excluded) and those received by a reallocation; the points of a clause only when they have the
+    domain of their own (received on their own)."""
+    from arcadia_tool.model.adr import item_domains, principal_of
+
+    found = []
+    for e in document_order(model):
+        kind = e.get("item_type")
+        if kind not in ("Titolo", "Requisito") and not (kind == "Voce" and e.get("primary_domain") == domain.uuid):
+            continue
+        if principal_of(model, e) == domain.uuid and domain.uuid in item_domains(model, e):
+            found.append(e)
+    return found
+
+
 def contributed_items(model, domain):
     return [e for e in document_order(model) if domain.uuid in (e.get("contributing_domains") or [])]
 

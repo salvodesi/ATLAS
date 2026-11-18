@@ -90,6 +90,8 @@ ADR_ALLOCATION = "Richiesta di allocazione di clausola"
 ADR_EXCLUSION = "Esclusione di sezione o clausola"
 ADR_SHARED = "Condivisione di clausola"
 ADR_UNMAPPED = "Clausola non mappata"
+# A derived requirement (SA-4) assigned to a functional domain by the Design Authority (not by its function).
+ADR_DERIVED = "Assegnazione di requisito derivato"
 # Why a clause is assigned to no domain (ADR «Clausola non mappata»).
 UNMAPPED_REASONS = ("Informativa o definizione", "Requisito di terra", "Fuori perimetro del prodotto",
                     "Coperta da un'altra specifica", "Altro")
@@ -117,6 +119,8 @@ ADR_TYPES = (
                  "parte (A4)."),
     (ADR_UNMAPPED, "Una clausola non è assegnata a nessun dominio, di proposito: informativa, di terra, fuori "
                    "perimetro… (A4, B5 domanda 1)."),
+    (ADR_DERIVED, "Un requisito derivato (SA-4) va assegnato a un dominio funzionale: la Design Authority decide "
+                  "il dominio che ne risponde (A4)."),
     (ADR_FUNCTION, "Una funzione di sistema appartiene allo scopo di un altro dominio."),
     (ADR_OWNER, "Chi produce un'informazione non è evidente (B4, D10), o una catena rimbalza ma il confine resta "
                 "(A5)."),
@@ -135,7 +139,7 @@ ADR_AREAS = (
     ("Domini funzionali (SA)", DOMAIN_ADR_TYPES),
     ("Voci SRS, funzioni e scambi (SA)", (ADR_SECTION, ADR_FUNCTION, ADR_OWNER, ADR_IMPLEMENTATION,
                                           ADR_PRODUCT_OPTION, ADR_EXCLUSION, ADR_SHARED, ADR_UNMAPPED,
-                                          ADR_ALLOCATION)),
+                                          ADR_ALLOCATION, ADR_DERIVED)),
     ("Architettura logica (LA)", (ADR_LOGICAL,)),
     ("Generali", (ADR_WAIVER, ADR_OTHER)),
 )
@@ -388,6 +392,8 @@ KINDS = (
               hidden=True),  # one or more (one only, a text, up to 0.12.0: see model.links.derived_functions)
         Field("function", "Funzione logica", REF, ref_kinds=("logical_function",), significant=True, hidden=True),
         Field("domain", "Dominio", REF, ref_kinds=("domain",), significant=True),
+        # The ADR whose approval assigned the domain: from then on it no longer follows the system function.
+        Field("domain_adr", "Dominio assegnato dall'ADR", REF, ref_kinds=("adr",), hidden=True),
         Field("b6_scheme", "Motivazione della derivazione", ENUM, B6_SCHEMES),
         _common_status(("Proposto", "Rivisto", "Approvato")),
     )),
@@ -601,23 +607,23 @@ KINDS = (
         Field("decision_date", "Data della decisione", by_tool=True),
         # Description, relations and options: not in a new domain, whose details say it all (its sections); the
         # deletion of a domain has only the motivation and the observations of the DA (and its domain, above).
-        _adr_except(Field("context", "Contesto", TEXT), ADR_NEW_DOMAIN, ADR_DELETE_DOMAIN, ADR_MERGE_DOMAINS, ADR_SPLIT_DOMAIN, ADR_DOMAIN_SCOPE, ADR_SECTION, ADR_ALLOCATION, ADR_FUNCTION, ADR_OWNER, ADR_IMPLEMENTATION, ADR_PRODUCT_OPTION, ADR_EXCLUSION, ADR_SHARED, ADR_UNMAPPED),
+        _adr_except(Field("context", "Contesto", TEXT), ADR_NEW_DOMAIN, ADR_DELETE_DOMAIN, ADR_MERGE_DOMAINS, ADR_SPLIT_DOMAIN, ADR_DOMAIN_SCOPE, ADR_SECTION, ADR_ALLOCATION, ADR_FUNCTION, ADR_OWNER, ADR_IMPLEMENTATION, ADR_PRODUCT_OPTION, ADR_EXCLUSION, ADR_SHARED, ADR_UNMAPPED, ADR_DERIVED),
         # The SRS sections and clauses the decision is about, chosen with ticks; the other elements in a text.
         _adr_except(Field("srs_items", "Voci SRS interessate", REFS, ref_kinds=("requirement",)), ADR_NEW_DOMAIN,
-                    ADR_DELETE_DOMAIN, ADR_MERGE_DOMAINS, ADR_SPLIT_DOMAIN, ADR_DOMAIN_SCOPE, ADR_SECTION, ADR_ALLOCATION, ADR_FUNCTION, ADR_OWNER, ADR_IMPLEMENTATION, ADR_PRODUCT_OPTION, ADR_EXCLUSION, ADR_SHARED, ADR_UNMAPPED),
+                    ADR_DELETE_DOMAIN, ADR_MERGE_DOMAINS, ADR_SPLIT_DOMAIN, ADR_DOMAIN_SCOPE, ADR_SECTION, ADR_ALLOCATION, ADR_FUNCTION, ADR_OWNER, ADR_IMPLEMENTATION, ADR_PRODUCT_OPTION, ADR_EXCLUSION, ADR_SHARED, ADR_UNMAPPED, ADR_DERIVED),
         _adr_except(Field("affected", "Altri elementi del modello interessati", TEXT), ADR_NEW_DOMAIN,
-                    ADR_DELETE_DOMAIN, ADR_MERGE_DOMAINS, ADR_SPLIT_DOMAIN, ADR_DOMAIN_SCOPE, ADR_SECTION, ADR_ALLOCATION, ADR_FUNCTION, ADR_OWNER, ADR_IMPLEMENTATION, ADR_PRODUCT_OPTION, ADR_EXCLUSION, ADR_SHARED, ADR_UNMAPPED),
+                    ADR_DELETE_DOMAIN, ADR_MERGE_DOMAINS, ADR_SPLIT_DOMAIN, ADR_DOMAIN_SCOPE, ADR_SECTION, ADR_ALLOCATION, ADR_FUNCTION, ADR_OWNER, ADR_IMPLEMENTATION, ADR_PRODUCT_OPTION, ADR_EXCLUSION, ADR_SHARED, ADR_UNMAPPED, ADR_DERIVED),
         _adr_except(Field("options", "Opzioni", TABLE, columns=(
             Column("option", "Opzione"), Column("description", "Descrizione"),
-            Column("pros", "Vantaggi"), Column("cons", "Svantaggi e rischi"))), ADR_NEW_DOMAIN, ADR_DELETE_DOMAIN, ADR_MERGE_DOMAINS, ADR_SPLIT_DOMAIN, ADR_DOMAIN_SCOPE, ADR_SECTION, ADR_ALLOCATION, ADR_FUNCTION, ADR_OWNER, ADR_IMPLEMENTATION, ADR_PRODUCT_OPTION, ADR_EXCLUSION, ADR_SHARED, ADR_UNMAPPED),
-        _adr_except(Field("decision", "Decisione", TEXT), ADR_NEW_DOMAIN, ADR_DELETE_DOMAIN, ADR_MERGE_DOMAINS, ADR_SPLIT_DOMAIN, ADR_DOMAIN_SCOPE, ADR_SECTION, ADR_ALLOCATION, ADR_FUNCTION, ADR_OWNER, ADR_IMPLEMENTATION, ADR_PRODUCT_OPTION, ADR_EXCLUSION, ADR_SHARED, ADR_UNMAPPED),
-        _adr_except(Field("rationale", "Motivazione", TEXT), ADR_NEW_DOMAIN, ADR_MERGE_DOMAINS, ADR_SPLIT_DOMAIN, ADR_DOMAIN_SCOPE, ADR_SECTION, ADR_ALLOCATION, ADR_FUNCTION, ADR_OWNER, ADR_IMPLEMENTATION, ADR_PRODUCT_OPTION, ADR_EXCLUSION, ADR_SHARED, ADR_UNMAPPED),
+            Column("pros", "Vantaggi"), Column("cons", "Svantaggi e rischi"))), ADR_NEW_DOMAIN, ADR_DELETE_DOMAIN, ADR_MERGE_DOMAINS, ADR_SPLIT_DOMAIN, ADR_DOMAIN_SCOPE, ADR_SECTION, ADR_ALLOCATION, ADR_FUNCTION, ADR_OWNER, ADR_IMPLEMENTATION, ADR_PRODUCT_OPTION, ADR_EXCLUSION, ADR_SHARED, ADR_UNMAPPED, ADR_DERIVED),
+        _adr_except(Field("decision", "Decisione", TEXT), ADR_NEW_DOMAIN, ADR_DELETE_DOMAIN, ADR_MERGE_DOMAINS, ADR_SPLIT_DOMAIN, ADR_DOMAIN_SCOPE, ADR_SECTION, ADR_ALLOCATION, ADR_FUNCTION, ADR_OWNER, ADR_IMPLEMENTATION, ADR_PRODUCT_OPTION, ADR_EXCLUSION, ADR_SHARED, ADR_UNMAPPED, ADR_DERIVED),
+        _adr_except(Field("rationale", "Motivazione", TEXT), ADR_NEW_DOMAIN, ADR_MERGE_DOMAINS, ADR_SPLIT_DOMAIN, ADR_DOMAIN_SCOPE, ADR_SECTION, ADR_ALLOCATION, ADR_FUNCTION, ADR_OWNER, ADR_IMPLEMENTATION, ADR_PRODUCT_OPTION, ADR_EXCLUSION, ADR_SHARED, ADR_UNMAPPED, ADR_DERIVED),
         # The decision of the Design Authority on the proposal, in every ADR (changed only by its members, see
         # model.teams).
         Field("da_decision", "Esito della decisione DA", ENUM, DA_DECISIONS, section=DA_DECISION),
         Field("da_notes", "Osservazioni DA", TEXT, section=DA_DECISION),
-        _adr_except(Field("consequences", "Conseguenze", TEXT), ADR_NEW_DOMAIN, ADR_DELETE_DOMAIN, ADR_MERGE_DOMAINS, ADR_SPLIT_DOMAIN, ADR_DOMAIN_SCOPE, ADR_SECTION, ADR_ALLOCATION, ADR_FUNCTION, ADR_OWNER, ADR_IMPLEMENTATION, ADR_PRODUCT_OPTION, ADR_EXCLUSION, ADR_SHARED, ADR_UNMAPPED),
-        _adr_except(Field("review_when", "Da rivedere quando", TEXT), ADR_NEW_DOMAIN, ADR_DELETE_DOMAIN, ADR_MERGE_DOMAINS, ADR_SPLIT_DOMAIN, ADR_DOMAIN_SCOPE, ADR_SECTION, ADR_ALLOCATION, ADR_FUNCTION, ADR_OWNER, ADR_IMPLEMENTATION, ADR_PRODUCT_OPTION, ADR_EXCLUSION, ADR_SHARED),
+        _adr_except(Field("consequences", "Conseguenze", TEXT), ADR_NEW_DOMAIN, ADR_DELETE_DOMAIN, ADR_MERGE_DOMAINS, ADR_SPLIT_DOMAIN, ADR_DOMAIN_SCOPE, ADR_SECTION, ADR_ALLOCATION, ADR_FUNCTION, ADR_OWNER, ADR_IMPLEMENTATION, ADR_PRODUCT_OPTION, ADR_EXCLUSION, ADR_SHARED, ADR_UNMAPPED, ADR_DERIVED),
+        _adr_except(Field("review_when", "Da rivedere quando", TEXT), ADR_NEW_DOMAIN, ADR_DELETE_DOMAIN, ADR_MERGE_DOMAINS, ADR_SPLIT_DOMAIN, ADR_DOMAIN_SCOPE, ADR_SECTION, ADR_ALLOCATION, ADR_FUNCTION, ADR_OWNER, ADR_IMPLEMENTATION, ADR_PRODUCT_OPTION, ADR_EXCLUSION, ADR_SHARED, ADR_DERIVED),
         # --- details of the type (see ADR_TYPES) ---------------------------------------------------------
         _adr(Field("domain", "Dominio interessato", REF, ref_kinds=("domain",)), ADR_DOMAIN_SCOPE),
         _adr(Field("merged_domains", "Domini da fondere", REFS, ref_kinds=("domain",)), ADR_MERGE_DOMAINS),
@@ -724,6 +730,17 @@ KINDS = (
                    stored=False, computed="unmapped_section_domains"), ADR_UNMAPPED),
         _adr(Field("unmapped_reason", "Motivo", ENUM, UNMAPPED_REASONS), ADR_UNMAPPED),
         _adr(Field("unmapped_explanation", "Spiegazione", TEXT), ADR_UNMAPPED),
+        # The assignment of derived requirements (SA-4) to a domain: those chosen, their domain now (read from them),
+        # the one proposed, why; applied by the Design Authority («Approva e assegna il dominio»).
+        _adr(Field("derived_items", "Requisiti derivati da assegnare", REFS, ref_kinds=("derived_requirement",)),
+             ADR_DERIVED),
+        _adr(Field("derived_domains_current", "Dominio attuale", REFS, ref_kinds=("domain",), stored=False,
+                   computed="derived_domains_current"), ADR_DERIVED),
+        _adr(Field("derived_domain_proposed", "Dominio proposto", REF, ref_kinds=("domain",)), ADR_DERIVED),
+        _adr(Field("derived_reason", "Motivazione dell'assegnazione", TEXT), ADR_DERIVED),
+        Field("derived_applied", "Assegnazione applicata", BOOL, hidden=True, when=("adr_type", (ADR_DERIVED,))),
+        Field("derived_domains_before", "Domini prima dell'approvazione", REFS, ref_kinds=("domain",), hidden=True,
+              when=("adr_type", (ADR_DERIVED,))),
 
         _adr(Field("function", "Funzione di sistema", REF, ref_kinds=("system_function",)), ADR_FUNCTION,
              ADR_PRODUCT_OPTION),

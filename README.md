@@ -5,7 +5,7 @@
 <p align="center">
   <b>Arcadia Traceability, Logical Architecture Software</b><br>
   Strumento desktop di modellazione ARCADIA per l'EVC ERTMS di bordo<br>
-  <sub>RFI - Ricerca e Sviluppo - Sviluppo Sistemi · versione 0.17.0</sub>
+  <sub>RFI - Ricerca e Sviluppo - Sviluppo Sistemi · versione 0.18.0</sub>
 </p>
 
 > [!WARNING]
@@ -97,8 +97,7 @@ repository serve solo per scaricare e pubblicare le versioni.
 - **Progetto › Genera › Schede Arcadia** scrive in Excel gli artefatti SA-1…SA-7 e le ADR scelti in **Progetto ›
   Genera › Impostazioni…** (scelta salvata nel progetto, cartella di destinazione per PC), compilati dal modello con
   il disegno dei loro template:
-  - SA-1 e SA-2 hanno un foglio per dominio, nello stesso formato letto da «Importa clausole principali» e
-    «Importa funzioni»;
+  - SA-1 e SA-2 hanno un foglio per dominio (SA-2 nello stesso formato letto da «Importa funzioni»);
   - SA-3, SA-4, SA-5 e SA-6 hanno un foglio unico, SA-7 un foglio per chain;
   - le ADR stanno in un unico file, con il registro delle aperte e un foglio per ADR;
   - gli artefatti senza dati non si possono scegliere, e si possono includere solo alcuni domini.
@@ -189,10 +188,8 @@ repository serve solo per scaricare e pubblicare le versioni.
   percentuale di ciascun livello, filtri e ricerca; si esporta in Excel.
 - Finestre di tracciatura a spunta, con ricerca, filtro per categoria (bordo, terra, definizioni, informative) e
   testo completo della voce con doppio clic:
-  - domini → sezioni e clausole, come principale o contributore; le sezioni principali si importano anche dalla
-    riga «Sezioni SRS principali» del foglio del dominio in un Excel SA-1 («Importa clausole principali…»:
-    singole, gruppi come 4.8.1–4.8.5, riferimenti ad altri documenti segnalati; riepilogo prima di importare, con
-    la colonna «Importa» per scegliere voce per voce e le voci allocate a più di un dominio indicate);
+  - domini → sezioni e clausole, come principale o contributore; nella scheda del dominio sono in schede
+    (sezioni principali, ricevute e cedute per ADR, contributi, escluse);
   - funzioni di sistema → sezioni e clausole; dalla scheda di una funzione («Importa funzioni da Excel SA-2…») o
     dal clic destro su «SA-2 Funzioni di sistema» nell'albero («Importa funzioni…») si importa il catalogo delle
     funzioni ipotizzate dai team (un foglio per dominio): ogni funzione va nel dominio del suo foglio con un ID

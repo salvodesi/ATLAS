@@ -23,9 +23,14 @@ TEMPLATES = ROOT / "Templates"
 VERSION = "1.1"
 
 
+# Types added after the templates were given to the teams: numbered after the others, so that those keep their numbers.
+NUMBERED_LAST = ("Assegnazione di requisito derivato",)
+
+
 def file_name(adr_type):
-    """Template_X-1.nn_ADR_<tipo>.xlsx, numbered in the order of the areas (as in the window of the types)."""
-    order = [t for _, types in ADR_AREAS for t in types]
+    """Template_X-1.nn_ADR_<tipo>.xlsx, numbered in the order of the areas (as in the window of the types); the types
+    of NUMBERED_LAST after all the others."""
+    order = [t for _, types in ADR_AREAS for t in types if t not in NUMBERED_LAST] + list(NUMBERED_LAST)
     ascii_name = unicodedata.normalize("NFKD", adr_type).encode("ascii", "ignore").decode()
     words = "".join(c if c.isalnum() else " " for c in ascii_name).split()
     return f"Template_X-1.{order.index(adr_type) + 1:02d}_ADR_{'_'.join(words)}.xlsx"

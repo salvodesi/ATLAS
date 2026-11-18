@@ -4,7 +4,7 @@ from datetime import date
 
 from arcadia_tool.model.chains import COMPUTED as CHAIN_COMPUTED
 from arcadia_tool.model.element import Element
-from arcadia_tool.model.schema import (ADR_ALLOCATION, ADR_DELETE_DOMAIN, ADR_DETAILS, ADR_DOMAIN_SCOPE, ADR_FUNCTION,
+from arcadia_tool.model.schema import (ADR_ALLOCATION, ADR_DELETE_DOMAIN, ADR_DERIVED, ADR_DETAILS, ADR_DOMAIN_SCOPE, ADR_FUNCTION,
                                        ADR_EXCLUSION, ADR_IMPLEMENTATION, ADR_MERGE_DOMAINS, ADR_NEW_DOMAIN,
                                        ADR_OWNER,
                                        ADR_PRODUCT_OPTION,
@@ -497,7 +497,7 @@ def common_fields(adr_type):
 
 
 SUGGESTED = {"domain": ADR_DOMAIN_SCOPE, "requirement": ADR_SECTION, "system_function": ADR_FUNCTION,
-             "exchange_item": ADR_OWNER}
+             "exchange_item": ADR_OWNER, "derived_requirement": ADR_DERIVED}
 
 
 def suggested_type(element):
@@ -549,6 +549,8 @@ def adr_defaults(model, adr_type, element=None):
         values["function"] = element.uuid  # its domain now: read from it (see function_domain)
     elif kind == "exchange_item" and adr_type == ADR_OWNER:
         values["exchange_item"] = element.uuid
+    elif kind == "derived_requirement" and adr_type == ADR_DERIVED:
+        values["derived_items"] = [element.uuid]  # its domain now: read from it (see derived_domains_current)
     return {k: v for k, v in values.items() if v}
 
 
@@ -653,7 +655,8 @@ COMPUTED["related_adrs"] = related_adrs_ids  # the table of the ADR of a domain 
 def can_approve(adr):
     """An ADR the Design Authority can approve with an action of the tool: a new domain, a reallocation, a sharing of
     clauses or clauses mapped to no domain, still proposed (or under its review), not rejected."""
-    return adr.kind == "adr" and adr.get("adr_type") in (ADR_NEW_DOMAIN, ADR_DELETE_DOMAIN, *REALLOC_TYPES, ADR_SHARED, ADR_UNMAPPED) and \
+    return adr.kind == "adr" and adr.get("adr_type") in (ADR_NEW_DOMAIN, ADR_DELETE_DOMAIN, *REALLOC_TYPES, ADR_SHARED,
+                                                         ADR_UNMAPPED, ADR_DERIVED) and \
         adr.get("status") in OPEN and adr.get("da_decision") != "Respinta"
 
 
@@ -1015,6 +1018,11 @@ def proposed_title(model, adr):
     if kind == ADR_UNMAPPED:
         items = clauses_of(model, adr)
         return _clause_title("Non mappatura", items) if items else "Non mappatura di clausole"
+    if kind == ADR_DERIVED:
+        items = elements("derived_items")
+        what = _items_said(items, "del requisito derivato", "dei requisiti derivati") if items else \
+            "di requisiti derivati"
+        return f"Assegnazione {what}" + tail(("a", domain(adr.get("derived_domain_proposed"))))
     if kind == ADR_FUNCTION:
         function = element("function")
         return (f"Spostamento di {ident(function)}" if function else "Spostamento di una funzione di sistema") + \
@@ -1043,3 +1051,84 @@ def proposed_title(model, adr):
         return "Decisione trasversale" + (f" su {_short_ids(items)}" if items else
                                           f" su {joined(concerned)}" if concerned else "")
     return kind or "Nuova decisione architetturale"
+
+
+# --- the assignment of derived requirements (SA-4) to a domain --------------------------------------------------
+
+def derived_items(model, adr):
+    """The derived requirements an ADR of assignment is about."""
+    return [e for e in (model.get(u) for u in adr.get("derived_items") or []) if e is not None]
+
+
+def derived_current_domain(model, derived):
+    """The domain a derived requirement belongs to now, for an ADR of assignment: the principal domain of the SRS item
+    it is derived from (of the section containing it, or its own); without a parent item, its own domain."""
+    parent = model.get(derived.get("parent")) if derived.get("parent") else None
+    return (principal_of(model, parent) if parent is not None else None) or derived.get("domain")
+
+
+def derived_domains_current(model, adr):
+    """The domains the derived requirements belong to now (each once, see derived_current_domain); once the
+    assignment is applied, those they had then: the ADR does not change."""
+    if adr.get("derived_applied"):
+        return list(adr.get("derived_domains_before") or [])
+    return list(dict.fromkeys(d for d in (derived_current_domain(model, e) for e in derived_items(model, adr)) if d))
+
+
+COMPUTED["derived_domains_current"] = derived_domains_current
+
+
+def derived_problems(model, adr):
+    """What is missing to approve the assignment (empty list: it can be approved)."""
+    problems = []
+    if not derived_items(model, adr):
+        problems.append("Mancano i requisiti derivati da assegnare.")
+    domain = adr.get("derived_domain_proposed")
+    if not domain or model.get(domain) is None:
+        problems.append("Manca il dominio proposto.")
+    return problems
+
+
+def derived_preview(model, adr):
+    """What approving the assignment changes: [(derived requirement, the domain it belongs to now or None, see
+    derived_current_domain)], those already assigned to the domain proposed left out."""
+    target = adr.get("derived_domain_proposed")
+    return [(d, derived_current_domain(model, d)) for d in derived_items(model, adr) if d.get("domain") != target]
+
+
+def approve_derived(project, adr, today=None):
+    """The Design Authority approves the assignment: each derived requirement passes to the proposed domain, which no
+    longer follows its system function (see model.links: domain_adr); the ADR is decided. Returns the requirements
+    changed."""
+    model = project.model
+    problems = derived_problems(model, adr)
+    if problems:
+        raise ValueError(" ".join(problems))
+    target, before, changed = adr.get("derived_domain_proposed"), derived_domains_current(model, adr), []
+    for derived in derived_items(model, adr):
+        previous = derived.copy()
+        derived.set("domain", target)
+        derived.set("domain_adr", adr.uuid)
+        changed += [derived, *(project.update(derived, previous) or [])]
+    previous = adr.copy()
+    adr.set("derived_applied", True)
+    adr.set("derived_domains_before", before)
+    _decide(project, adr, previous, today)
+    return list({e.uuid: e for e in changed}.values())
+
+
+def adrs_about(model, item):
+    """The ADR naming an SRS item among those they are about (see adr_srs_items: to reallocate, excluded, shared…),
+    whatever their status, by their ID."""
+    from arcadia_tool.model.element import natural_key
+
+    return sorted((a for a in model.of_kind("adr") if item in adr_srs_items(model, a)),
+                  key=lambda a: natural_key(a.get("id") or ""))
+
+
+def derived_owner_domain(model, derived):
+    """The domain a derived requirement (SA-4) belongs to, as the domain sheets list it: the one assigned by an approved
+    ADR of assignment (domain_adr); otherwise that of the SRS item it is derived from (see derived_current_domain)."""
+    if derived.get("domain_adr") and model.get(derived.get("domain_adr")) is not None and derived.get("domain"):
+        return derived.get("domain")
+    return derived_current_domain(model, derived)

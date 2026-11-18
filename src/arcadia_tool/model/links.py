@@ -295,7 +295,10 @@ def traced_functions_by_item(model, inherit=True):
 
 def _domain_of_derived(model, derived, previous, changed):
     """«Dominio» of a derived requirement: the one of its (first) system function (SA-2), else of its logical
-    function (when that is known)."""
+    function (when that is known). A domain assigned by an approved ADR (domain_adr) stays: the Design Authority
+    decided it."""
+    if derived.get("domain_adr") and model.get(derived.get("domain_adr")) is not None:
+        return
     functions = derived_functions(derived)
     system = model.get(functions[0]) if functions else None
     domain = (system.get("domain") if system is not None else None) or \

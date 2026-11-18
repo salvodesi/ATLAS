@@ -6,6 +6,47 @@ l'altra.
 
 ## [Non rilasciato]
 
+## [0.18.0] - 2026-11-18
+
+### Aggiunto
+- **ADR «Assegnazione di requisito derivato».** Un nuovo tipo di ADR (area «Voci SRS, funzioni e scambi») propone di
+  assegnare uno o più requisiti derivati (SA-4) a un dominio funzionale. Campi: «Requisiti derivati da assegnare»
+  (scelti con spunte, raggruppati per dominio), «Dominio attuale», «Dominio proposto» e «Motivazione
+  dell'assegnazione».
+  - «Dominio attuale» si compila da solo: è il dominio principale della sezione della voce SRS da cui il requisito
+    è derivato (o della voce stessa, se ha un dominio proprio). Il dominio proposto lo indica chi compila l'ADR.
+  - La Design Authority la approva con «Approva e assegna il dominio». La conferma mostra cosa cambia; i requisiti
+    passano al dominio proposto in modo definitivo e non seguono più il dominio della loro funzione di sistema.
+  - Aperta da un requisito derivato, l'ADR propone questo tipo e il requisito è già indicato. Il titolo proposto è
+    del tipo «Assegnazione del requisito derivato 3.4.1.3-D1 a DF04».
+  - Template Excel: `Template_X-1.18_ADR_Assegnazione_di_requisito_derivato.xlsx`. I template già esistenti
+    mantengono il loro numero.
+
+### Modificato
+- **Voci SRS e ADR del dominio in schede.** Nella scheda di un dominio il riquadro «Tracciabilità» (prima
+  «Tracciabilità verso le voci SRS (A4)») mostra le liste in schede, ciascuna con il conteggio: «Tutte le clausole»,
+  «Sezioni principali», «Ricevute per ADR» e «Cedute per ADR» (se ce ne sono), «Contributi», «Escluse», «ADR».
+  - «ADR» contiene la tabella delle decisioni architetturali sul dominio, con «Nuova ADR…», prima in un riquadro a
+    sé. Nella tabella (anche nella scheda delle funzioni) non c'è più la colonna «Esito»: l'esito resta nel
+    conteggio sotto la tabella e nel suggerimento di ogni riga.
+  - «Tutte le clausole» elenca le clausole di cui il dominio è principale: quelle delle sue sezioni (non cedute né
+    escluse) e quelle ricevute, indicate con «ricevuta per ADR-…». La spunta «Mostra anche i requisiti derivati (n)»
+    aggiunge i requisiti derivati (SA-4) del dominio, ognuno sotto la clausola da cui è derivato; in fondo quelli
+    derivati da clausole di altri domini. La scelta resta per le schede aperte dopo. Un requisito derivato sta nel
+    dominio della clausola da cui deriva, a meno che un'ADR approvata non lo abbia assegnato a un altro dominio.
+  - Un clic su una clausola nelle liste di «Tracciabilità» (domini e funzioni di sistema): se ci sono ADR sulla
+    clausola, un menu permette di aprire una di esse (con il suo stato) o di andare alla voce; altrimenti si apre
+    l'elenco delle voci SRS sulla scheda del capitolo e alla riga della clausola. Il doppio clic su un requisito
+    derivato apre la sua scheda.
+  - «Traccia da SRS» (prima «Traccia sezioni e clausole SRS…») è nella scheda «Sezioni principali»; «Escludi sezioni
+    e clausole…» nella scheda «Escluse».
+  - Nelle clausole ricevute o cedute, il doppio clic apre l'ADR della riallocazione; il clic destro apre l'ADR o la
+    clausola.
+
+### Rimosso
+- «Importa clausole principali…» nella scheda del dominio: le sezioni principali si assegnano con «Traccia sezioni
+  e clausole SRS…».
+
 ## [0.17.0] - 2026-11-17
 
 ### Aggiunto
@@ -1472,7 +1513,8 @@ Prima versione pubblicata su GitLab.
 - Nome ATLAS (Arcadia Traceability, Logical Architecture Software), icona e logo.
 - Installer Windows e archivio Linux. La pipeline GitLab esegue i test e compila la versione Linux.
 
-[Non rilasciato]: https://github.com/salvodesi/ATLAS/compare/v0.17.0...main
+[Non rilasciato]: https://github.com/salvodesi/ATLAS/compare/v0.18.0...main
+[0.18.0]: https://github.com/salvodesi/ATLAS/compare/v0.17.0...v0.18.0
 [0.17.0]: https://github.com/salvodesi/ATLAS/compare/v0.16.0...v0.17.0
 [0.16.0]: https://github.com/salvodesi/ATLAS/compare/v0.15.0...v0.16.0
 [0.15.0]: https://github.com/salvodesi/ATLAS/compare/v0.14.0...v0.15.0

@@ -95,7 +95,12 @@ def test_domain_sheet_shows_the_traced_items(app, tmp_path, monkeypatch):
     titles = [l.text() for l in editor.widget().findChildren(QLabel) if l.objectName() == "sectionCaption"]
     assert titles[titles.index("DESCRIZIONE") + 1].startswith("TRACCIABILITÀ")  # right after «Descrizione»
 
-    contributing.itemDoubleClicked.emit(contributing.item(0))  # the clause opens in its own window
+    window.show()  # the SRS list goes to an item once shown
+    contributing.itemClicked.emit(contributing.item(0))  # a clause without ADR: the SRS list, at its row
+    app.processEvents()
+    assert window.pages.currentWidget() is window.reader
+    assert window.reader.view.currentIndex().data(Qt.UserRole) is e["clause"]
+    window.open_in_window(e["clause"].uuid)  # its sheet, in its own window (e.g. from the list)
     assert editor.element is e["location"]  # the domain page stays as it is
     item_window = window.item_window
     assert item_window.isVisible() and item_window.editor.element is e["clause"]

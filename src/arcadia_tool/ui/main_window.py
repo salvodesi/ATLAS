@@ -1155,6 +1155,7 @@ class MainWindow(QMainWindow):
         editor.back_requested.connect(self._back_to_reader)
         editor.open_requested.connect(self.open_in_window)
         editor.adr_requested.connect(self.new_adr_for)
+        editor.srs_requested.connect(self.go_to_srs_item)  # a clause of «Tracciabilità»: the SRS list
         editor.elements_created.connect(self._model_changed)
         editor.dirty_changed.connect(lambda _dirty, e=editor: self._show_editor(e, activate=False))
         editor.dirty_changed.connect(lambda _dirty: self._update_save())
@@ -1567,6 +1568,7 @@ class MainWindow(QMainWindow):
             self.item_window = ElementWindow(self.srs_edit_mode, self)
             self.item_window.editor.element_changed.connect(self._window_element_changed)
             self.item_window.editor.adr_requested.connect(self.new_adr_for)
+            self.item_window.editor.srs_requested.connect(self.go_to_srs_item)
             self.item_window.editor.saved.connect(lambda e=self.item_window.editor: self._sheet_saved(e))
             self.item_window.editor.findings_for = self.checks.findings_for
             self.item_window.editor.edit_denied = self.edit_denied

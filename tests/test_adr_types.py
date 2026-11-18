@@ -605,10 +605,14 @@ def test_the_sheets_of_domains_and_functions_list_their_adr_and_create_one(app, 
     assert "adrs" not in editor.widgets and "related_adrs" in editor.widgets  # a table instead of the links
     table = editor.adrs_table
     assert [table.horizontalHeaderItem(c).text() for c in range(table.columnCount())] == [
-        "Esito", "ID", "Titolo", "Tipo", "Stato", "Decisione DA"]
-    assert [table.item(r, 2).text() for r in range(table.rowCount())] == [
+        "ID", "Titolo", "Tipo", "Stato", "Decisione DA"]  # no «Esito»
+    from PySide6.QtWidgets import QTabWidget
+    tabs = editor.widget().findChild(QTabWidget, "srsTabs")  # a domain: its ADR in the last tab of «Tracciabilità»
+    assert tabs.tabText(tabs.count() - 1) == f"ADR ({table.rowCount()})"
+    assert tabs.widget(tabs.count() - 1).isAncestorOf(table)
+    assert [table.item(r, 1).text() for r in range(table.rowCount())] == [
         "Eliminare DF01", "Spostare 3.11.6.3", "Spostare la funzione", "Collegata a mano"]
-    assert table.item(2, 5).text() == "Respinta" and "1 attiva" in editor.adrs_empty.text()
+    assert table.item(2, 4).text() == "Respinta" and "1 attiva" in editor.adrs_empty.text()
     opened = []
     editor.open_requested.disconnect()
     editor.open_requested.connect(opened.append)
@@ -626,10 +630,10 @@ def test_the_sheets_of_domains_and_functions_list_their_adr_and_create_one(app, 
     assert new.get("title") == f"Decisione trasversale su {d1.get('id')}"  # the title proposed
     assert new.get("concerns") == [d1.uuid] and window.editors[new.uuid].editing  # created about it, opened
     window._select(d1)
-    assert new.uuid in [window.editor.adrs_table.item(r, 1).data(Qt.UserRole)
+    assert new.uuid in [window.editor.adrs_table.item(r, 0).data(Qt.UserRole)
                         for r in range(window.editor.adrs_table.rowCount())]
     window._select(sf)
-    assert [window.editor.adrs_table.item(r, 2).text() for r in range(window.editor.adrs_table.rowCount())] == [
+    assert [window.editor.adrs_table.item(r, 1).text() for r in range(window.editor.adrs_table.rowCount())] == [
         "Spostare la funzione"]
     window._set_project(None)
     window.close()

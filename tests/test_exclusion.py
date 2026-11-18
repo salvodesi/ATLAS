@@ -179,12 +179,17 @@ def test_the_domain_sheet_lists_the_exclusions_one_after_the_other(app, tmp_path
     domain_editor = window.editor
     principal, excluded_list = (domain_editor.widget().findChild(QListWidget, n)
                                 for n in ("srsPrincipal", "srsExcluded"))
-    assert excluded_list.mapTo(domain_editor.widget(), excluded_list.rect().topLeft()).y() > \
-        principal.mapTo(domain_editor.widget(), principal.rect().topLeft()).y()
+    from PySide6.QtWidgets import QTabWidget
+    tabs = domain_editor.widget().findChild(QTabWidget, "srsTabs")  # the lists in tabs, the principal first
+    labels = [tabs.tabText(i).split(" (")[0] for i in range(tabs.count())]
+    assert labels[:2] == ["Tutte le clausole", "Sezioni principali"] and labels[-3:] == ["Contributi", "Escluse", "ADR"]
+    assert tabs.currentIndex() == 0 and tabs.widget(1).isAncestorOf(principal)
+    assert tabs.widget(tabs.count() - 2).isAncestorOf(excluded_list)
 
     from PySide6.QtWidgets import QPushButton
     buttons = {b.text(): b for b in domain_editor.widget().findChildren(QPushButton)}
-    assert "Traccia sezioni e clausole SRS…" in buttons and "Escludi sezioni e clausole…" in buttons  # two buttons
+    assert "Traccia da SRS" in buttons and "Escludi sezioni e clausole…" in buttons  # two buttons
+    assert tabs.widget(1).isAncestorOf(buttons["Traccia da SRS"])  # in the tab of the principal sections
 
     def excludes(dialog):
         dialog.click(row_of(srs_trace, e["c1"]), srs_trace.EXCLUDED)

@@ -11,7 +11,7 @@ from PySide6.QtWidgets import (QAbstractItemView, QCheckBox, QComboBox, QDialog,
                                QFrame, QGridLayout, QHBoxLayout, QHeaderView, QLabel, QLineEdit, QListWidget,
                                QListWidgetItem,
                                QMenu, QMessageBox, QPlainTextEdit, QPushButton, QScrollArea, QSpinBox, QStyle,
-                               QStyledItemDelegate, QTableWidget, QTableWidgetItem, QTextEdit, QToolButton,
+                               QStyledItemDelegate, QTableWidget, QTableWidgetItem, QTabWidget, QTextEdit, QToolButton,
                                QToolTip, QVBoxLayout, QWidget)
 
 from arcadia_tool.checks import CHECKS_BY_CODE, count
@@ -26,7 +26,7 @@ from arcadia_tool.model.adr import (approval_problems, approve_new_domain, appro
                                     reallocation_preview, reallocation_problems, sections_taken)
 from arcadia_tool.model.element import ROW_KEY, is_empty, natural_key, new_row_key
 from arcadia_tool.model.required import save_refusal
-from arcadia_tool.model.schema import (ADR_ALLOCATION, ADR_DELETE_DOMAIN, ADR_DETAILS, ADR_SECTION, ADR_SHARED, ADR_UNMAPPED, BOOL, DA_DECISION, ENUM,
+from arcadia_tool.model.schema import (ADR_ALLOCATION, ADR_DELETE_DOMAIN, ADR_DERIVED, ADR_DETAILS, ADR_SECTION, ADR_SHARED, ADR_UNMAPPED, BOOL, DA_DECISION, ENUM,
                                        IMAGE, INT, KINDS_BY_NAME, LABEL_KEYS, MAP, MULTIENUM, REF, REFS, STR, STRLIST, TABLE, TEXT, enum_option)
 from arcadia_tool.storage.project import local_change, local_changes
 from arcadia_tool.ui.checks_panel import SEVERITY_COLORS, summary
@@ -44,6 +44,11 @@ FINDINGS_SHOWN = 8  # findings of the checks listed in the header of a sheet; th
 # Kinds whose sheet has the sections in another order: an ADR shows first what it is about (SRS items, ADR).
 # Their references are chosen in a window with search and ticks (see _picker_widget), not from a drop-down list.
 PICKER_KINDS = ("domain", "system_function", "adr", "exchange_item")
+# The tabs of the SRS items of a domain sheet (A4): their short names (the full title in the tooltip of the tab).
+ADR_ROLE = Qt.UserRole + 1  # a clause received or ceded: the uuid of the ADR of the reallocation
+DERIVED_ROLE = Qt.UserRole + 2  # a derived requirement shown among the clauses of a domain
+DOMAIN_TABS = {"srsAll": "Tutte le clausole", "srsPrincipal": "Sezioni principali", "srsReceived": "Ricevute per ADR", "srsCeded": "Cedute per ADR",
+               "srsContributing": "Contributi", "srsExcluded": "Escluse"}
 # Sheets whose fields have a «?» on the left with what they mean (Field.guide): SA-1 … SA-3, SA-5 … SA-7.
 HELP_KINDS = ("domain", "system_function", "trace_record", "functional_exchange", "exchange_item",
               "functional_chain")
@@ -639,6 +644,7 @@ class ElementEditor(QScrollArea):
     back_requested = Signal(str)  # uuid of the element being left
     open_requested = Signal(str)  # another element to show (e.g. an SRS item traced by a domain)
     adr_requested = Signal(str)  # «Nuova ADR…» of a domain or a function sheet: its uuid
+    srs_requested = Signal(str)  # a clause of «Tracciabilità» clicked: the list of the SRS items, at its row
     elements_created = Signal()  # e.g. derived requirements created from the allocation window
     dirty_changed = Signal(bool)  # the draft has (True) or no longer has changes not yet saved
     saved = Signal()  # «Salva»: the changes are in the model, the project is to be saved
@@ -725,6 +731,8 @@ class ElementEditor(QScrollArea):
             return self._approve_clauses()
         if element.get("adr_type") == ADR_DELETE_DOMAIN:
             return self._approve_domain_deletion()
+        if element.get("adr_type") == ADR_DERIVED:
+            return self._approve_derived()
         problems = approval_problems(model, element)
         if problems:
             QMessageBox.warning(self, "Approva ADR", "Non è possibile approvare l'ADR:\n" + "\n".join(problems))
@@ -750,6 +758,37 @@ class ElementEditor(QScrollArea):
         self._build()
         QMessageBox.information(self, "Approva ADR", f"ADR approvata: creato il dominio "
                                 f"{model.label(domain)}.")
+
+    def _approve_derived(self):
+        """The assignment of derived requirements to a domain: after a confirmation that says what changes (see
+        model.adr.approve_derived), each passes to the proposed domain, for good."""
+        from arcadia_tool.model.adr import approve_derived, derived_preview, derived_problems
+
+        element, model = self.element, self.project.model
+        problems = derived_problems(model, element)
+        if problems:
+            QMessageBox.warning(self, "Approva ADR", "Non è possibile approvare l'ADR:\n" + "\n".join(problems))
+            return
+
+        def short(uuid):
+            target = model.get(uuid) if uuid else None
+            return (target.get("id") or model.label(target)) if target is not None else "nessun dominio"
+
+        target = short(element.get("derived_domain_proposed"))
+        lines = [f"• {d.get('id') or model.label(d)}: {short(now)} → {target}"
+                 for d, now in derived_preview(model, element)]
+        question = (f"Approvare l'ADR e assegnare in modo definitivo i requisiti derivati a {target}?\n\n"
+                    + ("\n".join(lines[:20]) if lines else f"Sono già tutti di {target}: l'ADR risulta decisa.")
+                    + "\n\nIl loro dominio non seguirà più quello della funzione di sistema su cui sono mappati.")
+        if QMessageBox.question(self, "Approva ADR", question) != QMessageBox.Yes:
+            return
+        changed = approve_derived(self.project, element)
+        self.draft = element.copy()
+        for e in [*changed, element]:
+            self.element_changed.emit(e)
+        self.saved.emit()  # the project is saved
+        self._build()
+        QMessageBox.information(self, "Approva ADR", f"ADR approvata: requisiti derivati assegnati a {target}.")
 
     def _approve_clauses(self):
         """A sharing: the domains become contributors of the clauses; clauses mapped to no domain: the decision only.
@@ -1084,6 +1123,7 @@ class ElementEditor(QScrollArea):
         self.getters, self.widgets, self.field_labels = {}, {}, {}
         self._choice_sources = []  # (table field, refresh of a choice among its rows)
         self._computed = []  # (field, widget) of the fields computed from the others
+        self._adrs_tab = None  # a domain: the tab of its ADR (see _srs_trace_card)
         self._dynamic_tables = []  # tables whose lists depend on the element (see Column.choices)
         self.read_only = element.kind in READ_ONLY_KINDS and not self.srs_edit_mode.enabled
         schema = element.schema
@@ -1118,7 +1158,8 @@ class ElementEditor(QScrollArea):
             # The fields of this element as it is (e.g. of the type of an ADR: see Field.when).
             fields = [f for f in schema.fields if (f.section == title or (not f.section and f.type in types))
                       and f is not status_field and not f.hidden and f.applies(element)
-                      and not (f.by_tool and is_empty(element.values.get(f.name)))]
+                      and not (f.by_tool and is_empty(element.values.get(f.name)))
+                      and not (element.kind == "domain" and f.computed == "related_adrs")]  # a tab of the trace
             if not fields:
                 continue
             caption = f"Dettagli: {element.get('adr_type')}" if title == ADR_DETAILS else title
@@ -1275,6 +1316,7 @@ class ElementEditor(QScrollArea):
                                                   "Approva e sposta le voci" if reallocation else
                                                   "Approva e condividi le clausole" if kind == ADR_SHARED else
                                                   "Approva la non mappatura" if kind == ADR_UNMAPPED else
+                                                  "Approva e assegna il dominio" if kind == ADR_DERIVED else
                                                   "Approva e crea il dominio")
                 self.approve_button.setProperty("primary", True)
                 self.approve_button.setToolTip(
@@ -1284,6 +1326,8 @@ class ElementEditor(QScrollArea):
                     if kind == ADR_SHARED else
                     "Design Authority: approva l'ADR; le clausole risultano non mappate per decisione"
                     if kind == ADR_UNMAPPED else
+                    "Design Authority: approva l'ADR e assegna in modo definitivo i requisiti derivati al dominio "
+                    "proposto (non seguono più il dominio della loro funzione di sistema)" if kind == ADR_DERIVED else
                     "Design Authority: approva l'ADR e crea il nuovo dominio funzionale (con l'ID assegnato dal tool), "
                     "la missione, il team e le sezioni proposti")
                 self.approve_button.clicked.connect(lambda _=False: self.approve())
@@ -1525,10 +1569,12 @@ class ElementEditor(QScrollArea):
         if element.kind == "derived_requirement":
             return self._derived_trace_card()
         if element.kind == "domain":
-            title, label, tip = ("Tracciabilità verso le voci SRS (A4)", "Traccia sezioni e clausole SRS…",
+            title, label, tip = ("Tracciabilità", "Traccia sezioni e clausole SRS…",
                                  "Collega il dominio alle sezioni (es. 3.4.1) o alle clausole (es. 3.4.1.3)")
             received, ceded = srs_trace.received_items(model, element), srs_trace.ceded_items(model, element)
-            columns = (("srsPrincipal", "Sezioni SRS principali", srs_trace.principal_groups(model, element)),
+            columns = (("srsAll", "Tutte le clausole del dominio: delle sezioni principali e ricevute per ADR",
+                        srs_trace.domain_clauses(model, element)),
+                       ("srsPrincipal", "Sezioni SRS principali", srs_trace.principal_groups(model, element)),
                        *((("srsReceived", "Clausole ricevute per ADR", received),) if received else ()),
                        *((("srsCeded", "Clausole cedute per ADR", ceded),) if ceded else ()),
                        ("srsContributing", "Sezioni e clausole SRS a cui contribuisce",
@@ -1563,14 +1609,6 @@ class ElementEditor(QScrollArea):
                                "Il dominio non ha ancora sezioni principali")
             exclude.clicked.connect(lambda _=False: self._exclude_srs())
             # Placed between the list of the contributions and that of the exclusions (see below).
-        if element.kind == "domain":  # the principal sections written in its SA-1 sheet in Excel
-            imported = QPushButton(icon("mdi6.microsoft-excel"), "Importa clausole principali…")
-            imported.setEnabled(has_srs)
-            imported.setToolTip("Legge la riga «Sezioni SRS principali» del foglio del dominio in un file Excel "
-                                "(SA-1), ne mostra le voci e le importa come sezioni principali del dominio"
-                                if has_srs else "Importa prima le voci SRS (menu Progetto › Importa voci SRS)")
-            imported.clicked.connect(lambda _=False: self._import_principal())
-            row.addWidget(imported)
         if element.kind == "system_function":  # the derived requirements (SA-4) mapped on it, with ticks
             mapped = QPushButton(icon("mdi6.call-split"), "Mappa requisiti derivati…")
             mapped.setToolTip("Spunta i requisiti derivati (SA-4) da mappare sulla funzione, sotto le clausole da cui "
@@ -1586,40 +1624,194 @@ class ElementEditor(QScrollArea):
             imported.clicked.connect(lambda _=False: self._import_functions())
             row.addWidget(imported)
         row.addStretch()
-        layout.addLayout(row)
-        # A domain: its three lists one after the other (principal, contributes, excluded); a system function: the
-        # derived requirements under the SRS items; else side by side.
-        lists = QVBoxLayout() if element.kind in ("domain", "system_function") else QHBoxLayout()
+        if element.kind == "domain":  # «Traccia da SRS» in the tab of the principal sections (see below)
+            button.setText("Traccia da SRS")
+        else:
+            layout.addLayout(row)
+        # A domain: its lists in tabs (principal, received, ceded, contributes, excluded: «Escludi…» in its tab); a
+        # system function: the derived requirements under the SRS items; else side by side.
+        tabs = QTabWidget(objectName="srsTabs") if element.kind == "domain" else None
+        lists = QVBoxLayout() if element.kind == "system_function" else QHBoxLayout()
         for name, title, items in columns:
-            if name == "srsExcluded":  # its button right above it, after the contributions
-                lists.addWidget(exclude, 0, Qt.AlignLeft)
             column = QVBoxLayout()
-            column.addWidget(QLabel(f"{title} ({len(items)})", objectName="formLabel"))
+            if tabs is not None:
+                page = QWidget()
+                column = QVBoxLayout(page)
+                column.setContentsMargins(8, 8, 8, 8)
+                if name == "srsExcluded":  # its button right above its list
+                    column.addWidget(exclude, 0, Qt.AlignLeft)
+                if name == "srsPrincipal":  # «Traccia da SRS» right above the principal sections
+                    column.addWidget(button, 0, Qt.AlignLeft)
+                tabs.addTab(page, f"{DOMAIN_TABS.get(name, title)} ({len(items)})")
+                tabs.setTabToolTip(tabs.count() - 1, title)
+            else:
+                column.addWidget(QLabel(f"{title} ({len(items)})", objectName="formLabel"))
             view = QListWidget(objectName=name)
-            view.setMinimumHeight(120)
-            view.setMaximumHeight(240)
+            view.setMinimumHeight(180 if tabs is not None else 120)
+            view.setMaximumHeight(320 if tabs is not None else 240)
+            received_ids = {r.uuid for r in received} if element.kind == "domain" else set()
             for e in items:
                 entry = QListWidgetItem(model.label(e))  # a derived requirement: its ID only
-                if name in ("srsReceived", "srsCeded"):  # the decision behind the exception
-                    adrs = decided_reallocations(model, e) or open_reallocations(model, e)
-                    entry.setText(f"{model.label(e)} · {adrs[0].get('id') if adrs else 'senza ADR decisa'}")
+                if name in ("srsReceived", "srsCeded") or (name == "srsAll" and e.uuid in received_ids):
+                    adrs = decided_reallocations(model, e) or open_reallocations(model, e)  # the decision behind it
+                    said = adrs[0].get("id") if adrs else "senza ADR decisa"
+                    entry.setText(f"{model.label(e)} · {'ricevuta per ' + said if name == 'srsAll' else said}")
+                    if adrs:
+                        entry.setData(ADR_ROLE, adrs[0].uuid)
                 entry.setData(Qt.UserRole, e.uuid)
                 entry.setToolTip((e.get("text") or e.get("obligation") or e.get("title") or "")[:600])
                 view.addItem(entry)
             if not items:
                 view.addItem(QListWidgetItem("Nessuna voce tracciata"))
                 view.setEnabled(False)
-            view.setToolTip("Doppio clic per aprire la voce")
-            view.itemDoubleClicked.connect(lambda entry: entry.data(Qt.UserRole)
-                                           and self.open_requested.emit(entry.data(Qt.UserRole)))
+            # A click on a clause: its ADR to open, if any, or the list of the SRS items at its row (see
+            # _clause_clicked); a double click on a derived requirement: its sheet.
+            view.setToolTip("Clic su una clausola: la voce nell'elenco SRS (se ha ADR, si sceglie cosa aprire); doppio "
+                            "clic su un requisito derivato: la sua scheda")
+            view.itemClicked.connect(lambda entry, v=view: self._clause_clicked(v, entry))
+            view.itemDoubleClicked.connect(lambda entry: self._derived_double_clicked(entry))
+            if name in ("srsReceived", "srsCeded"):  # a right click: the ADR of the reallocation, or the clause
+                view.setContextMenuPolicy(Qt.CustomContextMenu)
+                view.customContextMenuRequested.connect(lambda pos, v=view: self._reallocated_menu(v, pos))
             if name == "srsAllocated":  # a right click: derive requirements, mapped on this function
                 view.setToolTip("Doppio clic per aprire la voce; clic destro per derivarne requisiti")
                 view.setContextMenuPolicy(Qt.CustomContextMenu)
                 view.customContextMenuRequested.connect(lambda pos, v=view: self._allocated_context_menu(v, pos))
+            if name == "srsAll":  # «Mostra anche i requisiti derivati»: those of the domain, under their clause
+                column.addWidget(self._derived_toggle(view, items))
             column.addWidget(view)
-            lists.addLayout(column, 1)
-        layout.addLayout(lists)
+            if tabs is None:
+                lists.addLayout(column, 1)
+        if tabs is not None:  # a domain: last, the ADR about it (the table, «Nuova ADR…»)
+            adrs, _getter = self._adrs_widget()
+            self.widgets["related_adrs"] = adrs
+            page = QWidget()
+            column = QVBoxLayout(page)
+            column.setContentsMargins(8, 8, 8, 8)
+            column.addWidget(adrs)
+            column.addStretch()
+            self._adrs_tab = (tabs, tabs.addTab(page, "ADR"))
+            guide = element.schema.field("related_adrs").guide  # its «?» of the form, as the tooltip of the tab
+            tabs.setTabToolTip(self._adrs_tab[1], guide or "Decisioni architetturali (ADR) che riguardano il dominio")
+            self.refresh_adrs()  # its count in the tab
+            layout.addWidget(tabs)
+        else:
+            layout.addLayout(lists)
         return frame
+
+    def _clause_clicked(self, view, entry):
+        """A click on an SRS item of «Tracciabilità»: with ADR about it, a menu to open one of them or to go to the
+        item; without, the list of the SRS items at its row (on the tab of its chapter)."""
+        from arcadia_tool.model.adr import adr_state, adrs_about
+
+        model = self.project.model
+        item = model.get(entry.data(Qt.UserRole)) if entry.data(Qt.UserRole) else None
+        if item is None or item.kind != "requirement":
+            return  # a derived requirement: opened with a double click
+        adrs = adrs_about(model, item)
+        if not adrs:
+            self.srs_requested.emit(item.uuid)
+            return
+        menu = QMenu(self)
+        for adr in adrs:
+            state = adr_state(adr) or adr.get("status") or ""
+            text = " · ".join(t for t in (adr.get("id"), adr.get("title")) if t)
+            menu.addAction(icon("mdi6.scale-balance"), f"Apri l'ADR {text}" + (f" ({state})" if state else ""),
+                           lambda a=adr: self.open_requested.emit(a.uuid))
+        menu.addSeparator()
+        menu.addAction(icon("mdi6.book-open-page-variant-outline"),
+                       f"Vai alla voce {item.get('id') or ''} nell'elenco SRS".replace("  ", " "),
+                       lambda: self.srs_requested.emit(item.uuid))
+        self.clause_menu = menu  # kept alive while shown (a popup, not modal), and for the tests
+        menu.popup(view.viewport().mapToGlobal(view.visualItemRect(entry).bottomLeft()))
+
+    def _derived_double_clicked(self, entry):
+        """A double click on a derived requirement of «Tracciabilità»: its sheet (an SRS item: see _clause_clicked)."""
+        uuid = entry.data(Qt.UserRole)
+        target = self.project.model.get(uuid) if uuid else None
+        if target is not None and target.kind != "requirement":
+            self.open_requested.emit(uuid)
+
+    SHOW_DERIVED = False  # «Mostra anche i requisiti derivati» in the tab «Tutte le clausole» of a domain (remembered)
+
+    def _derived_toggle(self, view, clauses):
+        """The tick of the tab «Tutte le clausole» of a domain: also its derived requirements (SA-4), each under the
+        clause it is derived from (or a point of it); those assigned to it by an ADR from clauses of other domains at
+        the end. A derived requirement belongs to the domain of the clause it is derived from, unless an approved ADR
+        assigned it to another one (see model.adr.derived_owner_domain)."""
+        from arcadia_tool.model.adr import derived_owner_domain
+        from arcadia_tool.model.element import natural_key
+
+        model, domain = self.project.model, self.element
+        derived = sorted((d for d in model.of_kind("derived_requirement")
+                          if derived_owner_domain(model, d) == domain.uuid),
+                         key=lambda d: natural_key(d.get("id") or ""))
+        rows = {c.uuid for c in clauses}
+
+        def clause_of(d):  # the clause of the list it is derived from (from a point of it: the clause)
+            seen, uuid = set(), d.get("parent")
+            while uuid and uuid not in rows and uuid not in seen:
+                seen.add(uuid)
+                parent = model.get(uuid)
+                uuid = parent.get("parent") if parent is not None else None
+            return uuid if uuid in rows else None
+        under, others = {}, []
+        for d in derived:
+            clause = clause_of(d)
+            (under.setdefault(clause, []) if clause else others).append(d)
+        box = QCheckBox(f"Mostra anche i requisiti derivati ({len(derived)})", objectName="showDerived")
+        box.setToolTip("Aggiunge all'elenco i requisiti derivati (SA-4) del dominio, ciascuno sotto la clausola da cui "
+                       "è derivato; in fondo quelli derivati da clausole di altri domini")
+        box.setEnabled(bool(derived))
+        box.setProperty("keepEnabled", True)  # a way of showing the list: usable also on a read-only sheet
+
+        def entry(d):
+            item = QListWidgetItem(f"    {model.choice_label(d)}")  # indented under its clause: the ID says it is derived
+            item.setData(Qt.UserRole, d.uuid)
+            item.setData(DERIVED_ROLE, True)
+            item.setToolTip((d.get("obligation") or "")[:600])
+            return item
+
+        def show(on):
+            ElementEditor.SHOW_DERIVED = on
+            for row in reversed(range(view.count())):  # without the derived ones, then with them if asked
+                if view.item(row).data(DERIVED_ROLE):
+                    view.takeItem(row)
+            if not on:
+                if not view.count():  # the derived ones only were shown
+                    view.addItem(QListWidgetItem("Nessuna voce tracciata"))
+                    view.setEnabled(False)
+                return
+            for row in reversed(range(view.count())):
+                for d in reversed(under.get(view.item(row).data(Qt.UserRole), [])):
+                    view.insertItem(row + 1, entry(d))
+            for d in others:
+                view.addItem(entry(d))
+            if derived and not view.isEnabled():  # «Nessuna voce tracciata»: the derived ones only
+                view.clear()
+                for d in derived:
+                    view.addItem(entry(d))
+                view.setEnabled(True)
+        box.toggled.connect(show)
+        box.setChecked(self.SHOW_DERIVED and bool(derived))
+        return box
+
+    def _reallocated_menu(self, view, pos):
+        """A right click on a clause received or ceded by a reallocation: its ADR, or the clause."""
+        entry = view.itemAt(pos)
+        if entry is None or not entry.data(Qt.UserRole):
+            return
+        model = self.project.model
+        menu = QMenu(self)
+        adr = model.get(entry.data(ADR_ROLE)) if entry.data(ADR_ROLE) else None
+        open_adr = menu.addAction(icon("mdi6.scale-balance"),
+                                  f"Apri l'ADR {adr.get('id') or ''}".rstrip() if adr is not None else "Nessuna ADR",
+                                  lambda: self.open_requested.emit(adr.uuid))
+        open_adr.setEnabled(adr is not None)
+        item = model.get(entry.data(Qt.UserRole))
+        menu.addAction(icon("mdi6.open-in-app"), f"Apri la voce {item.get('id') or ''}".rstrip(),
+                       lambda: self.open_requested.emit(item.uuid))
+        menu.exec(view.viewport().mapToGlobal(pos))
 
     def _allocated_menu(self, item):
         """The menu of an SRS item mapped on the function: «Deriva requisiti…», not from a section."""
@@ -1782,19 +1974,6 @@ class ElementEditor(QScrollArea):
             self._draft_changed()
 
     @local_change
-    def _import_principal(self, path=None):
-        """«Importa clausole principali…»: the domain becomes the principal domain of the sections of its row in
-        the Excel sheet (after a summary); saved with the «Salva» of the sheet."""
-        from arcadia_tool.ui.import_principal import import_principal
-
-        self.flush()
-        changed = import_principal(self.project, self.element, self, path)
-        for item in changed:
-            self.element_changed.emit(item)
-        if changed:  # saved with the «Salva» of the sheet, Ctrl+S or the «Salva» of the toolbar
-            self._build()
-        return changed
-
     @local_change
     def _import_functions(self, path=None):
         """«Importa funzioni da Excel SA-2…»: the functions of the catalogue in their domains, allocated to their
@@ -1932,7 +2111,7 @@ class ElementEditor(QScrollArea):
         refresh()
         return w, current
 
-    ADR_COLUMNS = ("Esito", "ID", "Titolo", "Tipo", "Stato", "Decisione DA")
+    ADR_COLUMNS = ("ID", "Titolo", "Tipo", "Stato", "Decisione DA")
     OUTCOME_COLORS = {"Attiva": ("#1E40AF", "#DBEAFE"), "Approvata": ("#166534", "#DCFCE7"),
                       "Respinta": ("#B42318", "#FEE4E2"), "Superata": ("#374151", "#E5E7EB")}
 
@@ -1952,10 +2131,10 @@ class ElementEditor(QScrollArea):
         table.setSelectionMode(QAbstractItemView.SingleSelection)
         header = table.horizontalHeader()
         header.setSectionResizeMode(QHeaderView.ResizeToContents)
-        header.setSectionResizeMode(2, QHeaderView.Stretch)
+        header.setSectionResizeMode(1, QHeaderView.Stretch)
         table.setToolTip("Doppio clic su una riga per aprire l'ADR")
         table.cellDoubleClicked.connect(
-            lambda row, _c: self.open_requested.emit(table.item(row, 1).data(Qt.UserRole)))
+            lambda row, _c: self.open_requested.emit(table.item(row, 0).data(Qt.UserRole)))
         self.adrs_table = table
         self.adrs_empty = QLabel(objectName="muted")
         new = QPushButton(icon("mdi6.plus"), "Nuova ADR…")
@@ -1973,7 +2152,7 @@ class ElementEditor(QScrollArea):
         layout.addWidget(table)
         layout.addLayout(row)
         self.refresh_adrs()
-        return w, lambda: [table.item(r, 1).data(Qt.UserRole) for r in range(table.rowCount())]
+        return w, lambda: [table.item(r, 0).data(Qt.UserRole) for r in range(table.rowCount())]
 
     def refresh_adrs(self):
         """The table of the ADR of the sheet, as the model is now (an ADR created, decided, deleted)."""
@@ -1992,18 +2171,14 @@ class ElementEditor(QScrollArea):
         for adr in adrs:
             r = table.rowCount()
             table.insertRow(r)
-            state = outcome(adr)
-            values = (state, adr.get("id") or "", adr.get("title") or "", adr.get("adr_type") or "",
+            values = (adr.get("id") or "", adr.get("title") or "", adr.get("adr_type") or "",
                       adr.get("status") or "", adr.get("da_decision") or "")
             for c, text in enumerate(values):
                 cell = QTableWidgetItem(text)
                 cell.setData(Qt.UserRole, adr.uuid)
-                cell.setToolTip(model.label(adr))
+                cell.setToolTip(f"{model.label(adr)} · {outcome(adr)}")
                 table.setItem(r, c, cell)
-            fg, bg = self.OUTCOME_COLORS[state]
-            table.item(r, 0).setForeground(QBrush(QColor(fg)))
-            table.item(r, 0).setBackground(QBrush(QColor(bg)))
-            for c in (4, 5):
+            for c in (3, 4):
                 if values[c]:
                     fg, bg = status_colors(values[c])
                     table.item(r, c).setForeground(QBrush(QColor(fg)))
@@ -2015,6 +2190,12 @@ class ElementEditor(QScrollArea):
         counts = {s: sum(1 for a in adrs if outcome(a) == s) for s in self.OUTCOME_COLORS}
         self.adrs_empty.setText(f"Nessuna ADR riguarda {what}." if not adrs else " · ".join(
             f"{n} {s.lower()[:-1] + ('a' if n == 1 else 'e')}" for s, n in counts.items() if n))
+        tab = getattr(self, "_adrs_tab", None)
+        if tab is not None:  # a domain: the count in the tab of its ADR
+            try:
+                tab[0].setTabText(tab[1], f"ADR ({len(adrs)})")
+            except RuntimeError:  # the page was built again
+                self._adrs_tab = None
 
     def _show_computed_ref(self, f, widget, uuid):
         """An element read from the model; the domain of an SRS item taken from the section containing it says so."""
@@ -2265,6 +2446,13 @@ class ElementEditor(QScrollArea):
             elif set(f.ref_kinds) <= {"system_function", "logical_function"}:  # grouped by domain, with ticks
                 from arcadia_tool.ui.srs_trace import choose_functions
                 picker = lambda uuids, name=f.name: choose_functions(self.project, self.draft, name, uuids, self)
+            elif f.ref_kinds == ("derived_requirement",):  # with ticks and search, grouped by their domain now
+                from arcadia_tool.ui.srs_trace import pick_elements
+                picker = lambda uuids, label=f.label_for(self.draft): pick_elements(
+                    self.project, f"{model.label(self.draft)}: {label.lower()}",
+                    "Spunta i requisiti derivati (SA-4): sono raggruppati per il dominio che hanno ora.",
+                    model.of_kind("derived_requirement"), uuids, self,
+                    group_of=lambda d: model.get(d.get("domain")) if d.get("domain") else None)
             w = RefsWidget(model, f.ref_kinds, picker)
             w.set_value(value)
             w.open_item = self.show_reference
