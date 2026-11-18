@@ -294,9 +294,10 @@ class MainWindow(QMainWindow):
                                         "Invia al repository remoto le versioni pubblicate e non ancora inviate")
         self.clone_action = self._action("Scarica progetto da Git…", "mdi6.source-branch", self.clone_project_dialog,
                                          None, "Scarica un progetto da un repository Git remoto e lo apre")
-        self.receive_action = self._action("Ricevi dal repository…", "mdi6.cloud-download", self.receive_versions,
-                                           None, "Riceve le versioni pubblicate dai colleghi sul ramo di lavoro e le "
-                                           "integra con le tue")
+        self.receive_action = self._action("Ricevi dal repository…", "mdi6.cloud-download",
+                                           self.receive_from_repository, None,
+                                           "Riceve le versioni pubblicate dai colleghi: sul ramo in uso, integrate con "
+                                           "le tue, e a scelta sugli altri rami di questo PC")
         self.reload_action = self._action("Ricarica dal repository…", "mdi6.cloud-download-outline",
                                           self.reload_from_remote, None,
                                           "Sostituisce il contenuto locale con il ramo di lavoro del repository")
@@ -1475,6 +1476,12 @@ class MainWindow(QMainWindow):
             return
         previous = element.copy()
         element.set("status", status)
+        from arcadia_tool.ui.element_editor import confirm_reopened
+        if not confirm_reopened(self, self.project.model, previous, element):  # an approved reallocation reopened
+            element.values = previous.values
+            if page is not None:
+                QTimer.singleShot(0, page.reload)
+            return
         others = self.project.update(element, previous) or []
         save_project(self, self.project, {uuid, *(o.uuid for o in others)})
         for changed in [element, *others]:
@@ -1952,6 +1959,51 @@ class MainWindow(QMainWindow):
             return False
         self._refresh_state()
         return True
+
+    def receive_from_repository(self):
+        """Versioni › Ricevi dal repository: the branches of this PC to update chosen first (the one in use, some of
+        them, all of them); the others take the versions of the remote, then the one in use receives as always."""
+        if not self.project:
+            return
+        if not self.project.remote():
+            QMessageBox.information(self, "Ricevi dal repository", "Nessun repository remoto: indica l'URL in "
+                                    "Progetto › Impostazioni › Repository Git.")
+            return
+        from arcadia_tool.ui.receive_choice import ReceiveChoiceDialog
+
+        current = self.project.current_branch()
+        names = sorted(set(self.project.repository.local_heads()) | {current}, key=lambda n: (n != current, n.lower()))
+        dialog = ReceiveChoiceDialog(names, current, self)
+        if not dialog.exec():
+            return
+        chosen = dialog.branches()
+        others = [n for n in chosen if n != current]
+        report = None
+        if others:
+            credentials = git_credentials(self.user, self.project.remote())
+            try:
+                report = run_busy(self, "Ricezione dei rami dal repository…",
+                                  lambda _report: self.project.update_local_branches(others, **credentials))
+            except Exception as exc:
+                QMessageBox.warning(self, "Ricevi dal repository", f"Operazione non riuscita: {exc}")
+                return
+        if current in chosen:
+            self.receive_versions()
+        if report:
+            self._branches_report(report)
+
+    def _branches_report(self, report):
+        """What the branches of this PC not in use received (see Project.update_local_branches)."""
+        P = Project
+        texts = {P.BRANCH_UPDATED: lambda n: f"ricevute {n} {'versione' if n == 1 else 'versioni'}",
+                 P.BRANCH_UP_TO_DATE: lambda n: "già aggiornato",
+                 P.BRANCH_AHEAD: lambda n: f"già aggiornato; {n} {'versione' if n == 1 else 'versioni'} di questo PC "
+                                           "da inviare",
+                 P.BRANCH_DIVERGED: lambda n: f"{n} {'versione' if n == 1 else 'versioni'} nel repository da unire "
+                                              "alle tue: passa al ramo e ricevi",
+                 P.BRANCH_NOT_ON_REMOTE: lambda n: "non è nel repository"}
+        lines = "\n".join(f"• {name}: {texts[state](count)}" for name, state, count in report)
+        QMessageBox.information(self, "Ricevi dal repository", f"Altri rami di questo PC:\n\n{lines}")
 
     def receive_versions(self):
         """Versioni › Ricevi dal repository: the versions of the others on the working branch, merged with those

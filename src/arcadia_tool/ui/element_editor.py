@@ -922,6 +922,8 @@ class ElementEditor(QScrollArea):
             return False
         if not self._sections_of_the_team_confirmed():
             return False
+        if self.dirty and not confirm_reopened(self, self.project.model, self.element, self.draft):
+            return False
         if self.dirty:
             moved = self._single_design_authority()
             if moved is None:
@@ -2688,6 +2690,30 @@ class ElementWindow(QDialog):
     def reject(self):  # Esc: like closing the window
         if resolve_unsaved(self.editor, self):
             super().reject()
+
+
+def confirm_reopened(parent, model, previous, adr):
+    """An approved reallocation reopened (its status back to an open one): the user is told which SRS items go back
+    to their domains, done on saving (see model.adr.revert_reallocation). True: the change is to save."""
+    from arcadia_tool.model.adr import reallocation_revert_preview, reopened_reallocation
+
+    if not reopened_reallocation(previous, adr):
+        return True
+    rows = reallocation_revert_preview(model, previous)
+    back = [f"• {item.get('id') or model.label(item)} → {model.label_of(domain) if domain else 'nessun dominio'}"
+            for item, domain, still in rows if still]
+    kept = [item.get("id") or model.label(item) for item, _domain, still in rows if not still]
+    text = (f"L'ADR {previous.get('id') or ''} era approvata e la riallocazione è applicata al modello. Riaprendola "
+            "(stato «" + (adr.get("status") or "nessuno") + "») la decisione viene annullata al salvataggio: le voci "
+            "tornano ai domini che avevano prima.")
+    if back:
+        text += "\n\n" + "\n".join(back[:15]) + (f"\n• e altre {len(back) - 15}" if len(back) > 15 else "")
+    if kept:
+        text += ("\n\nRestano come sono, perché un'altra decisione le ha cambiate dopo: " + ", ".join(kept[:10])
+                 + (" …" if len(kept) > 10 else ""))
+    text += "\n\nL'esito della DA «Accolta» viene tolto. Salvare?"
+    return QMessageBox.question(parent, "Riapertura di un'ADR approvata", text, QMessageBox.Yes | QMessageBox.No,
+                                QMessageBox.No) == QMessageBox.Yes
 
 
 def resolve_unsaved(editor, parent, what=None):

@@ -691,6 +691,9 @@ KINDS = (
               hidden=True, when=("adr_type", REALLOC_TYPES)),
         Field("contributors_at_approval", "Contributori prima dell'approvazione", REFS, ref_kinds=("domain",),
               hidden=True, when=("adr_type", REALLOC_TYPES)),
+        # {item: {"primary", "contributors"}}: the domains of its own each item had, put back if the ADR is reopened.
+        Field("realloc_before", "Domini delle voci prima dell'approvazione", MAP, hidden=True,
+              when=("adr_type", REALLOC_TYPES)),
         # The exclusion of SRS items from a domain principal of the sections containing them: the items (one or more,
         # chosen with ticks), the domain, the sections they are excluded from (read from the model), why the domain
         # does not trace them, who traces them.

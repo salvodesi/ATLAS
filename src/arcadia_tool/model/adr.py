@@ -804,7 +804,10 @@ def approve_reallocation(project, adr, today=None):
         raise ValueError(" ".join(problems))
     primary, changed = adr.get("primary_proposed"), []
     before = item_primary(project.model, adr), item_contributors(project.model, adr)  # as the ADR goes on showing them
+    own = {}  # the domains of each item of its own, to put back if the ADR is reopened (see revert_reallocation)
     for item in realloc_targets(project.model, adr):
+        own[item.uuid] = {"primary": item.get("primary_domain") or "",
+                          "contributors": list(item.get("contributing_domains") or [])}
         previous = item.copy()
         item.set("primary_domain", primary)
         item.set("contributing_domains", [d for d in adr.get("contributors_proposed") or [] if d != primary])
@@ -813,12 +816,67 @@ def approve_reallocation(project, adr, today=None):
     adr.set("realloc_applied", True)
     adr.set("primary_at_approval", before[0])
     adr.set("contributors_at_approval", before[1])
+    adr.set("realloc_before", own)
     adr.set("status", DECIDED)
     if adr.get("da_decision") not in ("Accolta", "Accolta con modifiche"):
         adr.set("da_decision", "Accolta")
     adr.set("decision_date", decision_date_of(adr, today=today))
     project.update(adr, previous)
     return list({e.uuid: e for e in changed}.values())
+
+
+def reopened_reallocation(previous, adr):
+    """A reallocation applied to the model (approved) whose status goes back to an open one (Proposta, In revisione
+    DA, Revisionato DA) in the change from `previous` to `adr`: its decision is to undo (see revert_reallocation)."""
+    return previous is not None and adr.kind == "adr" and adr.get("adr_type") in REALLOC_TYPES \
+        and bool(previous.get("realloc_applied")) and previous.get("status") == DECIDED and adr.get("status") in OPEN
+
+
+def _domains_before(model, adr, item):
+    """(principal, contributors) of its own the item had before the approval: as recorded then; for an ADR approved
+    before they were recorded, from the domains the ADR shows (none of its own when they were those of its section)."""
+    recorded = (adr.get("realloc_before") or {}).get(item.uuid)
+    if isinstance(recorded, dict):
+        return recorded.get("primary") or None, list(recorded.get("contributors") or [])
+    parent = model.get(item.get("parent")) if item.get("parent") else None
+    primary = adr.get("primary_at_approval")
+    contributors = list(adr.get("contributors_at_approval") or [])
+    inherited = allocated_part(model, parent) if parent is not None else None
+    return (None if parent is not None and principal_of(model, parent) == primary else primary,
+            [] if inherited is not None and list(inherited.get("contributing_domains") or []) == contributors
+            else contributors)
+
+
+def reallocation_revert_preview(model, adr):
+    """What reopening the reallocation puts back: [(item, principal domain it goes back to, False if the item no
+    longer has the domain the ADR gave it: another decision changed it since, and it stays as it is)]."""
+    result = []
+    for item in realloc_targets(model, adr):
+        own, _contributors = _domains_before(model, adr, item)
+        parent = model.get(item.get("parent")) if item.get("parent") else None
+        back = own or (principal_of(model, parent) if parent is not None else None)
+        result.append((item, back, item.get("primary_domain") == adr.get("primary_proposed")))
+    return result
+
+
+def revert_reallocation(model, adr):
+    """The ADR of a reallocation reopened (see reopened_reallocation): its items get back the domains of their own
+    they had before the approval (those still with the domain it gave them), and the ADR is no longer applied nor
+    accepted. Returns [(item, item before)] of the items changed."""
+    changed = []
+    for item, _back, still in reallocation_revert_preview(model, adr):
+        if not still:
+            continue
+        primary, contributors = _domains_before(model, adr, item)
+        previous = item.copy()
+        item.set("primary_domain", primary)
+        item.set("contributing_domains", contributors or None)
+        changed.append((item, previous))
+    for name in ("realloc_applied", "primary_at_approval", "contributors_at_approval", "realloc_before"):
+        adr.set(name, None)
+    if adr.get("da_decision") in ("Accolta", "Accolta con modifiche"):
+        adr.set("da_decision", None)
+    return changed
 
 
 def decided_reallocations(model, item):

@@ -553,6 +553,41 @@ class Project:
             self.repository.set_branch_head(previous, back)
         self.set_local_settings(branch=name, sent="")
 
+    # How a branch of this PC not in use is updated from the remote (see update_local_branches).
+    BRANCH_UPDATED, BRANCH_UP_TO_DATE, BRANCH_AHEAD, BRANCH_DIVERGED, BRANCH_NOT_ON_REMOTE = (
+        "updated", "up_to_date", "ahead", "diverged", "not_on_remote")
+
+    def update_local_branches(self, names, **credentials):
+        """Versioni › Ricevi dal repository on branches of this PC other than the one in use: the remote is downloaded
+        once, and each branch takes the versions of its namesake on the remote when it has none of its own (it only
+        moves forward: no merge, no file of the project changes). [(name, state, versions)]: received (UPDATED), or
+        those of this PC to send (AHEAD), or those of the remote when both have their own (DIVERGED: to receive from
+        the branch, switching to it); the branch in use is skipped (received with prepare_receive)."""
+        url = self.remote()
+        if not url:
+            raise ProjectError("Nessun repository remoto: indicalo in Progetto › Impostazioni › Repository Git.")
+        heads = self.repository.fetch(url, **credentials)
+        self.repository.set_remote_heads(heads)
+        self.set_local_settings(fetched=datetime.now().isoformat(timespec="minutes"))
+        local, current = self.repository.local_heads(), self.current_branch()
+        result = []
+        for name in names:
+            mine, theirs = local.get(name), heads.get(name)
+            if name == current or mine is None:
+                continue
+            if theirs is None:
+                result.append((name, self.BRANCH_NOT_ON_REMOTE, 0))
+            elif self.repository.is_ancestor(theirs, mine):
+                ahead = len(self.repository.versions_between(theirs, mine))
+                result.append((name, self.BRANCH_AHEAD if ahead else self.BRANCH_UP_TO_DATE, ahead))
+            elif self.repository.is_ancestor(mine, theirs):
+                count = len(self.repository.versions_between(mine, theirs))
+                self.repository.set_branch_head(name, theirs)
+                result.append((name, self.BRANCH_UPDATED, count))
+            else:
+                result.append((name, self.BRANCH_DIVERGED, len(self.repository.versions_between(mine, theirs))))
+        return result
+
     def branches_to_delete(self):
         """The branches integrated and deleted here, to remove from the remote with the next send."""
         return list(self.local_settings().get("delete_branches") or [])
@@ -879,6 +914,11 @@ class Project:
         self._touch(element.uuid)
         self._deleted.pop(element.uuid, None)
         ensure_row_keys(element)  # e.g. a step added to the path of a chain: its key, by which the views know it
+        reverted = []
+        if element.kind == "adr":  # a reallocation approved, reopened: its decision undone (see model.adr)
+            from arcadia_tool.model.adr import reopened_reallocation, revert_reallocation
+            if reopened_reallocation(previous, element):
+                reverted = revert_reallocation(self.model, element)
         if element.kind == "adr":  # the date of the decision: set when it is decided (see model.adr)
             from arcadia_tool.model.adr import decision_date_of
             element.set("decision_date", decision_date_of(element))
@@ -890,6 +930,10 @@ class Project:
             from arcadia_tool.model.chains import chain_domains
             element.set("domains", chain_domains(self.model, element) or None)
         changed = {}
+        for item, before in reverted:  # the SRS items given back their domains: kept in step as when edited
+            changed[item.uuid] = item
+            for other in self.update(item, before) or []:
+                changed[other.uuid] = other
         for other in keep_in_step(self.model, element, previous):
             if other.kind == "domain":  # e.g. assigned in the sheet of a team: its referent proposed
                 self._default_referent(other, None)

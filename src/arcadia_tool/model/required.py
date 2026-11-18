@@ -6,7 +6,7 @@ from arcadia_tool.model.identifiers import CREATION_CONTEXT
 EMPTY_SHEET = "La scheda è vuota: riempi almeno un campo prima di salvarla."
 # Given by the tool, or by where the sheet is created: not what the user has written in it.
 NOT_WRITTEN = ("id", "status", "adr_type", "proposer", "proposer_member", "concerns", "decision_date",
-               "realloc_applied", "primary_at_approval", "contributors_at_approval", "share_applied",
+               "realloc_applied", "primary_at_approval", "contributors_at_approval", "realloc_before", "share_applied",
                "contributors_before_share", "deleted_domain_label")
 
 

@@ -288,3 +288,82 @@ def test_a_whole_section_or_clauses(app, tmp_path):
     e["other"].set("primary_domain", e["df7"].uuid)
     approve_reallocation(p, whole)
     assert principal_of(p.model, e["clause"]) == e["df4"].uuid and principal_of(p.model, e["other"]) == e["df7"].uuid
+
+
+# --- an approved reallocation reopened ------------------------------------------------------------------------------
+
+def reopen(p, decision, status="In revisione DA"):
+    previous = decision.copy()
+    decision.set("status", status)
+    return p.update(decision, previous)
+
+
+def test_a_reopened_reallocation_gives_the_clause_back_to_its_section(tmp_path):
+    from arcadia_tool.model.adr import outcome, reallocation_revert_preview
+
+    p, e = build(tmp_path)
+    decision = adr(p, [e["clause"]], e["df4"], contributors_proposed=[e["df1"].uuid])
+    approve_reallocation(p, decision)
+    assert e["clause"].get("primary_domain") == e["df4"].uuid
+    assert reallocation_revert_preview(p.model, decision) == [(e["clause"], e["df1"].uuid, True)]
+    changed = reopen(p, decision)
+    assert e["clause"] in changed
+    assert not e["clause"].get("primary_domain") and not e["clause"].get("contributing_domains")  # as before
+    assert principal_of(p.model, e["clause"]) == e["df1"].uuid
+    assert not decision.get("realloc_applied") and not decision.get("realloc_before")
+    assert not decision.get("da_decision") and not decision.get("decision_date") and outcome(decision) != "Approvata"
+    assert can_approve(decision)  # to approve again
+    approve_reallocation(p, decision)
+    assert e["clause"].get("primary_domain") == e["df4"].uuid
+
+
+def test_a_reopened_section_gets_back_its_own_domains(tmp_path):
+    p, e = build(tmp_path)
+    decision = adr(p, [e["section"]], e["df4"])
+    approve_reallocation(p, decision)
+    reopen(p, decision, "Proposta")
+    assert e["section"].get("primary_domain") == e["df1"].uuid
+    assert e["section"].get("contributing_domains") == [e["df7"].uuid]
+
+
+def test_only_the_items_still_as_decided_go_back_and_only_when_reopened(tmp_path):
+    p, e = build(tmp_path)
+    decision = adr(p, [e["clause"], e["other"]], e["df4"])
+    approve_reallocation(p, decision)
+    later = adr(p, [e["other"]], e["df7"])
+    approve_reallocation(p, later)  # another decision moved one of them since
+    superseded = decision.copy()
+    superseded.set("status", "Superata")
+    from arcadia_tool.model.adr import reopened_reallocation
+    assert not reopened_reallocation(decision, superseded)  # superseded: not reopened
+    reopen(p, decision)
+    assert not e["clause"].get("primary_domain")
+    assert e["other"].get("primary_domain") == e["df7"].uuid  # left as the later decision set it
+
+
+def test_an_adr_approved_before_the_domains_were_recorded_is_reverted_too(tmp_path):
+    p, e = build(tmp_path)
+    decision = adr(p, [e["clause"]], e["df4"])
+    approve_reallocation(p, decision)
+    decision.set("realloc_before", None)  # as approved by an earlier version
+    reopen(p, decision)
+    assert not e["clause"].get("primary_domain") and principal_of(p.model, e["clause"]) == e["df1"].uuid
+
+
+def test_the_sheet_asks_before_reopening(app, tmp_path, monkeypatch):
+    p, e = build(tmp_path)
+    decision = adr(p, [e["clause"]], e["df4"])
+    approve_reallocation(p, decision)
+    editor = ElementEditor()
+    editor.edit(p, decision)
+    editor.start_editing()
+    asked = []
+    monkeypatch.setattr(QMessageBox, "question", lambda *a, **k: asked.append(a[2]) or QMessageBox.No)
+    editor.draft.set("status", "In revisione DA")
+    editor.dirty = True
+    assert editor.save_changes() is False and e["clause"].get("primary_domain") == e["df4"].uuid
+    assert "3.8.1.4 → DF01 Uno" in asked[0]
+    monkeypatch.setattr(QMessageBox, "question", lambda *a, **k: QMessageBox.Yes)
+    editor.save_changes()
+    assert decision.get("status") == "In revisione DA" and not e["clause"].get("primary_domain")
+    editor.deleteLater()

@@ -6,6 +6,30 @@ l'altra.
 
 ## [Non rilasciato]
 
+## [0.18.2] - 2026-11-18
+
+### Aggiunto
+- **Ricevi dal repository su più rami.** «Ricevi dal repository…» apre una finestra per scegliere quali rami di questo
+  PC aggiornare: il ramo in uso, i rami spuntati in un elenco, o tutti i rami di questo PC.
+  - Il ramo in uso riceve le versioni e le unisce alle tue, come prima.
+  - Gli altri rami prendono le versioni del repository se non ne hanno di proprie, senza cambiare ramo né file.
+  - Un riepilogo indica per ogni altro ramo cosa è successo: versioni ricevute, già aggiornato, versioni di questo
+    PC da inviare, o versioni da unire alle tue (da ricevere passando a quel ramo), oppure ramo non presente nel
+    repository.
+  - All'apertura del progetto e al cambio di ramo, la proposta di ricevere le versioni riguarda sempre il ramo in uso.
+- **Riapertura di un'ADR di riallocazione approvata.** Se lo stato di un'ADR di riallocazione (sezione o clausole) o
+  di richiesta di allocazione già approvata torna a «Proposta», «In revisione DA» o «Revisionato DA», al salvataggio
+  la decisione viene annullata.
+  - Le voci SRS tornano ai domini che avevano prima dell'approvazione: principale e contributori propri, oppure
+    quelli della loro sezione se prima non ne avevano di propri.
+  - Prima di salvare, una conferma elenca le voci e il dominio a cui tornano. Restano come sono le voci che un'altra
+    decisione ha cambiato dopo.
+  - L'esito della DA «Accolta» viene tolto, insieme alla data della decisione; l'ADR si può approvare di nuovo.
+  - Vale sia dalla scheda dell'ADR sia cambiando lo stato dalla tabella delle ADR. Lo stato «Superata» non annulla
+    la decisione.
+  - Le ADR approvate con versioni precedenti si annullano allo stesso modo, ricavando i domini precedenti da quelli
+    indicati nell'ADR.
+
 ## [0.18.1] - 2026-11-18
 
 ### Modificato
@@ -1522,7 +1546,8 @@ Prima versione pubblicata su GitLab.
 - Nome ATLAS (Arcadia Traceability, Logical Architecture Software), icona e logo.
 - Installer Windows e archivio Linux. La pipeline GitLab esegue i test e compila la versione Linux.
 
-[Non rilasciato]: https://github.com/salvodesi/ATLAS/compare/v0.18.1...main
+[Non rilasciato]: https://github.com/salvodesi/ATLAS/compare/v0.18.2...main
+[0.18.2]: https://github.com/salvodesi/ATLAS/compare/v0.18.1...v0.18.2
 [0.18.1]: https://github.com/salvodesi/ATLAS/compare/v0.18.0...v0.18.1
 [0.18.0]: https://github.com/salvodesi/ATLAS/compare/v0.17.0...v0.18.0
 [0.17.0]: https://github.com/salvodesi/ATLAS/compare/v0.16.0...v0.17.0
