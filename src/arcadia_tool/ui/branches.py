@@ -8,7 +8,8 @@ The windows do not change the project: they leave the request (`request`) to the
 discards the changes not yet published first, then moves the project and opens it again."""
 from PySide6.QtCore import Qt, QThread, Signal
 from PySide6.QtGui import QFont
-from PySide6.QtWidgets import (QAbstractItemView, QCheckBox, QComboBox, QDialog, QFormLayout, QHBoxLayout,
+from PySide6.QtWidgets import (QAbstractItemView, QCheckBox, QComboBox, QDialog, QDialogButtonBox, QFormLayout,
+                               QHBoxLayout, QListWidget, QListWidgetItem,
                                QHeaderView, QLabel, QLineEdit, QMenu, QMessageBox, QPushButton, QRadioButton, QTableWidget,
                                QTableWidgetItem, QVBoxLayout)
 
@@ -96,6 +97,47 @@ class UpdateWorker(QThread):
             self.done.emit((report, behind))
         except Exception as exc:
             self.failed.emit(f"Aggiornamento non riuscito: {exc or exc.__class__.__name__}")
+
+
+class LocalOnlyDialog(QDialog):
+    """After reading the branches of the repository: the branches of this PC it does not have (see
+    Project.local_only_branches), offered for deletion from this PC with ticks. Ticked at first only those deleted
+    from the repository with no version of their own here; those never sent, or with versions only here, are left to
+    the user. chosen(): the names ticked."""
+
+    def __init__(self, branches, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("Rami non più nel repository")
+        self.setMinimumWidth(560)
+        layout = QVBoxLayout(self)
+        intro = QLabel("Questi rami di questo PC non sono nel repository. Spunta quelli da eliminare da questo PC "
+                       "(il repository non cambia).")
+        intro.setWordWrap(True)
+        layout.addWidget(intro)
+        self.list = QListWidget(objectName="localOnlyBranches")
+        for name, gone, only_here in branches:
+            why = "eliminato dal repository" if gone else "mai inviato al repository"
+            lost = (f" · {only_here} {'versione' if only_here == 1 else 'versioni'} solo su questo PC: andrebbero perse"
+                    if only_here else "")
+            item = QListWidgetItem(icon("mdi6.source-branch-remove" if gone else "mdi6.source-branch"),
+                                   f"{name}  —  {why}{lost}")
+            item.setData(Qt.UserRole, name)
+            item.setFlags(item.flags() | Qt.ItemIsUserCheckable)
+            item.setCheckState(Qt.Checked if gone and not only_here else Qt.Unchecked)
+            self.list.addItem(item)
+        layout.addWidget(self.list)
+        buttons = QDialogButtonBox()
+        self.delete_button = buttons.addButton("Elimina da questo PC", QDialogButtonBox.AcceptRole)
+        buttons.addButton("Mantieni tutti", QDialogButtonBox.RejectRole)
+        buttons.accepted.connect(self.accept)
+        buttons.rejected.connect(self.reject)
+        layout.addWidget(buttons)
+        self.list.itemChanged.connect(lambda _item: self.delete_button.setEnabled(bool(self.chosen())))
+        self.delete_button.setEnabled(bool(self.chosen()))
+
+    def chosen(self):
+        return [self.list.item(i).data(Qt.UserRole) for i in range(self.list.count())
+                if self.list.item(i).checkState() == Qt.Checked]
 
 
 class Source:
@@ -344,6 +386,7 @@ class BranchesDialog(QDialog):
         super().__init__(parent)
         self.project, self.credentials, self.user = project, credentials, user
         self.request, self.worker, self.branches = None, None, []
+        self.known_before = set()  # the branches of the repository before reading them again (see offer_local_only)
         self.setWindowTitle("Rami del progetto")
         self.resize(1180, 560)
         url = project.remote()
@@ -539,12 +582,36 @@ class BranchesDialog(QDialog):
         self.fetch_button.setEnabled(has_remote and not busy)
         self.update_all_button.setEnabled(has_remote and not busy)
 
+    def offer_local_only(self, known_before):
+        """After reading the branches of the repository: those of this PC it does not have, offered for deletion from
+        this PC (see LocalOnlyDialog). Returns the names deleted."""
+        branches = self.project.local_only_branches(known_before)
+        if not branches:
+            return []
+        dialog = LocalOnlyDialog(branches, self)
+        if not dialog.exec():
+            return []
+        deleted = []
+        for name in dialog.chosen():
+            try:
+                self.project.delete_local_branch(name)
+                deleted.append(name)
+            except Exception as exc:
+                QMessageBox.warning(self, "Elimina ramo locale", str(exc))
+        if deleted:
+            self.fill()
+            self.status.setStyleSheet(f"color: {MUTED};")
+            self.status.setText(f"Eliminat{'o' if len(deleted) == 1 else 'i'} da questo PC: "
+                                + ", ".join(f"«{n}»" for n in deleted) + ".")
+        return deleted
+
     def update_branches(self, names=None):
         """«Aggiorna Tutto» (names None) or «Aggiorna questo ramo»: the branches take the versions of the remote, in a
         thread; then what each received, and the branch in use received if it lacks some (see _updated)."""
         if self._busy():
             return
         self._set_busy(True)
+        self.known_before = set(self.project.repository.remote_heads())
         self.status.setStyleSheet(f"color: {MUTED};")
         self.status.setText("Aggiornamento di tutti i rami dal repository…" if names is None else
                             f"Aggiornamento del ramo «{names[0]}» dal repository…" if len(names) == 1 else
@@ -573,6 +640,7 @@ class BranchesDialog(QDialog):
         self.status.setText(f"Aggiornamento completato: {count} {'ramo' if count == 1 else 'rami'}.")
         if lines:
             QMessageBox.information(self, "Aggiorna i rami", f"Esito dell'aggiornamento:\n\n{lines}")
+        self.offer_local_only(self.known_before)
         if behind and QMessageBox.question(
                 self, "Aggiorna i rami", f"Il ramo in uso «{current}» ha {behind} "
                 f"{'nuova versione' if behind == 1 else 'nuove versioni'} nel repository: si ricevono unendole alle "
@@ -583,6 +651,7 @@ class BranchesDialog(QDialog):
 
     def fetch(self):
         self._set_busy(True)
+        self.known_before = set(self.project.repository.remote_heads())
         self.status.setStyleSheet(f"color: {MUTED};")
         self.status.setText("Download dei rami del repository…")
         self.worker = FetchWorker(self.project, self.credentials)
@@ -595,6 +664,7 @@ class BranchesDialog(QDialog):
         self._set_busy(False)
         self.status.setText("Lista dei rami aggiornata: il progetto e i rami di questo PC non sono cambiati.")
         self.fill()
+        self.offer_local_only(self.known_before)
 
     def _failed(self, message):
         self.worker.wait()

@@ -29,6 +29,30 @@ def due_today(today=None):
     return checks_at_start() and settings().value(LAST_KEY, "") != (today or date.today()).isoformat()
 
 
+def tell_failed_install(parent, log=None):
+    """At the start: the last installation of an update (Linux, macOS) failed, so this is still the old version; said
+    once (the log is then renamed), with where the log is. True if said."""
+    from pathlib import Path
+
+    log = Path(log or updates.install_log())
+    text = updates.last_install_failure(log)
+    if not text:
+        return False
+    shown = log.with_name("install-failed.log")
+    try:
+        log.replace(shown)
+    except OSError:
+        shown = log
+    box = QMessageBox(QMessageBox.Warning, "Aggiornamento di ATLAS",
+                      f"L'ultimo aggiornamento non è stato installato: è in uso ancora la versione {__version__}.",
+                      parent=parent)
+    box.setInformativeText("Puoi riprovare da Info › Verifica aggiornamenti…, oppure scaricare la nuova versione "
+                           f"dalla pagina delle release.\n\nRegistro dell'installazione: {shown}")
+    box.setDetailedText(text)
+    box.exec()
+    return True
+
+
 class CheckWorker(QThread):
     found = Signal(object)
     failed = Signal(str)

@@ -114,8 +114,53 @@ def test_the_linux_archive_must_hold_the_folder_of_ATLAS(tmp_path):
     for bad in (["ATLAS/other"], ["ATLAS/ATLAS", "../etc/passwd"], ["ATLAS/ATLAS", "elsewhere/x"]):
         with pytest.raises(updates.UpdateError):
             updates.check_archive(archive("bad.tar.gz", bad))
-    script = updates.linux_script(tmp_path / "a.tar.gz", tmp_path / "opt" / "ATLAS", 1234)
-    assert "kill -0 1234" in script and "nohup" in script  # waits for ATLAS to close, then starts it again
+    script = updates.linux_script("/tmp/a.tar.gz", "/opt/ATLAS", 1234, "/tmp/install.log", "9.9.9")
+    assert "kill -0 1234" in script and "nohup /opt/ATLAS/ATLAS " in script  # waits for ATLAS, starts it again
+    assert "/proc/1234/status" in script  # a zombie counts as closed
+    assert "LOG=/tmp/install.log" in script and "ERRORE" in script and "9.9.9" in script  # every step logged
+    assert "mv /opt/.ATLAS.old /opt/ATLAS" in script  # the old version put back if the new one cannot be
+
+
+def test_the_linux_installation_outlives_the_scope_of_atlas(tmp_path):
+    """A desktop that starts ATLAS in a systemd scope stops everything in it when ATLAS closes: the script runs in a
+    scope of its own, or in a plain shell when systemd-run is not there (or fails)."""
+    command = updates.linux_launcher("/tmp/install.sh", which=lambda name: "/usr/bin/systemd-run")
+    assert command[:2] == ["/bin/sh", "-c"]
+    assert command[2] == ("systemd-run --user --scope --quiet --collect /bin/sh /tmp/install.sh || "
+                          "exec /bin/sh /tmp/install.sh")
+    assert updates.linux_launcher("/tmp/install.sh", which=lambda name: None) == [
+        "/bin/sh", "-c", "exec /bin/sh /tmp/install.sh"]
+    started = []
+    archive = tmp_path / "ATLAS-9.9.9-linux-x86_64.tar.gz"
+    with tarfile.open(archive, "w:gz") as tar:
+        info = tarfile.TarInfo("ATLAS/ATLAS")
+        info.size = 1
+        tar.addfile(info, io.BytesIO(b"x"))
+    import sys
+    from unittest import mock
+    with mock.patch.object(sys, "frozen", True, create=True), \
+            mock.patch.object(sys, "executable", str(tmp_path / "opt" / "ATLAS" / "ATLAS")):
+        updates.start_install(archive, platform="linux", popen=lambda command, **kw: started.append((command, kw)))
+    command, kw = started[0]
+    assert command[0] == "/bin/sh" and "install.sh" in command[2] and kw["start_new_session"]
+    script = (tmp_path / "install.sh").read_text(encoding="utf-8")
+    assert "9.9.9" in script and "install.log" in script
+
+
+def test_a_failed_installation_is_said_once_at_the_start(app, tmp_path, monkeypatch):
+    from arcadia_tool.ui import updates as updates_ui
+
+    log = tmp_path / "install.log"
+    assert not updates_ui.tell_failed_install(None, log)  # no log: nothing
+    log.write_text("2026-11-26 OK\n", encoding="utf-8")
+    assert not updates_ui.tell_failed_install(None, log)  # it went well
+    log.write_text("2026-11-26 ERRORE: archivio non estratto\n", encoding="utf-8")
+    shown = []
+    monkeypatch.setattr(updates_ui.QMessageBox, "exec", lambda box: shown.append(box.detailedText()))
+    assert updates_ui.tell_failed_install(None, log)
+    assert "archivio non estratto" in shown[0]
+    assert not log.exists() and (tmp_path / "install-failed.log").exists()
+    assert not updates_ui.tell_failed_install(None, log)  # said once
 
 
 def test_the_macos_app_for_apple_silicon(tmp_path):

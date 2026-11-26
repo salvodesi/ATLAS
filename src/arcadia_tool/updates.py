@@ -8,6 +8,7 @@ import os
 import platform as _machine
 import re
 import shlex
+import shutil
 import subprocess
 import sys
 import tarfile
@@ -15,7 +16,7 @@ import tempfile
 import urllib.request
 import zipfile
 from dataclasses import dataclass
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 
 from arcadia_tool import __version__
 
@@ -208,20 +209,67 @@ def installer_command(path):
     return [str(path), "/SILENT", "/SUPPRESSMSGBOXES", "/NORESTART", "/CLOSEAPPLICATIONS", "/RELAUNCH=1"]
 
 
-def linux_script(archive, folder, pid):
-    """Shell script: waits for ATLAS (pid) to close, puts the folder of the archive in place of the installed one
-    (the old one kept until the new one is there), starts ATLAS again."""
-    folder = Path(folder)
+def install_log():
+    """The log of the last installation on Linux and macOS (what the script did, or where it stopped)."""
+    return download_folder() / "install.log"
+
+
+def linux_script(archive, folder, pid, log=None, version=""):
+    """Shell script: waits for ATLAS (pid) to close (a zombie counts as closed; at most 2 minutes), puts the folder of
+    the archive in place of the installed one (the old one kept until the new one is there, and put back if the new
+    one cannot be), starts ATLAS again. Every step is written in the log; a failure ends with «ERRORE» there (see
+    last_install_failure). It always ends with 0: the launcher falls back to a plain shell only when it could not
+    start the script at all."""
+    folder = PurePosixPath(folder)  # a path of Linux (also when the script is written elsewhere, e.g. in a test)
     new, old = folder.parent / f".{folder.name}.new", folder.parent / f".{folder.name}.old"
+    log = PurePosixPath(log or install_log())
     q = shlex.quote
     return f"""#!/bin/sh
-while kill -0 {pid} 2>/dev/null; do sleep 0.5; done
+LOG={q(str(log))}
+say() {{ echo "$(date '+%Y-%m-%d %H:%M:%S') $*" >> "$LOG"; }}
+fail() {{ say "ERRORE: $*"; exit 0; }}
+: > "$LOG"
+say "Aggiornamento di ATLAS alla versione {version}: attesa della chiusura (pid {pid})"
+n=0
+while kill -0 {pid} 2>/dev/null && ! grep -q '^State:[[:space:]]*Z' /proc/{pid}/status 2>/dev/null; do
+  n=$((n + 1)); [ $n -ge 240 ] && break; sleep 0.5
+done
+say "ATLAS chiuso; estrazione di {q(str(archive))}"
 rm -rf {q(str(new))} {q(str(old))}
-mkdir -p {q(str(new))} && tar -xzf {q(str(archive))} -C {q(str(new))} || exit 1
-mv {q(str(folder))} {q(str(old))} && mv {q(str(new / 'ATLAS'))} {q(str(folder))} || {{ mv {q(str(old))} {q(str(folder))}; exit 1; }}
+mkdir -p {q(str(new))} || fail "cartella {q(str(new))} non creata"
+tar -xzf {q(str(archive))} -C {q(str(new))} >> "$LOG" 2>&1 || fail "archivio non estratto"
+[ -x {q(str(new / 'ATLAS' / 'ATLAS'))} ] || fail "eseguibile mancante nell'archivio"
+mv {q(str(folder))} {q(str(old))} >> "$LOG" 2>&1 || fail "cartella installata non spostata"
+if ! mv {q(str(new / 'ATLAS'))} {q(str(folder))} >> "$LOG" 2>&1; then
+  mv {q(str(old))} {q(str(folder))}; fail "nuova versione non messa al suo posto: ripristinata la precedente"
+fi
 rm -rf {q(str(new))} {q(str(old))} {q(str(archive))}
+say "Installata in {q(str(folder))}; avvio della nuova versione"
+cd "$HOME" 2>/dev/null
 nohup {q(str(folder / 'ATLAS'))} >/dev/null 2>&1 &
+say "OK"
+exit 0
 """
+
+
+def linux_launcher(script, which=shutil.which):
+    """The command that runs the script of the installation so that it outlives ATLAS: in a scope of its own of the
+    user's systemd (a desktop that starts ATLAS in a systemd scope stops everything in it when ATLAS closes, the
+    script too), falling back to a plain shell if systemd-run is not there or cannot create the scope."""
+    q = shlex.quote
+    plain = f"exec /bin/sh {q(str(script))}"
+    if which("systemd-run"):
+        return ["/bin/sh", "-c", f"systemd-run --user --scope --quiet --collect /bin/sh {q(str(script))} || {plain}"]
+    return ["/bin/sh", "-c", plain]
+
+
+def last_install_failure(log=None):
+    """The log of an installation that failed (its text), or "" (none, or it went well)."""
+    try:
+        text = Path(log or install_log()).read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return ""
+    return text if "ERRORE" in text else ""
 
 
 def macos_script(archive, bundle, pid):
@@ -282,8 +330,10 @@ def start_install(path, platform=None, popen=subprocess.Popen):
         else:
             check_archive(path)
             script = Path(path).with_name("install.sh")
-            script.write_text(linux_script(path, app_folder(), os.getpid()), encoding="utf-8")
-            popen(["/bin/sh", str(script)], start_new_session=True, close_fds=True,
+            version = re.search(r"ATLAS-(.+?)-linux", Path(path).name)
+            script.write_text(linux_script(path, app_folder(), os.getpid(), Path(path).with_name("install.log"),
+                                           version.group(1) if version else ""), encoding="utf-8")
+            popen(linux_launcher(script), start_new_session=True, close_fds=True, stdin=subprocess.DEVNULL,
                   stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     except OSError as exc:
         raise UpdateError(f"Installazione non avviata: {exc}") from exc

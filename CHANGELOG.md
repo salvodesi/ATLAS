@@ -12,7 +12,6 @@ l'altra.
 - **ADR di assegnazione dall'albero del modello.** Il clic destro su un requisito derivato offre, sotto «Nuovo: Requisito
   derivato», la voce «Nuova ADR: Assegnazione di requisito derivato», che crea l'ADR già compilata con il requisito e
   la apre.
-
 - **Chi modifica il ramo principale, dalla scheda dei team (EPBS-1).** Nella tabella dei membri una spunta «Ramo
   principale» (anche nella finestra del membro) indica chi può pubblicare, inviare e integrare sul ramo principale.
   Finché nessun membro è spuntato vale la regola di prima (i membri della Design Authority); se qualcuno è spuntato,
@@ -21,6 +20,11 @@ l'altra.
   è salvata la chiave privata, apre la sua cartella, copia la chiave pubblica e permette di generarne una nuova o di
   sceglierne una esistente (applicata con «Salva»). Le chiavi generate hanno nel nome il server, così una nuova chiave
   non sostituisce quella di un altro server.
+- **Rami locali non più nel repository.** Dopo «Aggiorna Lista» (e «Aggiorna Tutto») nella finestra «Rami», i rami di
+  questo PC che il repository non ha vengono proposti per l'eliminazione da questo PC, con una spunta ciascuno. Sono
+  spuntati in partenza solo quelli eliminati dal repository senza versioni proprie; quelli mai inviati, o con versioni
+  presenti solo su questo PC (che andrebbero perse), sono indicati e lasciati alla scelta dell'utente. Il ramo in uso e
+  il ramo principale non sono proposti.
 
 ### Modificato
 - **Impostazioni delle schede Arcadia per utente.** La scelta di Progetto › Genera › Impostazioni… (artefatti, ADR,
@@ -58,6 +62,14 @@ l'altra.
   repository».
 - **Nessuna domanda di cancellazione del ramo dopo l'integrazione.** Dopo «Integra» non viene più chiesto se cancellare
   il ramo integrato: si cancella, se si vuole, dalla finestra «Rami».
+
+### Corretto
+- **Aggiornamento automatico su Linux.** L'installazione della nuova versione non si interrompe più alla chiusura di
+  ATLAS: i desktop che avviano ATLAS in uno «scope» di systemd terminavano, insieme ad ATLAS, anche lo script di
+  installazione, che restava fermo prima di sostituire la cartella (si riapriva la versione precedente). Lo script parte
+  ora in uno scope suo (`systemd-run --user --scope`, o una shell separata dove systemd non c'è), considera chiuso
+  ATLAS anche se resta come processo «zombie», e registra ogni passo in un log; se l'installazione non riesce, la
+  versione installata resta com'era e al successivo avvio ATLAS lo segnala, indicando il log.
 
 ## [0.18.2] - 2026-11-18
 

@@ -623,3 +623,53 @@ def test_the_window_of_the_branches_updates_all_of_them_or_one(app, server, monk
     assert dialog.request == ("receive",)
     menu.deleteLater()
     dialog.deleteLater()
+
+
+def test_reading_the_branches_offers_to_delete_those_no_longer_in_the_repository(app, server, monkeypatch):
+    from arcadia_tool.ui import branches
+
+    url, download, reopen = server
+    mine = download("mine")
+    main = mine.current_branch()
+    for name in ("att/inviato", "att/con-lavoro"):
+        mine.switch_branch(name, mine.versions()[0].sha)
+        mine = reopen(mine)
+        mine.push()
+    mine.new_element("domain", name="Solo qui")
+    mine.publish("solo qui", AUTHOR)  # att/con-lavoro: one version not sent
+    mine.switch_branch(main)
+    mine = reopen(mine)
+    mine.switch_branch("att/nuovo", mine.versions()[0].sha)  # never sent
+    mine = reopen(mine)
+    mine.switch_branch(main)
+    mine = reopen(mine)
+    colleague = download("colleague")
+    colleague.fetch_branches()
+    for name in ("att/inviato", "att/con-lavoro"):
+        colleague.delete_remote_branch(name)  # deleted from the repository by someone else
+    shown = []
+
+    def answer(dialog):
+        shown.append([dialog.list.item(i).text() for i in range(dialog.list.count())])
+        return True  # «Elimina da questo PC» with the ticks proposed
+    monkeypatch.setattr(branches.LocalOnlyDialog, "exec", answer)
+    dialog = branches.BranchesDialog(mine, {})
+    dialog.fetch()  # «Aggiorna Lista»
+    dialog.worker.wait(20000)
+    for _ in range(20):
+        app.processEvents()
+    texts = shown[0]
+    assert [t.split("  —  ")[0] for t in texts] == ["att/con-lavoro", "att/inviato", "att/nuovo"]  # not main
+    assert "eliminato dal repository" in texts[1] and "andrebbero perse" in texts[0]
+    assert "mai inviato" in texts[2]
+    local = mine.repository.local_heads()
+    assert "att/inviato" not in local  # deleted: gone from the repository, nothing of its own
+    assert "att/con-lavoro" in local and "att/nuovo" in local  # not ticked: kept
+    assert "att/inviato" in dialog.status.text()
+    shown.clear()
+    dialog.fetch()  # again: those kept are offered again, none ticked now
+    dialog.worker.wait(20000)
+    for _ in range(20):
+        app.processEvents()
+    assert len(shown) == 1 and set(mine.repository.local_heads()) >= {"att/con-lavoro", "att/nuovo"}
+    dialog.deleteLater()

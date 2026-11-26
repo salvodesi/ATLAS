@@ -119,7 +119,11 @@ def main():
     present = {a["name"]: a for a in release.get("assets", [])}
     for path in (installer, installer.with_name(installer.name + ".sha256")):
         old = present.get(path.name)
-        if path.is_file() and old is not None and old["size"] != path.stat().st_size:  # rebuilt: replaced
+        # Rebuilt: replaced. By its fingerprint (GitHub gives «sha256:…»), not only by its size: the «.sha256» of a
+        # new build has the same size as the old one.
+        digest = "sha256:" + hashlib.sha256(path.read_bytes()).hexdigest() if path.is_file() else ""
+        if path.is_file() and old is not None and (old["size"] != path.stat().st_size or
+                                                   (old.get("digest") or digest) != digest):
             call("DELETE", f"{API}/releases/assets/{old['id']}")
             print(" ", tag, "sostituito", path.name)
             old = None

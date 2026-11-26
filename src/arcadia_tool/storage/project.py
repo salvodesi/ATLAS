@@ -652,6 +652,18 @@ class Project:
         others = [h for n, h in local.items() if n != name] + list(remote.values())
         return self.repository.versions_between(others, local[name])
 
+    def local_only_branches(self, known_before=()):
+        """The branches of this PC that the remote (as last downloaded) does not have, but the one in use and the main
+        branch: [(name, gone, versions only here)]. gone: the remote had it (known_before: its branches before the
+        download) and no longer has it, i.e. deleted there; else never sent from here."""
+        remote, current, main = set(self.repository.remote_heads()), self.current_branch(), self.main_branch()
+        result = []
+        for name in sorted(self.repository.local_heads(), key=str.lower):
+            if name in remote or name in (current, main):
+                continue
+            result.append((name, name in known_before, len(self.versions_only_on_local_branch(name))))
+        return result
+
     def delete_local_branch(self, name):
         """The branch `name` no longer on this PC; the one of the remote, if any, stays. Not the branch in use."""
         if name == self.current_branch():

@@ -2523,7 +2523,9 @@ class MainWindow(QMainWindow):
     # --- updates of ATLAS ---------------------------------------------------------------------------
 
     def check_updates_at_start(self):
-        """At the start, at most once a day and if not turned off: a new version shows its window."""
+        """At the start, at most once a day and if not turned off: a new version shows its window. Before, an
+        installation that failed (Linux, macOS) is said once, with its log."""
+        updates_ui.tell_failed_install(self)
         if updates_ui.due_today():
             self.updates.start()
 
