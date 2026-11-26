@@ -198,7 +198,8 @@ class ReceiveDialog(QDialog):
         self.receive, self.worker, self._lookup = None, None, None
         self.applied = self.merged = self.publish_first = False
         self.result = None
-        self.setWindowTitle("Integra ramo" if integrate else "Ricevi dal repository")
+        self.setWindowTitle("Integra ramo" if integrate else
+                            f"Ricevi dal repository · ramo in uso «{project.current_branch()}»")
         self.resize(980, 380)
         url, branch = project.remote(), project.push_branch()
         title = QLabel(f"Integrazione del ramo «{integrate[0]}» nel ramo in uso «{project.current_branch()}»"
@@ -209,9 +210,18 @@ class ReceiveDialog(QDialog):
         self.status.setWordWrap(True)
         self.bar = QProgressBar()
         self.bar.setRange(0, 0)
-        self.versions = QLabel(objectName="muted")
-        self.versions.setWordWrap(True)
-        self.versions.setTextFormat(Qt.RichText)
+        self.versions = QLabel(objectName="formLabel")  # «N versioni ricevute», over their list
+        self.versions.setVisible(False)
+        self.version_list = QTreeWidget(objectName="receivedVersions")
+        self.version_list.setHeaderLabels(["Versione", "Autore", "Data"])
+        self.version_list.setRootIsDecorated(False)
+        self.version_list.setAlternatingRowColors(True)
+        self.version_list.setMaximumHeight(160)
+        self.version_list.header().setSectionResizeMode(0, QHeaderView.Stretch)
+        for column in (1, 2):
+            self.version_list.header().setSectionResizeMode(column, QHeaderView.ResizeToContents)
+        self.version_list.header().setStretchLastSection(False)
+        self.version_list.setVisible(False)
         self.conflicts = QTableWidget(0, 4)
         self.conflicts.setHorizontalHeaderLabels(["Scheda e campo", "Su questo PC", "Ricevuto", "Scelta"])
         header = self.conflicts.horizontalHeader()
@@ -284,7 +294,7 @@ class ReceiveDialog(QDialog):
         layout = QVBoxLayout(self)
         layout.setContentsMargins(20, 16, 20, 16)
         layout.setSpacing(10)
-        for w in (title, self.bar, self.status, self.versions):
+        for w in (title, self.bar, self.status, self.versions, self.version_list):
             layout.addWidget(w)
         # Integra: the preview of the result (the branch in use → after the merge, as in «Pubblica»), over the
         # conflicts left to the user; it follows the choices.
@@ -385,6 +395,18 @@ class ReceiveDialog(QDialog):
 
     # --- what is received -------------------------------------------------------------------------
 
+    def _show_versions(self, versions):
+        """The versions received, newest first, one per row: title, author, date."""
+        count = len(versions)
+        self.versions.setText(f"{count} {'versione ricevuta' if count == 1 else 'versioni ricevute'}")
+        self.version_list.clear()
+        for v in versions:
+            row = QTreeWidgetItem([v.title, v.author.split("<")[0].strip(), f"{v.timestamp:%d/%m/%Y %H:%M}"])
+            row.setToolTip(0, v.title)
+            self.version_list.addTopLevelItem(row)
+        self.versions.setVisible(bool(count))
+        self.version_list.setVisible(bool(count))
+
     def show_receive(self, receive):
         if self.worker is not None:
             self.worker.wait()
@@ -414,9 +436,7 @@ class ReceiveDialog(QDialog):
                                 "creato.")
             return
         count = len(receive.incoming)
-        self.versions.setText(f"<b>{count} {'versione ricevuta' if count == 1 else 'versioni ricevute'}</b>: " +
-                              "; ".join(f"{v.title} ({v.author.split('<')[0].strip()}, {v.timestamp:%d/%m %H:%M})"
-                                        for v in receive.incoming[:8]) + ("…" if count > 8 else ""))
+        self._show_versions(receive.incoming)
         if receive.state == Receive.PUBLISH_FIRST:
             self.status.setText("Sia tu sia i colleghi avete pubblicato nuove versioni, e qui ci sono modifiche "
                                 "non ancora pubblicate. Pubblicale prima: poi le versioni vengono integrate in una "

@@ -46,7 +46,8 @@ def text_of(model, element, field, computed=None):
     if field.type == MAP:
         return ", ".join(f"{k}: {v}" for k, v in value.items() if v)
     if field.type == TABLE:
-        return "\n".join(" · ".join(str(row.get(c.name) or "") for c in field.columns) for row in value)
+        return "\n".join(" · ".join(("Sì" if row.get(c.name) else "") if c.type == BOOL else str(row.get(c.name) or "")
+                                    for c in field.columns) for row in value)
     return plain(str(value))
 
 
@@ -63,6 +64,8 @@ def table_rows(model, element, field):
                 cells.append(short(model, value) or str(value or ""))
             elif isinstance(value, (list, tuple)):  # e.g. the IDs of the accounts of a member, one per PC
                 cells.append(", ".join(map(str, value)))
+            elif column.type == BOOL:  # e.g. «Invia sul ramo principale» of a member
+                cells.append("Sì" if value else "")
             else:
                 cells.append(str(value or ""))
         rows.append(cells)

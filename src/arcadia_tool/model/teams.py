@@ -14,6 +14,9 @@ import unicodedata
 DA_FIELD = "design_authority"
 MEMBERS = "members"
 ACCOUNT = "account"  # the ID of the local account of a member: one, or a list (one per PC the person works on)
+# A member who may send to the main branch (publish, send, integrate on it): ticked in the sheet of the team. While no
+# member of any team is ticked, the members of the Design Authority may (see main_denied).
+MAIN_PUSH = "main_push"
 
 
 def da_teams(model):
@@ -138,15 +141,31 @@ def is_da_member(model, user):
     return team is not None and is_member(team, user)
 
 
+def main_pushers(model):
+    """The members (team, row) ticked in the sheets of the teams as those who may send to the main branch."""
+    return [(t, r) for t in model.of_kind("team") for r in member_rows(t) if r.get(MAIN_PUSH)]
+
+
 def main_denied(model, user, main):
     """Why the user may not change the main branch `main` (publish on it, send versions to it, merge into it with
-    Rami › Integra or with Ricevi, bring it back to a version), or None: only the members of the Design Authority;
-    while no DA team has members yet, anyone (as edit_denied)."""
+    Rami › Integra or with Ricevi, bring it back to a version), or None: the members ticked in the sheets of the teams
+    («Invia sul ramo principale», of any team, also of the DA); while none is ticked, the members of the Design
+    Authority; while no DA team has members yet, anyone (as edit_denied)."""
+    pushers = main_pushers(model)
+    if pushers:
+        if user is not None and row_of([r for _t, r in pushers], user) is not None:
+            return None
+        names = ", ".join(r.get("name") or "?" for _t, r in pushers)
+        return (f"Solo i membri indicati nelle schede dei team modificano il ramo principale «{main}» (pubblica, invia, "
+                f"integra): {names}. Chiedi a uno di loro di eseguire l'operazione, oppure lavora su un ramo tuo e "
+                f"chiedi di integrarlo; puoi integrare «{main}» nel tuo ramo, per aggiornarlo.")
     da = design_authority(model)
     if da is None or not member_rows(da) or (user is not None and is_member(da, user)):
         return None
-    return (f"Solo la Design Authority modifica il ramo principale «{main}» (pubblica, invia, integra). Lavora "
-            f"su un ramo tuo e chiedi alla DA di integrarlo; puoi integrare «{main}» nel tuo ramo, per aggiornarlo.")
+    names = ", ".join(member_names(da)) or "nessuno"
+    return (f"Solo la Design Authority modifica il ramo principale «{main}» (pubblica, invia, integra): {names}. "
+            f"Chiedi a uno di loro di eseguire l'operazione, oppure lavora su un ramo tuo e chiedi alla DA di "
+            f"integrarlo; puoi integrare «{main}» nel tuo ramo, per aggiornarlo.")
 
 
 # --- who may change the teams ------------------------------------------------------------------------------------

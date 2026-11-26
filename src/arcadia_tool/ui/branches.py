@@ -1,5 +1,6 @@
-"""Versioni › Rami: the branches of the project, on this PC and on the remote (as last downloaded, «Aggiorna dal
-repository»). A new branch starts from a chosen version of any branch; the project moves to a branch, or one of
+"""Versioni › Rami: the branches of the project, on this PC and on the remote (as last downloaded, «Aggiorna Lista»);
+«Aggiorna Tutto», or the right click on a branch, brings the branches of this PC up to the remote (those only there
+downloaded). A new branch starts from a chosen version of any branch; the project moves to a branch, or one of
 the remote, or the whole model to a version of one (restored on the branch, or the branch brought back to it); the
 history of every branch, and the comparison between branches (also those of the remote, and the working state).
 
@@ -8,7 +9,7 @@ discards the changes not yet published first, then moves the project and opens i
 from PySide6.QtCore import Qt, QThread, Signal
 from PySide6.QtGui import QFont
 from PySide6.QtWidgets import (QAbstractItemView, QCheckBox, QComboBox, QDialog, QFormLayout, QHBoxLayout,
-                               QHeaderView, QLabel, QLineEdit, QMessageBox, QPushButton, QRadioButton, QTableWidget,
+                               QHeaderView, QLabel, QLineEdit, QMenu, QMessageBox, QPushButton, QRadioButton, QTableWidget,
                                QTableWidgetItem, QVBoxLayout)
 
 from arcadia_tool.accounts import git_host
@@ -65,6 +66,34 @@ class FetchWorker(QThread):
         try:
             self.project.fetch_branches(**self.credentials)
             self.done.emit()
+        except Exception as exc:
+            self.failed.emit(f"Aggiornamento non riuscito: {exc or exc.__class__.__name__}")
+
+
+class UpdateWorker(QThread):
+    """«Aggiorna Tutto» or «Aggiorna questo ramo»: the remote downloaded, then the branches (`names`, or all of them)
+    updated with Project.update_local_branches. done((report, behind)): behind, the versions of the remote the branch
+    in use lacks (to receive with Ricevi, which merges), None if it is not among them or not on the remote."""
+    done = Signal(object)
+    failed = Signal(str)
+
+    def __init__(self, project, credentials, names=None):
+        super().__init__()
+        self.project, self.credentials, self.names = project, credentials, names
+
+    def run(self):
+        try:
+            p = self.project
+            heads = p.fetch_branches(**self.credentials)
+            names = sorted(p.receivable_branches()) if self.names is None else list(self.names)
+            current = p.current_branch()
+            report = p.update_local_branches([n for n in names if n != current], heads)
+            behind = None
+            mine, theirs = p.repository.local_heads().get(current), heads.get(current)
+            if current in names and theirs:
+                behind = 0 if mine and p.repository.is_ancestor(theirs, mine) else len(
+                    p.repository.versions_between(mine, theirs))
+            self.done.emit((report, behind))
         except Exception as exc:
             self.failed.emit(f"Aggiornamento non riuscito: {exc or exc.__class__.__name__}")
 
@@ -321,10 +350,16 @@ class BranchesDialog(QDialog):
         title = QLabel(f"Rami del progetto · repository {git_host(url) or url}" if url else
                        "Rami del progetto (nessun repository remoto)", objectName="cardTitle")
         self.fetched = QLabel(objectName="muted")
-        self.fetch_button = QPushButton(icon("mdi6.cloud-sync-outline"), "Aggiorna dal repository")
-        self.fetch_button.setToolTip("Scarica i rami del repository senza cambiare il progetto")
+        self.fetch_button = QPushButton(icon("mdi6.cloud-sync-outline"), "Aggiorna Lista")
+        self.fetch_button.setToolTip("Rilegge i rami del repository, senza cambiare il progetto né i rami di questo PC")
         self.fetch_button.setEnabled(bool(url))
         self.fetch_button.clicked.connect(self.fetch)
+        self.update_all_button = QPushButton(icon("mdi6.cloud-download-outline"), "Aggiorna Tutto")
+        self.update_all_button.setToolTip("Aggiorna tutti i rami di questo PC con le versioni del repository e scarica "
+                                          "quelli che sono solo nel repository; il ramo in uso si riceve poi come con "
+                                          "«Ricevi dal repository». Clic destro su un ramo: solo quello.")
+        self.update_all_button.setEnabled(bool(url))
+        self.update_all_button.clicked.connect(lambda _=False: self.update_branches())
         self.which = QComboBox()
         for key, label in SHOW:
             self.which.addItem(icon({"all": "mdi6.source-branch", "local": "mdi6.laptop",
@@ -338,6 +373,7 @@ class BranchesDialog(QDialog):
         top.addStretch()
         top.addWidget(self.fetched)
         top.addWidget(self.fetch_button)
+        top.addWidget(self.update_all_button)
 
         self.table = QTableWidget(0, len(BRANCH_COLUMNS))
         self.table.setHorizontalHeaderLabels([t for t, _ in BRANCH_COLUMNS])
@@ -354,6 +390,9 @@ class BranchesDialog(QDialog):
                 header.resizeSection(c, width)
         self.table.itemSelectionChanged.connect(self._update)
         self.table.doubleClicked.connect(lambda _index: self.history())
+        self.table.setContextMenuPolicy(Qt.CustomContextMenu)
+        self.table.customContextMenuRequested.connect(self._context_menu)
+        self.menu = None
 
         self.switch_button = QPushButton(icon("mdi6.source-branch-check"), "Passa a questo ramo")
         self.switch_button.clicked.connect(self.switch)
@@ -448,7 +487,7 @@ class BranchesDialog(QDialog):
             self.table.selectRow(current)
         else:
             self.status.setStyleSheet(f"color: {MUTED};")
-            self.status.setText("Nessun ramo nel repository: usa «Aggiorna dal repository»." if mode == "remote"
+            self.status.setText("Nessun ramo nel repository: usa «Aggiorna Lista»." if mode == "remote"
                                 else "Nessun ramo da mostrare.")
         self._update()
 
@@ -474,8 +513,76 @@ class BranchesDialog(QDialog):
 
     # --- the repository -------------------------------------------------------------------------------
 
+    def branch_menu(self, row):
+        """The menu of the right click on a branch: «Aggiorna questo ramo» (see update_branches)."""
+        b = self.branches[row]
+        self.table.selectRow(row)
+        menu = QMenu(self)
+        action = menu.addAction(icon("mdi6.cloud-download-outline"),
+                                "Aggiorna questo ramo (ramo in uso)" if b.current else "Aggiorna questo ramo",
+                                lambda _=False, name=b.name: self.update_branches([name]))
+        action.setEnabled(bool(self.project.remote()) and not self._busy())
+        return menu
+
+    def _context_menu(self, pos):
+        row = self.table.rowAt(pos.y())
+        if row < 0 or row >= len(self.branches):
+            return
+        self.menu = self.branch_menu(row)
+        self.menu.popup(self.table.viewport().mapToGlobal(pos))
+
+    def _busy(self):
+        return self.worker is not None and self.worker.isRunning()
+
+    def _set_busy(self, busy):
+        has_remote = bool(self.project.remote())
+        self.fetch_button.setEnabled(has_remote and not busy)
+        self.update_all_button.setEnabled(has_remote and not busy)
+
+    def update_branches(self, names=None):
+        """«Aggiorna Tutto» (names None) or «Aggiorna questo ramo»: the branches take the versions of the remote, in a
+        thread; then what each received, and the branch in use received if it lacks some (see _updated)."""
+        if self._busy():
+            return
+        self._set_busy(True)
+        self.status.setStyleSheet(f"color: {MUTED};")
+        self.status.setText("Aggiornamento di tutti i rami dal repository…" if names is None else
+                            f"Aggiornamento del ramo «{names[0]}» dal repository…" if len(names) == 1 else
+                            f"Aggiornamento di {len(names)} rami dal repository…")
+        self.worker = UpdateWorker(self.project, self.credentials, names)
+        self.worker.done.connect(self._updated)
+        self.worker.failed.connect(self._failed)
+        self.worker.start()
+
+    def _updated(self, result):
+        from arcadia_tool.ui.receive_choice import branches_report
+
+        self.worker.wait()
+        self._set_busy(False)
+        report, behind = result
+        self.fill()
+        current = self.project.current_branch()
+        lines = branches_report(report)
+        if behind is not None:
+            mine = f"• {current} (in uso): " + ("già aggiornato" if not behind else
+                                                f"{behind} {'nuova versione' if behind == 1 else 'nuove versioni'} "
+                                                "nel repository")
+            lines = "\n".join(line for line in (mine, lines) if line)
+        count = len(report) + (behind is not None)
+        self.status.setStyleSheet(f"color: {MUTED};")
+        self.status.setText(f"Aggiornamento completato: {count} {'ramo' if count == 1 else 'rami'}.")
+        if lines:
+            QMessageBox.information(self, "Aggiorna i rami", f"Esito dell'aggiornamento:\n\n{lines}")
+        if behind and QMessageBox.question(
+                self, "Aggiorna i rami", f"Il ramo in uso «{current}» ha {behind} "
+                f"{'nuova versione' if behind == 1 else 'nuove versioni'} nel repository: si ricevono unendole alle "
+                "tue, come con «Ricevi dal repository». Riceverle ora? (la finestra dei rami si chiude)") \
+                == QMessageBox.Yes:
+            self.request = ("receive",)
+            self.accept()
+
     def fetch(self):
-        self.fetch_button.setEnabled(False)
+        self._set_busy(True)
         self.status.setStyleSheet(f"color: {MUTED};")
         self.status.setText("Download dei rami del repository…")
         self.worker = FetchWorker(self.project, self.credentials)
@@ -485,13 +592,13 @@ class BranchesDialog(QDialog):
 
     def _fetched(self):
         self.worker.wait()
-        self.fetch_button.setEnabled(True)
-        self.status.setText("Rami del repository aggiornati: il progetto non è cambiato.")
+        self._set_busy(False)
+        self.status.setText("Lista dei rami aggiornata: il progetto e i rami di questo PC non sono cambiati.")
         self.fill()
 
     def _failed(self, message):
         self.worker.wait()
-        self.fetch_button.setEnabled(True)
+        self._set_busy(False)
         self.status.setStyleSheet("color: #B42318;")
         self.status.setText(message)
 

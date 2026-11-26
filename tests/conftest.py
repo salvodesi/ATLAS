@@ -82,6 +82,16 @@ def optional_fields(monkeypatch):
 
 
 @pytest.fixture(autouse=True)
+def update_checks_ended():
+    """The checks of the updates started in the background by a project opened (ui.update_check) end with their
+    test: a thread still running when Python exits would crash it."""
+    yield
+    from arcadia_tool.ui.update_check import _RUNNING
+    for check in list(_RUNNING):
+        check.wait(20000)
+
+
+@pytest.fixture(autouse=True)
 def deferred_deletes():
     """The widgets destroyed later (deleteLater, e.g. a page rebuilt from one of its signals) are destroyed after
     the test, as the event loop of the application does: they don't pile up until Python exits."""

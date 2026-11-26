@@ -574,7 +574,7 @@ KINDS = (
         # Each member with the ID of their local account, written by the DA (see model.teams).
         Field("members", "Membri del team", TABLE, columns=(
             Column("name", "Nome e cognome"), Column("email", "E-mail"), Column("role", "Ruolo"),
-            Column("account", "ID account"))),
+            Column("account", "ID account"), Column("main_push", "Invia sul ramo principale", BOOL))),
         Field("referent", "Referente", choices_from="members"),
         Field("independent_verifier", "Verificatore indipendente"),
         Field("notes", "Note", TEXT),

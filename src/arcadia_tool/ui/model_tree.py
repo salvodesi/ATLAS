@@ -799,6 +799,14 @@ class ModelTree(QFrame):
                              lambda _=False: self.create(kind))
         new.setEnabled(not locked and not denied)
         new.setToolTip(denied or "")
+        if kind == "derived_requirement" and uuid:
+            from arcadia_tool.model.schema import ADR_DERIVED
+            adr_denied = self.edit_denied("adr") if self.edit_denied else None
+            assign = menu.addAction(kind_icon("adr"), f"Nuova ADR: {ADR_DERIVED}",
+                                    lambda _=False: self.new_derived_adr(uuid))
+            assign.setEnabled(not adr_denied)
+            assign.setToolTip(adr_denied or "Crea un'ADR già compilata per assegnare il requisito a un dominio")
+            menu.setToolTipsVisible(True)
         if kind == "domain" and uuid:
             menu.addAction(icon("mdi6.target"), "Apri la vista di contesto",
                            lambda _=False: self.breakdown_requested.emit(CONTEXT + uuid))
@@ -1030,6 +1038,15 @@ class ModelTree(QFrame):
         self.element_created.emit(element.uuid)  # before its sheet opens (with the selection)
         self.reload(select_uuid=element.uuid)
         self.model_changed.emit()
+
+    def new_derived_adr(self, uuid):
+        """«Nuova ADR: Assegnazione di requisito derivato» of a derived requirement: the ADR created about it, filled
+        from it, and opened."""
+        from arcadia_tool.model.adr import new_adr_values
+        from arcadia_tool.model.schema import ADR_DERIVED
+        element = self.project.model.get(uuid)
+        if element is not None:
+            self.create("adr", new_adr_values(self.project.model, ADR_DERIVED, element))
 
     def delete_all_requirements(self):
         uuids = [e.uuid for e in self.project.model.of_kind("requirement")]

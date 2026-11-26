@@ -217,15 +217,15 @@ def test_the_settings_choose_what_to_generate_and_where(app, tmp_path, monkeypat
     window._set_project(p)
     assert window.sheets_action.isEnabled() and window.sheets_settings_action.isEnabled()
     assert window.sheets_action not in window.findChildren(QToolBar)[0].actions()  # in Progetto › Genera only
-    # Without settings: «Schede Arcadia» says why, and offers them.
-    told = []
+    # Never chosen by the user: everything that can be generated, in a folder next to the project.
+    default = load_settings(p)
+    assert default["codes"] == [a.code for a in ARTIFACTS] and default["adrs"] == "all" and default["register"]
+    assert default["domains"] is None and default["folder"] == str(tmp_path / f"Documentazione {p.name}")
 
     class Box(documentation.QMessageBox):
         def exec(self):
-            told.append(self.text())
             return 0
     monkeypatch.setattr(documentation, "QMessageBox", Box)
-    assert window.generate_sheets() is None and "non è ancora impostata" in told[0]
     shown = []
     monkeypatch.setattr(DocumentationDialog, "exec", lambda dialog: shown.append(dialog))
     window.sheets_settings()
@@ -260,7 +260,11 @@ def test_the_settings_choose_what_to_generate_and_where(app, tmp_path, monkeypat
     saved = load_settings(p)
     assert saved["codes"] == ["SA-1", "SA-2", "SA-4", "SA-5", "SA-6", "SA-7"] and saved["adrs"] == []
     assert not saved["register"] and saved["domains"] is None and saved["folder"] == str(tmp_path / "docs")
-    assert "documentation" in Project.open(p.path).settings  # with the project (project.yaml)
+    reopened = Project.open(p.path)
+    assert "documentation" not in reopened.settings  # not with the project
+    assert "documentation" not in (p.path / "project.yaml").read_text(encoding="utf-8")
+    assert reopened.local_settings()["documentation"][""]["codes"] == saved["codes"]  # on this PC, for the user
+    reopened.close()
     # «Schede Arcadia»: as the settings say.
     written = documentation.generate_from_settings(window, p, ask=False)
     assert [Path(f).name.split("_")[2] for f in written] == ["SA-1", "SA-2", "SA-4", "SA-5", "SA-6", "SA-7"]
@@ -303,3 +307,24 @@ def test_an_artefact_without_data_stays_wanted_until_it_has_some(app, tmp_path):
     assert problems(p, load_settings(p)) == ["Nessuno degli artefatti scelti ha dati nel modello."]
     p.new_element("system_function", name="Una funzione", domain=d1.uuid)
     assert not problems(p, load_settings(p))  # SA-2 has data now
+
+
+def test_the_settings_of_the_sheets_are_of_each_local_user(app, tmp_path):
+    from types import SimpleNamespace
+    from arcadia_tool.documents.generate import load_settings
+    from arcadia_tool.ui.documentation import DocumentationDialog
+
+    p, e = build(tmp_path)
+    anna, mario = SimpleNamespace(id="a" * 32), SimpleNamespace(id="b" * 32)
+    dialog = DocumentationDialog(p, user=anna)
+    dialog.sa_items["SA-3"].setCheckState(0, Qt.Unchecked)
+    dialog.folder.setText(str(tmp_path / "anna"))
+    assert dialog.save()
+    assert "SA-3" not in load_settings(p, anna)["codes"] and load_settings(p, anna)["folder"] == str(tmp_path / "anna")
+    # Another user of this PC: still everything, as never chosen by them.
+    assert load_settings(p, mario)["codes"] == [a.code for a in ARTIFACTS] and load_settings(p, mario)["adrs"] == "all"
+    other = DocumentationDialog(p, user=mario)
+    assert other.sa_items["SA-3"].checkState(0) == Qt.Checked
+    assert "documentation" not in (p.path / "project.yaml").read_text(encoding="utf-8")  # nothing for the team
+    dialog.deleteLater()
+    other.deleteLater()

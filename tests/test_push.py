@@ -233,3 +233,93 @@ def test_publish_dialog_offers_to_send_what_was_recorded_before(app, tmp_path):
     dialog.publish_button.click()
     assert dialog.send_only and dialog.result() == 1
     p.close()
+
+
+def _refusing(project, monkeypatch, reason="refs/heads/master: protected branch hook declined"):
+    """The remote refuses what this PC sends, though it has nothing new: a protected branch."""
+    from arcadia_tool.storage.repository import PushRefused
+
+    def refuse(*a, **k):
+        raise PushRefused(reason)
+    monkeypatch.setattr(project.repository, "push", refuse)
+    return reason
+
+
+def _sent_and_one_more(tmp_path):
+    url = empty_remote(tmp_path)
+    mine = project_with_remote(tmp_path, url)
+    mine.new_element("domain", name="Odometria")
+    mine.publish("v1", AUTHOR)
+    mine.push()
+    mine.new_element("domain", name="Velocità")
+    mine.publish("mia", AUTHOR)
+    return url, mine
+
+
+def test_a_refusal_without_permission_is_not_taken_for_versions_to_receive(app, tmp_path, monkeypatch):
+    from arcadia_tool.ui.push import PushDialog
+
+    url, mine = _sent_and_one_more(tmp_path)
+    reason = _refusing(mine, monkeypatch)
+    dialog = PushDialog(mine, {})
+    dialog.start()
+    dialog.worker.wait(20000)
+    for _ in range(50):
+        app.processEvents()
+    assert not dialog.sent and "non hai il permesso" in dialog.status.text() and reason in dialog.status.text()
+    assert dialog.receive_button.isHidden() and dialog.retry.isHidden()  # nothing to receive: «Ricevi ora» misled
+    assert not dialog.move_button.isHidden() and not dialog.discard_button.isHidden()
+    assert mine.push_refused() == reason  # remembered for the next receive
+    dialog.discard_button.click()
+    assert dialog.resolution == "discard"
+    # Discarded: the branch goes back as on the remote, nothing left to send or to remember.
+    mine.discard_unsent()
+    assert mine.unsent_versions() == [] and mine.push_refused() == ""
+    again = Project.open(mine.path)
+    assert sorted(d.get("name") for d in again.model.of_kind("domain")) == ["Odometria"]
+    assert not again.has_unpublished_changes()
+    again.close()
+    mine.close()
+
+
+def test_the_versions_refused_are_moved_to_a_new_branch_and_told_on_the_branches(tmp_path, monkeypatch):
+    url, mine = _sent_and_one_more(tmp_path)
+    mine.set_push_refused("master", "protected")
+    mine.move_unsent_to_branch("att/mie")
+    assert mine.push_refused("master") == "" and mine.current_branch() == "att/mie"
+    assert mine.repository.local_heads()["master"] == mine.repository.remote_heads()["master"]
+    # On a branch not in use: «Ricevi» on several branches tells which versions were refused.
+    (tmp_path / "b").mkdir()
+    url2, other = _sent_and_one_more(tmp_path / "b")
+    other.switch_branch("att/x", other.repository.remote_heads()["master"])
+    other.set_push_refused("master", "protected")
+    report = other.update_local_branches(["master"])
+    assert report == [("master", Project.BRANCH_REFUSED, 1)]
+    from arcadia_tool.ui.receive_choice import branch_outcome
+    assert "rifiutate dal repository" in branch_outcome(*report[0][1:])
+    mine.close()
+    other.close()
+
+
+def test_receiving_on_a_branch_with_versions_refused_offers_to_move_or_discard_them(app, tmp_path, monkeypatch):
+    import arcadia_tool.ui.main_window as main_window
+
+    url, mine = _sent_and_one_more(tmp_path)
+    mine.set_push_refused("master", "protected")
+    window = main_window.MainWindow()
+    window._set_project(mine)
+    asked, resolved = [], []
+    monkeypatch.setattr(window, "refused_choice", lambda *a: asked.append(a) or "discard")
+    monkeypatch.setattr(window, "resolve_refused", lambda choice: resolved.append(choice))
+    monkeypatch.setattr(window, "_ready_to_receive", lambda: pytest.fail("received anyway"))
+    window.receive_versions()
+    assert asked == [("master", 1, "protected")] and resolved == ["discard"]
+    # Nothing left to send: the refusal is forgotten, the receive goes on as usual.
+    window.project.set_push_refused("master", "protected")
+    monkeypatch.setattr(window.project, "unsent_versions", lambda: [])
+    reached = []
+    monkeypatch.setattr(window, "_ready_to_receive", lambda: reached.append(True) and False)
+    window.receive_versions()
+    assert reached and window.project.push_refused("master") == ""
+    window._set_project(None)
+    window.close()

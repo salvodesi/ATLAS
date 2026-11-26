@@ -137,7 +137,7 @@ def test_the_window_of_the_branches_lists_them_and_asks_for_a_new_one(app, serve
     activity_branch(download, reopen)
     dialog = BranchesDialog(mine, {})
     assert dialog.table.rowCount() == 1 and "non ancora aggiornati" in dialog.fetched.text()
-    mine.fetch_branches()  # what «Aggiorna dal repository» does (in a thread)
+    mine.fetch_branches()  # what «Aggiorna Lista» does (in a thread)
     dialog.fill()
     rows = {dialog.table.item(r, 0).text(): r for r in range(dialog.table.rowCount())}
     assert set(rows) == {"main  (in uso)", "att/T3-chain"}
@@ -237,7 +237,15 @@ def test_the_main_window_creates_a_branch_from_a_version_and_switches(app, serve
     window.close()
 
 
-def test_opening_and_switching_branch_ask_to_receive(app, server, monkeypatch, no_modal_message_boxes):
+def _checked(app, window):
+    """The check of the updates of check_for_updates, waited for (it runs in a thread)."""
+    window.update_check.wait(20000)
+    for _ in range(20):
+        app.processEvents()
+
+
+def test_opening_and_switching_branch_check_for_updates_in_the_background(app, server, monkeypatch,
+                                                                          no_modal_message_boxes):
     import arcadia_tool.ui.main_window as main_window
     from PySide6.QtWidgets import QMessageBox
 
@@ -245,32 +253,40 @@ def test_opening_and_switching_branch_ask_to_receive(app, server, monkeypatch, n
     mine = download("mine")
     mine.switch_branch("att/T2", mine.versions()[0].sha)
     mine = reopen(mine)
+    mine.push()
     mine.switch_branch("main")
     path = mine.path
     mine.close()
     window = main_window.MainWindow()
     received = []
     monkeypatch.setattr(window, "receive_versions", lambda: received.append(window.project.current_branch()))
+    asked = lambda: [t for kind, t in no_modal_message_boxes if kind == "question" and "Riceverle ora" in t]
+    # Nothing new on the repository: no question, only the status bar.
     window.open_project(str(path), confirmed=True, ask_update=True)
-    asked = [t for kind, t in no_modal_message_boxes if kind == "question" and "Ricevere ora" in t]
-    assert len(asked) == 1 and "«main»" in asked[0] and "potrebbe non essere aggiornato" in asked[0]
-    assert received == []  # «No»: only said in the status bar
-    assert "potrebbe non essere aggiornato" in window.statusBar().currentMessage()
-
+    _checked(app, window)
+    assert asked() == [] and received == []
+    assert "nessun aggiornamento" in window.statusBar().currentMessage()
+    # A colleague sends a version to main: the next opening finds it, and asks.
+    colleague = download("colleague")
+    colleague.new_element("domain", name="Frenatura")
+    colleague.publish("frenatura", AUTHOR)
+    colleague.push()
+    head = window.project.repository.head()
+    window.open_project(str(path), confirmed=True, ask_update=True)
+    _checked(app, window)
+    assert len(asked()) == 1 and "«main»" in asked()[0] and "nuove versioni" in asked()[0]  # not downloaded yet
+    assert received == [] and "da ricevere" in window.statusBar().currentMessage()  # «No»
+    assert window.project.repository.head() == head  # only read: nothing downloaded, nothing changed
+    window.open_project(str(path), confirmed=True, ask_update=False)  # opened again by the tool: not checked
+    assert window.update_check.isFinished() and len(asked()) == 1
+    # On moving to a branch: checked too («Sì»: received).
     monkeypatch.setattr(QMessageBox, "question", lambda *a, **k: QMessageBox.Yes)
     window.branch_request(("switch", "att/T2"))
-    assert window.project.current_branch() == "att/T2" and received == ["att/T2"]
-    window.open_project(str(path), confirmed=True, ask_update=False)  # opened again by the tool (e.g. after «Ricevi»)
-    assert received == ["att/T2"]
-    window.start.recent_requested.emit(str(path))  # from the start page: asked too
-    assert received == ["att/T2", "att/T2"]
-    main_head = window.project.repository.local_heads()["main"]
-    window.branch_request(("checkout", "main", main_head, False))  # «Checkout» of another branch at its last version
-    assert window.project.current_branch() == "main" and received[-1] == "main"
-    older = window.project.versions()[-1].sha
-    window.branch_request(("checkout", "att/T2", older, False))
-    if older != window.project.repository.local_heads().get("att/T2"):
-        assert received[-1] == "main"  # a version chosen of it: not asked
+    _checked(app, window)
+    assert window.project.current_branch() == "att/T2" and received == []  # att/T2 has nothing new
+    window.branch_request(("switch", "main"))
+    _checked(app, window)
+    assert received == ["main"]
     window._set_project(None)
     window.close()
 
@@ -549,3 +565,61 @@ def test_the_windows_close_while_they_download_the_branches(app, server, monkeyp
     release.set()
     window.worker.wait(10000)
     app.processEvents()
+
+
+def _run_update(app, dialog, names=None):
+    """«Aggiorna Tutto» (names None) or «Aggiorna questo ramo», waited for (the worker runs in a thread)."""
+    dialog.update_branches(names)
+    dialog.worker.wait(20000)
+    app.processEvents()
+
+
+def test_the_window_of_the_branches_updates_all_of_them_or_one(app, server, monkeypatch):
+    from arcadia_tool.ui import branches
+
+    url, download, reopen = server
+    mine = download("mine")
+    activity_branch(download, reopen)  # only in the repository, for me
+    colleague = download("colleague-main")
+    colleague.new_element("domain", name="Frenatura")
+    colleague.publish("frenatura", AUTHOR)
+    colleague.push()  # main has a new version
+    shown, asked = [], []
+    monkeypatch.setattr(branches.QMessageBox, "information", lambda *a, **k: shown.append(a[2]))
+    monkeypatch.setattr(branches.QMessageBox, "question",
+                        lambda *a, **k: asked.append(a[2]) or branches.QMessageBox.No)
+    dialog = branches.BranchesDialog(mine, {})
+    assert dialog.fetch_button.text() == "Aggiorna Lista" and dialog.update_all_button.text() == "Aggiorna Tutto"
+    _run_update(app, dialog)
+    assert "att/T3-chain" in mine.repository.local_heads()  # downloaded to this PC
+    assert "• att/T3-chain: scaricato su questo PC" in shown[-1]
+    assert "• main (in uso): 1 nuova versione nel repository" in shown[-1]
+    assert "Riceverle ora?" in asked[-1] and dialog.request is None  # not now: the window stays
+    assert dialog.fetch_button.isEnabled() and dialog.update_all_button.isEnabled()
+    rows = {dialog.table.item(r, 0).text(): r for r in range(dialog.table.rowCount())}
+    assert dialog.table.item(rows["att/T3-chain"], 3).text() == "su questo PC e nel repository"
+
+    # Right click on a branch: only that one.
+    activity = download("colleague-chain-2")
+    activity.switch_branch("att/T3-chain")
+    activity = reopen(activity)
+    activity.new_element("domain", name="Altro")
+    activity.publish("altro", AUTHOR)
+    activity.push()
+    row = next(r for r, b in enumerate(dialog.branches) if b.name == "att/T3-chain")
+    menu = dialog.branch_menu(row)
+    action = next(a for a in menu.actions() if a.text() == "Aggiorna questo ramo")
+    asked.clear()
+    action.trigger()
+    dialog.worker.wait(20000)
+    app.processEvents()
+    assert shown[-1].endswith("• att/T3-chain: ricevute 1 versione") and not asked  # the branch in use: not asked
+    assert mine.repository.local_heads()["att/T3-chain"] == activity.repository.local_heads()["att/T3-chain"]
+    # On the branch in use: received in the main window, which merges.
+    row = next(r for r, b in enumerate(dialog.branches) if b.current)
+    assert [a.text() for a in dialog.branch_menu(row).actions()] == ["Aggiorna questo ramo (ramo in uso)"]
+    monkeypatch.setattr(branches.QMessageBox, "question", lambda *a, **k: branches.QMessageBox.Yes)
+    _run_update(app, dialog, [mine.current_branch()])
+    assert dialog.request == ("receive",)
+    menu.deleteLater()
+    dialog.deleteLater()

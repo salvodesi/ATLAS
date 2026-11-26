@@ -223,9 +223,10 @@ def git_credentials(account, url, access=None, secret=None):
 
 # --- SSH keys --------------------------------------------------------------------------------------------
 
-def generate_ssh_key(account, folder):
+def generate_ssh_key(account, folder, host=""):
     """New Ed25519 key pair for the account (private key without passphrase, readable only by its user);
-    returns the path of the private key. The public key («.pub») is to be added to the Git service."""
+    returns the path of the private key. The public key («.pub») is to be added to the Git service. host: the server
+    it is for, in the name of the file (the key of another server is not overwritten)."""
     from cryptography.hazmat.primitives import serialization
     from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 
@@ -235,7 +236,8 @@ def generate_ssh_key(account, folder):
     private = key.private_bytes(serialization.Encoding.PEM, serialization.PrivateFormat.OpenSSH,
                                 serialization.NoEncryption())
     public = key.public_key().public_bytes(serialization.Encoding.OpenSSH, serialization.PublicFormat.OpenSSH)
-    path = folder / f"{account.username or account.id}_ed25519"
+    server = re.sub(r"[^A-Za-z0-9.-]+", "-", host).strip("-")
+    path = folder / f"{account.username or account.id}{'_' + server if server else ''}_ed25519"
     path.write_bytes(private)
     try:
         os.chmod(path, 0o600)

@@ -814,3 +814,56 @@ def test_a_double_click_on_an_srs_item_in_the_tree_goes_to_it_in_the_catalogue(a
     window._set_project(None)
     window.close()
 
+
+
+def test_the_members_ticked_in_the_teams_are_those_who_change_the_main_branch(app, tmp_path, monkeypatch):
+    from PySide6.QtCore import Qt
+    from arcadia_tool.model.teams import MAIN_PUSH, main_denied, member_rows
+    from arcadia_tool.ui import main_window as mw
+    from arcadia_tool.ui import team_members
+
+    p = Project.create(tmp_path / "p", "Prova")
+    da = p.new_element("team", name="DA", design_authority=True, members=[{"name": "Anna Bianchi", "account": ANNA}])
+    team = p.new_element("team", name="Odometria", members=[{"name": "Mario Rossi", "account": MARIO}])
+    anna, mario = user("Anna Bianchi", ANNA), user("Mario Rossi", MARIO)
+    # No one ticked: the Design Authority, named in the message with what to do.
+    assert main_denied(p.model, anna, "main") is None
+    denied = main_denied(p.model, mario, "main")
+    assert "Solo la Design Authority" in denied and "Anna Bianchi" in denied and "eseguire l'operazione" in denied
+    # Mario ticked in the table of the sheet of his team: only who is ticked, also against the DA.
+    editor = ElementEditor()
+    editor.edit(p, team, editing=True)
+    members = editor.widget().findChildren(MembersWidget)[0]
+    assert members.table.horizontalHeaderItem(team_members.MAIN).text() == "Ramo principale"
+    members.table.item(0, team_members.MAIN).setCheckState(Qt.Checked)
+    assert members.rows[0][MAIN_PUSH] is True
+    editor.save_changes()
+    assert member_rows(team)[0][MAIN_PUSH] is True
+    assert main_denied(p.model, mario, "main") is None
+    denied = main_denied(p.model, anna, "main")
+    assert "Solo i membri indicati" in denied and "Mario Rossi" in denied
+    # The window of a member: the same tick.
+    dialog = team_members.MemberDialog(member_rows(team)[0], [])
+    assert dialog.main_push.isChecked()
+    dialog.main_push.setChecked(False)
+    dialog._accept()
+    assert MAIN_PUSH not in dialog.row
+    dialog.deleteLater()
+    # Who may not: «Pubblica» on the main branch is an error, nothing is published.
+    p.save()
+    p.publish("Prima versione", "Prova <prova@example.com>")
+    window = mw.MainWindow()
+    window._set_project(p)
+    window.user = anna
+    assert p.main_branch() == p.current_branch()
+    errors, opened = [], []
+    monkeypatch.setattr(mw.QMessageBox, "critical", lambda *a, **k: errors.append(a[2]))
+    monkeypatch.setattr(mw.PublishDialog, "exec", lambda d: opened.append(d) and False)
+    window.publish()
+    assert not opened and "Non hai il permesso di pubblicare" in errors[-1] and "Mario Rossi" in errors[-1]
+    window.user = mario
+    window.publish()
+    assert opened  # he may
+    window._set_project(None)
+    window.close()
+    editor.deleteLater()

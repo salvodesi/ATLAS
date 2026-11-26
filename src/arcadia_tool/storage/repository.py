@@ -74,6 +74,16 @@ def remote_branches(url, **credentials):
     return remote_branches_and_default(url, **credentials)[0]
 
 
+def remote_branch_heads(url, **credentials):
+    """{branch: last version} of a remote repository, read without downloading anything (nothing changes here).
+    Raises an exception with the reason when the server cannot be reached or refuses the access."""
+    result = porcelain.ls_remote(url, **credentials)
+    refs = getattr(result, "refs", result)
+    prefix = b"refs/heads/"
+    return {name[len(prefix):].decode("utf-8"): sha.decode() for name, sha in refs.items()
+            if name.startswith(prefix) and sha}
+
+
 def remote_branches_and_default(url, **credentials):
     """(branches, default branch or None) of a remote repository.
 

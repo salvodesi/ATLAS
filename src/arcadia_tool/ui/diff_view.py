@@ -48,6 +48,8 @@ def _cell_text(diff, column, row):
         return ""
     if isinstance(value, (list, tuple)):  # e.g. the IDs of the accounts of a member, one per PC
         return ", ".join(map(str, value))
+    if value is True:  # a tick, e.g. «Invia sul ramo principale» of a member
+        return "Sì"
     return diff.label_of(value) if column.type == REF else str(value)
 
 

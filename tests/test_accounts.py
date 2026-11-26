@@ -202,3 +202,48 @@ def test_project_settings_set_the_git_access_kept_in_the_account(app, tmp_path, 
     assert publish.author_name.text() == "Mario Rossi" and publish.author_name.isReadOnly()
     window.save()
     window.close()
+
+
+def test_the_account_window_shows_the_ssh_keys_and_sets_a_new_one(app, tmp_path, monkeypatch):
+    from PySide6.QtWidgets import QLineEdit, QMessageBox
+    from arcadia_tool.ui.accounts import AccountDialog
+
+    store = AccountStore(tmp_path)
+    account = person()
+    account.set_password("segreta123")
+    old = accounts.generate_ssh_key(account, tmp_path / "mine")
+    account.set_git_access("github.com", GitAccess(SSH, "", old))
+    account.set_git_access("gitlab.example.org", GitAccess(HTTPS, "mrossi", ""))
+    store.add(account)
+    dialog = AccountDialog(store, account)
+    panel = dialog.ssh_keys
+    assert panel.entries() == [("github.com", old)]  # only the servers reached with SSH
+    assert old in [w.text() for w in panel.findChildren(QLineEdit)]  # where it is saved
+    panel.copy_public(old)
+    assert QApplication.clipboard().text() == accounts.public_key(old)
+    monkeypatch.setattr(QMessageBox, "question", lambda *a, **k: QMessageBox.Yes)
+    monkeypatch.setattr(QMessageBox, "information", lambda *a, **k: None)
+    new = panel.generate("github.com")
+    assert new != old and "github.com" in new and new.startswith(str(store.keys_folder))
+    assert QApplication.clipboard().text() == accounts.public_key(new)  # to add to the server
+    assert account.git_access("github.com").ssh_key == old  # the dialog works on a copy until «Salva»
+    dialog._save()
+    assert AccountStore(tmp_path).get("mrossi").git_access("github.com").ssh_key == new
+    # An existing key chosen instead (the file window skipped).
+    again = AccountDialog(store, AccountStore(tmp_path).get("mrossi"))
+    assert again.ssh_keys.load("github.com", old) == old
+    warnings = []
+    monkeypatch.setattr(QMessageBox, "warning", lambda *a, **k: warnings.append(a[2]))
+    assert again.ssh_keys.load("github.com", f"{old}.pub") is None and "senza «.pub»" in warnings[-1]
+    again._save()
+    assert AccountStore(tmp_path).get("mrossi").git_access("github.com").ssh_key == old
+    # No server with SSH: where the keys would be saved.
+    plain = person(username="lverdi", email="l@example.org")
+    plain.set_password("segreta123")
+    store.add(plain)
+    none = AccountDialog(store, plain)
+    assert none.ssh_keys.entries() == []
+    from PySide6.QtWidgets import QLabel
+    assert any(str(store.keys_folder) in label.text() for label in none.ssh_keys.findChildren(QLabel))
+    for d in (dialog, again, none):
+        d.deleteLater()

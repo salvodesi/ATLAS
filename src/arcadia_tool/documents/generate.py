@@ -100,23 +100,41 @@ def write_adrs(doc, adrs, register, path):
 SETTINGS_KEY, FOLDER_KEY, ALL = "documentation", "documentation_folder", "all"
 
 
-def load_settings(project):
-    """{codes, adrs ("all" or uuids), register, domains (None: all), folder}; None if never saved."""
-    data = project.settings.get(SETTINGS_KEY)
+def _user_key(user):
+    """The settings of «Schede Arcadia» are of each local user: kept by the ID of the account ("" without one)."""
+    return getattr(user, "id", "") or ""
+
+
+def default_settings(project):
+    """Never saved by the user: everything that can be generated (all the artefacts, all the ADR also those created
+    later, the register, all the domains), in the folder chosen last on this PC or «Documentazione <project>» next to
+    the project."""
+    folder = project.local_settings().get(FOLDER_KEY) or str(Path(project.path).parent /
+                                                             f"Documentazione {project.name}")
+    return {"codes": [a.code for a in ARTIFACTS], "adrs": ALL, "register": True, "domains": None, "folder": folder}
+
+
+def load_settings(project, user=None):
+    """{codes, adrs ("all" or uuids), register, domains (None: all), folder} of the local user (an account, or None):
+    kept on this PC only (.arcadia/local.json), not with the project; default_settings if never saved."""
+    data = (project.local_settings().get(SETTINGS_KEY) or {}).get(_user_key(user))
     if not isinstance(data, dict):
-        return None
+        return default_settings(project)
     return {"codes": [c for c in data.get("codes") or [] if c in ARTIFACTS_BY_CODE],
             "adrs": data.get("adrs") if data.get("adrs") == ALL else list(data.get("adrs") or []),
             "register": bool(data.get("register")), "domains": data.get("domains"),
-            "folder": project.local_settings().get(FOLDER_KEY, "")}
+            "folder": data.get("folder") or project.local_settings().get(FOLDER_KEY, "")}
 
 
-def save_settings(project, codes, adrs, register, domains, folder):
-    """adrs: "all" (also those created later) or the uuids of some; domains: None (all) or uuids."""
-    project.update_settings(**{SETTINGS_KEY: {"codes": [a.code for a in ARTIFACTS if a.code in codes],
-                                              "adrs": adrs if adrs == ALL else list(adrs), "register": bool(register),
-                                              "domains": list(domains) if domains is not None else None}})
-    project.set_local_settings(**{FOLDER_KEY: str(folder or "")})
+def save_settings(project, codes, adrs, register, domains, folder, user=None):
+    """The choice of the local user (an account, or None), on this PC only: the project and its team are not
+    changed. adrs: "all" (also those created later) or the uuids of some; domains: None (all) or uuids."""
+    every = dict(project.local_settings().get(SETTINGS_KEY) or {})
+    every[_user_key(user)] = {"codes": [a.code for a in ARTIFACTS if a.code in codes],
+                              "adrs": adrs if adrs == ALL else list(adrs), "register": bool(register),
+                              "domains": list(domains) if domains is not None else None,
+                              "folder": str(folder or "")}
+    project.set_local_settings(**{SETTINGS_KEY: every, FOLDER_KEY: str(folder or "")})
 
 
 def chosen(project, settings):

@@ -6,6 +6,59 @@ l'altra.
 
 ## [Non rilasciato]
 
+## [0.19.0] - 2026-11-26
+
+### Aggiunto
+- **ADR di assegnazione dall'albero del modello.** Il clic destro su un requisito derivato offre, sotto «Nuovo: Requisito
+  derivato», la voce «Nuova ADR: Assegnazione di requisito derivato», che crea l'ADR già compilata con il requisito e
+  la apre.
+
+- **Chi modifica il ramo principale, dalla scheda dei team (EPBS-1).** Nella tabella dei membri una spunta «Ramo
+  principale» (anche nella finestra del membro) indica chi può pubblicare, inviare e integrare sul ramo principale.
+  Finché nessun membro è spuntato vale la regola di prima (i membri della Design Authority); se qualcuno è spuntato,
+  solo i membri spuntati, di qualunque team, anche della DA.
+- **Chiavi SSH in Utente › Modifica account.** Un riquadro «Chiavi SSH» mostra, per ogni server raggiunto con SSH, dove
+  è salvata la chiave privata, apre la sua cartella, copia la chiave pubblica e permette di generarne una nuova o di
+  sceglierne una esistente (applicata con «Salva»). Le chiavi generate hanno nel nome il server, così una nuova chiave
+  non sostituisce quella di un altro server.
+
+### Modificato
+- **Impostazioni delle schede Arcadia per utente.** La scelta di Progetto › Genera › Impostazioni… (artefatti, ADR,
+  registro, domini, cartella) non si salva più nel progetto (project.yaml, condiviso con il team) ma su questo PC, per
+  l'utente locale: ognuno ha la sua e non cambia quella dei colleghi. Finché l'utente non sceglie, è selezionato tutto
+  ciò che si può generare, nella cartella «Documentazione <progetto>» accanto al progetto.
+- **Verifica degli aggiornamenti in background.** All'apertura del progetto e al cambio di ramo ATLAS non chiede più
+  ogni volta se ricevere: verifica in background, senza scaricare nulla, se il ramo in uso ha nel repository versioni
+  nuove inviate da altri. Solo se ce ne sono propone di riceverle (quando non ci sono altre finestre aperte); altrimenti
+  lo indica nella barra di stato.
+- **Pubblicare sul ramo principale senza permesso è un errore.** Chi non può modificare il ramo principale e lo ha in
+  uso non può più pubblicarvi: «Pubblica» (anche prima di ricevere) mostra un errore con i nomi di chi può farlo e
+  chiede di rivolgersi a loro, invece di proporre la pubblicazione su un nuovo ramo.
+- **Ricevi dal repository su tutti i rami.** La finestra prima legge i rami del repository ed elenca anche quelli non
+  ancora su questo PC (segnati «solo nel repository»), che, se scelti, vengono scaricati. «Tutti i rami» spunta
+  nell'elenco tutti i rami e «Il ramo in uso» solo quello; tornando a «I rami scelti dall'elenco» ricompare la scelta
+  fatta prima. L'elenco scorre con qualunque opzione; le spunte si cambiano solo con «I rami scelti dall'elenco».
+- **Si vede quali rami si stanno aggiornando.** Il pulsante dice cosa si aggiorna («Aggiorna il ramo in uso»,
+  «Aggiorna 3 rami»); durante l'aggiornamento la finestra di attesa indica il ramo in corso («Aggiornamento del ramo
+  «att/T2» (1 di 3)…»); al termine un riepilogo elenca l'esito di ogni ramo prima della ricezione del ramo in uso, la
+  cui finestra ne riporta il nome nel titolo.
+- **Versioni ricevute in tabella.** Nella finestra di ricezione e di integrazione le versioni ricevute sono elencate una
+  per riga, con titolo, autore e data, sotto il loro numero, invece che in un testo continuo.
+- **Rami: «Aggiorna Lista», «Aggiorna Tutto» e aggiornamento di un solo ramo.** Nella finestra «Rami» il pulsante
+  «Aggiorna dal repository» si chiama ora «Aggiorna Lista» (rilegge i rami del repository senza cambiare nulla). Accanto,
+  «Aggiorna Tutto» aggiorna tutti i rami di questo PC con le versioni del repository e scarica quelli che sono solo
+  nel repository; il clic destro su un ramo offre «Aggiorna questo ramo». Al termine un riepilogo dà l'esito di ogni
+  ramo; se il ramo in uso ha nuove versioni nel repository, si propone di riceverle (unendole alle proprie, come con
+  «Ricevi dal repository»).
+- **Invio rifiutato per permessi.** Se il repository rifiuta l'invio pur non avendo versioni nuove da ricevere (per
+  esempio un ramo protetto su cui l'utente non può inviare), ATLAS non chiede più di «Ricevere ora»: spiega che manca il
+  permesso, riporta la risposta del repository e offre «Sposta su un nuovo ramo…» o «Scarta le versioni non inviate…».
+  Il rifiuto viene ricordato: alla ricezione successiva su quel ramo si propone di nuovo di spostare o scartare quelle
+  versioni (oppure di ricevere comunque), e il riepilogo di «Ricevi» su più rami le indica come «rifiutate dal
+  repository».
+- **Nessuna domanda di cancellazione del ramo dopo l'integrazione.** Dopo «Integra» non viene più chiesto se cancellare
+  il ramo integrato: si cancella, se si vuole, dalla finestra «Rami».
+
 ## [0.18.2] - 2026-11-18
 
 ### Aggiunto
@@ -1546,7 +1599,8 @@ Prima versione pubblicata su GitLab.
 - Nome ATLAS (Arcadia Traceability, Logical Architecture Software), icona e logo.
 - Installer Windows e archivio Linux. La pipeline GitLab esegue i test e compila la versione Linux.
 
-[Non rilasciato]: https://github.com/salvodesi/ATLAS/compare/v0.18.2...main
+[Non rilasciato]: https://github.com/salvodesi/ATLAS/compare/v0.19.0...main
+[0.19.0]: https://github.com/salvodesi/ATLAS/compare/v0.18.2...v0.19.0
 [0.18.2]: https://github.com/salvodesi/ATLAS/compare/v0.18.1...v0.18.2
 [0.18.1]: https://github.com/salvodesi/ATLAS/compare/v0.18.0...v0.18.1
 [0.18.0]: https://github.com/salvodesi/ATLAS/compare/v0.17.0...v0.18.0

@@ -5,20 +5,26 @@ A person who works on more PCs has an account on each, so more IDs, all of them 
 import re
 
 from PySide6.QtCore import QEvent, Qt, Signal
-from PySide6.QtWidgets import (QDialog, QDialogButtonBox, QFormLayout, QHBoxLayout, QHeaderView, QLabel, QLineEdit,
+from PySide6.QtWidgets import (QCheckBox, QDialog, QDialogButtonBox, QFormLayout, QHBoxLayout, QHeaderView, QLabel,
+                               QLineEdit,
                                QListWidget, QListWidgetItem, QMessageBox, QPushButton, QTableWidget, QTableWidgetItem,
                                QToolButton, QVBoxLayout, QWidget)
 
-from arcadia_tool.model.teams import ACCOUNT, account_ids, accounts_value, normalize_account_id, person_key
+from arcadia_tool.model.teams import (ACCOUNT, MAIN_PUSH, account_ids, accounts_value, normalize_account_id,
+                                      person_key)
 from arcadia_tool.ui.theme import icon
 
 EMAIL = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
 OWN_ID = ("Il tuo account non sarebbe più tra i membri dei team: non potresti più aprire il progetto. Il tuo ID "
           "non viene rimosso. Per lasciare il team, aggiungi prima te stesso con il tuo ID a un altro team, oppure "
           "chiedi a un altro membro della Design Authority di farlo.")
-COLUMNS = ("Nome e cognome", "E-mail", "Ruolo", "ID account", "")
+COLUMNS = ("Nome e cognome", "E-mail", "Ruolo", "ID account", "Ramo principale", "")
 KEYS = ("name", "email", "role", ACCOUNT)
-ACTIONS = 4
+MAIN = 4  # the tick «Invia sul ramo principale»
+ACTIONS = 5
+MAIN_TIP = ("Può modificare il ramo principale (pubblicare, inviare, integrare). Se nessun membro di nessun team è "
+            "spuntato, possono farlo i membri della Design Authority; se qualcuno è spuntato, solo i membri spuntati "
+            "(anche della DA). Spunta chi ha il permesso di inviare sul ramo principale nel repository.")
 
 
 def own_id_error(parent):
@@ -127,11 +133,15 @@ class MemberDialog(QDialog):
         self.email = QLineEdit(self.row.get("email") or "")
         self.role = QLineEdit(self.row.get("role") or "")
         self.role.setPlaceholderText("es. Analista di sistema")
+        self.main_push = QCheckBox("Può inviare sul ramo principale")
+        self.main_push.setChecked(bool(self.row.get(MAIN_PUSH)))
+        self.main_push.setToolTip(MAIN_TIP)
         form = QFormLayout()
         form.addRow("Nome e cognome *", self.name)
         form.addRow("ID account *\n(uno per postazione)", self.account)
         form.addRow("E-mail", self.email)
         form.addRow("Ruolo", self.role)
+        form.addRow("Ramo principale", self.main_push)
         note = QLabel("Chiedi alla persona l'ID del suo account locale: è in alto nella finestra Utente › Modifica "
                       "account del suo ATLAS, che lo copia con un clic. Da quel momento ATLAS la riconosce come membro "
                       "di questo team, anche nelle versioni che pubblica. Se lavora su più PC, ha un ID per ciascuno: "
@@ -179,8 +189,9 @@ class MemberDialog(QDialog):
         if problems:
             QMessageBox.warning(self, self.windowTitle(), "\n".join(problems))
             return
-        self.row.update(name=name, email=email, role=self.role.text().strip(), **{ACCOUNT: accounts_value(accounts)})
-        self.row = {k: v for k, v in self.row.items() if v}
+        self.row.update(name=name, email=email, role=self.role.text().strip(), **{ACCOUNT: accounts_value(accounts)},
+                        **{MAIN_PUSH: self.main_push.isChecked()})
+        self.row = {k: v for k, v in self.row.items() if v}  # «main_push» only when ticked
         self.accept()
 
 
@@ -203,10 +214,13 @@ class MembersWidget(QWidget):
         self.table.setAlternatingRowColors(True)
         header = self.table.horizontalHeader()
         for column, mode in enumerate((QHeaderView.Stretch, QHeaderView.Stretch, QHeaderView.Stretch,
-                                       QHeaderView.ResizeToContents, QHeaderView.ResizeToContents)):
+                                       QHeaderView.ResizeToContents, QHeaderView.ResizeToContents,
+                                       QHeaderView.ResizeToContents)):
             header.setSectionResizeMode(column, mode)
+        self.table.horizontalHeaderItem(MAIN).setToolTip(MAIN_TIP)
         self.table.verticalHeader().setDefaultSectionSize(34)
-        self.table.itemDoubleClicked.connect(lambda item: self.edit_member(item.row()))
+        self.table.itemDoubleClicked.connect(lambda item: item.column() != MAIN and self.edit_member(item.row()))
+        self.table.itemChanged.connect(self._ticked)
         self.empty = QLabel("Nessun membro: aggiungili con «Aggiungi membro…».", objectName="muted")
         self.add_button = QPushButton(icon("mdi6.account-plus-outline"), "Aggiungi membro…")
         self.add_button.clicked.connect(self.add_member)
@@ -227,6 +241,7 @@ class MembersWidget(QWidget):
         return [dict(r) for r in self.rows]
 
     def _fill(self):
+        self.table.blockSignals(True)
         self.table.setRowCount(len(self.rows))
         for i, row in enumerate(self.rows):
             for column, key in enumerate(KEYS):
@@ -239,10 +254,35 @@ class MembersWidget(QWidget):
                     item.setToolTip("\n".join(ids) if ids else "ID dell'account locale del membro non ancora "
                                     "indicato: finché manca, è riconosciuto da nome e cognome")
                 self.table.setItem(i, column, item)
+            tick = QTableWidgetItem()
+            tick.setFlags(Qt.ItemIsEnabled | Qt.ItemIsUserCheckable)
+            tick.setCheckState(Qt.Checked if row.get(MAIN_PUSH) else Qt.Unchecked)
+            tick.setToolTip(MAIN_TIP)
+            self.table.setItem(i, MAIN, tick)
             self.table.setCellWidget(i, ACTIONS, self._actions(i))
+        self.table.blockSignals(False)
         self.table.setVisible(bool(self.rows))
         self.empty.setVisible(not self.rows)
         self.table.setFixedHeight(self.table.horizontalHeader().height() + 34 * len(self.rows) + 4)
+
+    def _ticked(self, item):
+        """«Ramo principale» ticked or not in the table: the member may send to the main branch (see MAIN_PUSH)."""
+        i = item.row()
+        if item.column() != MAIN or not 0 <= i < len(self.rows):
+            return
+        on = item.checkState() == Qt.Checked
+        if bool(self.rows[i].get(MAIN_PUSH)) == on:
+            return
+        if not self._may_change():  # a read-only sheet: the tick goes back
+            self._fill()
+            return
+        row = dict(self.rows[i])
+        if on:
+            row[MAIN_PUSH] = True
+        else:
+            row.pop(MAIN_PUSH, None)
+        self.rows[i] = row
+        self.changed.emit()
 
     def _actions(self, i):
         holder = QWidget()

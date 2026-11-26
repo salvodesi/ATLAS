@@ -526,7 +526,44 @@ class Project:
         sha = self.repository.push(self.remote(), branch, delete=delete, **credentials)
         self.deleted_branches = delete
         self.set_local_settings(sent=sha, branch=branch, delete_branches=[])
+        self.set_push_refused(branch, "")
         return branch
+
+    def push_refused(self, branch=None):
+        """Why the remote refused the versions sent to `branch` (default: the working branch) the last time, though
+        it had nothing new: e.g. a protected branch the user may not send to. "" if not refused."""
+        return (self.local_settings().get("push_refused") or {}).get(branch or self.push_branch(), "")
+
+    def set_push_refused(self, branch, reason):
+        """Remember (reason) or forget ("") that the remote refused the versions of `branch` (see push_refused)."""
+        refused = dict(self.local_settings().get("push_refused") or {})
+        if reason:
+            refused[branch] = reason
+        else:
+            refused.pop(branch, None)
+        self.set_local_settings(push_refused=refused)
+
+    def discard_unsent(self):
+        """The versions published here and not sent go away: the branch in use goes back to its last version on the
+        remote, and the changes not published are lost too. E.g. versions the remote refused (a protected branch) no
+        longer wanted. The project must then be opened again."""
+        self.save()
+        branch = self.push_branch()
+        back = self.repository.remote_branch_head(branch)
+        if not back:
+            raise ProjectError(f"Il ramo «{branch}» non è nel repository: non c'è una versione a cui tornare.")
+        files = self.repository.files_at(back)
+        on_disk = self._version_files()  # also what the version has not: all of it goes, except what back has
+        for folder in (MODEL_DIR, ASSETS_DIR):
+            for file in (self.path / folder).rglob("*") if (self.path / folder).exists() else ():
+                if file.is_file():
+                    on_disk.setdefault(self._relative(file), b"")
+        self._write_files(files, on_disk)
+        self.repository.checkout(self.current_branch(), back, files)
+        self.set_local_settings(sent=back)
+        self.set_push_refused(branch, "")
+        self.discard_recovery()
+        self.journal.clear()
 
     def main_denied(self, user, branch=None):
         """Why the user may not change `branch` (default: the one in use), or None: the main branch only the
@@ -546,40 +583,54 @@ class Project:
         self.save()
         if self.has_unpublished_changes():
             raise ProjectError("Pubblica o scarta prima le modifiche non pubblicate.")
-        previous = self.current_branch()
-        back = self.repository.remote_branch_head(self.push_branch())
+        previous, left = self.current_branch(), self.push_branch()
+        back = self.repository.remote_branch_head(left)
         self.repository.start_branch(name)
         if back:
             self.repository.set_branch_head(previous, back)
         self.set_local_settings(branch=name, sent="")
+        self.set_push_refused(left, "")
 
-    # How a branch of this PC not in use is updated from the remote (see update_local_branches).
-    BRANCH_UPDATED, BRANCH_UP_TO_DATE, BRANCH_AHEAD, BRANCH_DIVERGED, BRANCH_NOT_ON_REMOTE = (
-        "updated", "up_to_date", "ahead", "diverged", "not_on_remote")
+    # How a branch not in use is updated from the remote (see update_local_branches).
+    BRANCH_UPDATED, BRANCH_UP_TO_DATE, BRANCH_AHEAD, BRANCH_DIVERGED, BRANCH_NOT_ON_REMOTE, BRANCH_DOWNLOADED = (
+        "updated", "up_to_date", "ahead", "diverged", "not_on_remote", "downloaded")
+    BRANCH_REFUSED = "refused"  # versions of this PC the remote refused (see push_refused)
 
-    def update_local_branches(self, names, **credentials):
-        """Versioni › Ricevi dal repository on branches of this PC other than the one in use: the remote is downloaded
-        once, and each branch takes the versions of its namesake on the remote when it has none of its own (it only
-        moves forward: no merge, no file of the project changes). [(name, state, versions)]: received (UPDATED), or
+    def receivable_branches(self):
+        """The branches «Ricevi dal repository» can update: those of this PC and those of the remote (as last
+        downloaded), but those integrated and deleted here."""
+        names = set(self.repository.local_heads()) | set(self.repository.remote_heads()) | {self.current_branch()}
+        return names - (set(self.branches_to_delete()) - {self.current_branch()})
+
+    def update_local_branches(self, names, heads=None, progress=None, **credentials):
+        """Versioni › Ricevi dal repository on branches other than the one in use: the remote is downloaded once (unless
+        `heads`, just downloaded with fetch_branches), and each branch takes the versions of its namesake on the remote
+        when it has none of its own (it only moves forward: no merge, no file of the project changes); a branch only on
+        the remote is downloaded as a branch of this PC (DOWNLOADED). [(name, state, versions)]: received (UPDATED), or
         those of this PC to send (AHEAD), or those of the remote when both have their own (DIVERGED: to receive from
-        the branch, switching to it); the branch in use is skipped (received with prepare_receive)."""
-        url = self.remote()
-        if not url:
-            raise ProjectError("Nessun repository remoto: indicalo in Progetto › Impostazioni › Repository Git.")
-        heads = self.repository.fetch(url, **credentials)
-        self.repository.set_remote_heads(heads)
-        self.set_local_settings(fetched=datetime.now().isoformat(timespec="minutes"))
+        the branch, switching to it); the branch in use is skipped (received with prepare_receive). progress(done, total,
+        name): told before each branch."""
+        if heads is None:
+            heads = self.fetch_branches(**credentials)
         local, current = self.repository.local_heads(), self.current_branch()
         result = []
-        for name in names:
+        names = [n for n in names if n != current]
+        for done, name in enumerate(names, 1):
+            if progress is not None:
+                progress(done, len(names), name)
             mine, theirs = local.get(name), heads.get(name)
-            if name == current or mine is None:
+            if mine is None:
+                if theirs is not None:
+                    self.repository.set_branch_head(name, theirs)
+                    result.append((name, self.BRANCH_DOWNLOADED, 0))
                 continue
             if theirs is None:
                 result.append((name, self.BRANCH_NOT_ON_REMOTE, 0))
             elif self.repository.is_ancestor(theirs, mine):
                 ahead = len(self.repository.versions_between(theirs, mine))
-                result.append((name, self.BRANCH_AHEAD if ahead else self.BRANCH_UP_TO_DATE, ahead))
+                state = self.BRANCH_UP_TO_DATE if not ahead else (
+                    self.BRANCH_REFUSED if self.push_refused(name) else self.BRANCH_AHEAD)
+                result.append((name, state, ahead))
             elif self.repository.is_ancestor(mine, theirs):
                 count = len(self.repository.versions_between(mine, theirs))
                 self.repository.set_branch_head(name, theirs)
@@ -614,7 +665,7 @@ class Project:
         if not self.remote():
             return "Il progetto non ha un repository remoto"
         if name not in self.repository.remote_heads():
-            return "Non è nel repository (o non ancora scaricato: usa «Aggiorna dal repository»)"
+            return "Non è nel repository (o non ancora scaricato: usa «Aggiorna Lista»)"
         if name in (self.current_branch(), self.push_branch()):
             return "È il ramo in uso: passa prima a un altro ramo"
         if name in MAIN_BRANCHES or name == self.main_branch():

@@ -1,6 +1,7 @@
 """Progetto › Genera: «Schede Arcadia» writes the artefacts of the SA phases and the ADR in Excel, filled in from
-the model, as the settings of the project say; «Impostazioni…» chooses them with ticks (all, or some), with the
-domains to include and the folder to write them in, saved with the project."""
+the model, as the settings of the local user say; «Impostazioni…» chooses them with ticks (all, or some, all of them
+until the user chooses), with the domains to include and the folder to write them in, saved on this PC for that user
+(not with the project)."""
 from pathlib import Path
 
 from PySide6.QtCore import Qt, QUrl
@@ -63,10 +64,10 @@ def run_generation(parent, project, codes, adrs, register, domains, folder, auth
     return written
 
 
-def generate_from_settings(parent, project, author="", ask=True, open_settings=None):
-    """«Schede Arcadia»: the artefacts of the settings of the project; if they are not valid, says why (and offers
-    to open the settings: open_settings())."""
-    settings = load_settings(project)
+def generate_from_settings(parent, project, author="", ask=True, open_settings=None, user=None):
+    """«Schede Arcadia»: the artefacts of the settings of the local user (see load_settings); if they are not valid,
+    says why (and offers to open the settings: open_settings())."""
+    settings = load_settings(project, user)
     found = problems(project, settings, author)
     if found:
         if ask:
@@ -83,14 +84,14 @@ def generate_from_settings(parent, project, author="", ask=True, open_settings=N
 
 
 class DocumentationDialog(QDialog):
-    """The settings of «Schede Arcadia»: what to generate and where. «Salva» saves them with the project; «Salva e
-    genera» generates too. written: the files of the last generation."""
+    """The settings of «Schede Arcadia» of the local user (`user`, an account): what to generate and where. «Salva»
+    saves them on this PC for that user; «Salva e genera» generates too. written: the files of the last generation."""
 
-    def __init__(self, project, author="", parent=None):
+    def __init__(self, project, author="", parent=None, user=None):
         super().__init__(parent)
-        self.project, self.author = project, author
+        self.project, self.author, self.user = project, author, user
         self.written = []
-        saved = load_settings(project)
+        saved = load_settings(project, user)
         # The artefacts wanted, also those without data now (generated when the model has some).
         self.intended = set(saved["codes"]) if saved else {a.code for a in ARTIFACTS}
         self.setWindowTitle("Impostazioni delle schede Arcadia")
@@ -100,8 +101,8 @@ class DocumentationDialog(QDialog):
         layout.addWidget(QLabel(
             "Spunta gli artefatti da generare con Progetto › Genera › Schede Arcadia: ogni artefatto è un file Excel "
             "con il disegno del suo template, compilato dal modello (un foglio per dominio o per chain, o un foglio "
-            "unico). Gli artefatti senza dati nel modello non si possono scegliere ora. La scelta si salva con il "
-            "progetto ed è condivisa con il team; la cartella di destinazione vale per questo PC.",
+            "unico). Gli artefatti senza dati nel modello non si possono scegliere ora. La scelta e la cartella di "
+            "destinazione sono tue: restano su questo PC, non nel progetto, e non cambiano quelle dei colleghi.",
             objectName="muted", wordWrap=True))
 
         self.tree = QTreeWidget()
@@ -318,7 +319,7 @@ class DocumentationDialog(QDialog):
     # --- «Salva», «Salva e genera» -------------------------------------------------------------------------------
 
     def save(self):
-        """The settings saved with the project (the choice in project.yaml, the folder for this PC)."""
+        """The settings saved on this PC for the local user (not with the project)."""
         folder = self.folder.text().strip()
         if not folder:
             QMessageBox.information(self, self.windowTitle(), "Scegli la cartella di destinazione.")
@@ -327,13 +328,13 @@ class DocumentationDialog(QDialog):
         every = len(adrs) == len(self.adr_items)  # all of them: also those created later
         codes = [a.code for a in ARTIFACTS if a.code in self.intended]
         save_settings(self.project, codes, ALL if every else [a.uuid for a in adrs], self._register_wanted,
-                      self.chosen_domains(), folder)
+                      self.chosen_domains(), folder, self.user)
         return True
 
     def save_and_generate(self, ask=True):
         if not self.save():
             return None
-        written = generate_from_settings(self, self.project, self.author, ask)
+        written = generate_from_settings(self, self.project, self.author, ask, user=self.user)
         if written is not None:
             self.written = written
             self.accept()

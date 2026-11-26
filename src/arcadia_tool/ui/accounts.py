@@ -3,7 +3,8 @@ the access to a Git server (used in the project settings, kept in the account)."
 import copy
 from pathlib import Path
 
-from PySide6.QtCore import Qt, QTimer, Signal
+from PySide6.QtCore import Qt, QTimer, QUrl, Signal
+from PySide6.QtGui import QDesktopServices
 from PySide6.QtWidgets import (QApplication, QButtonGroup, QComboBox, QDialog, QFileDialog, QFormLayout, QFrame, QHBoxLayout,
                                QLabel, QLineEdit, QMessageBox, QPushButton, QRadioButton, QStackedWidget,
                                QVBoxLayout, QWidget)
@@ -116,6 +117,8 @@ class AccountDialog(_Centered):
         servers = sorted(self.account.git)
         if servers:
             git_note.setText(git_note.text() + f" Server già configurati: {', '.join(servers)}.")
+        # The SSH keys of the account: where they are, a new one generated or loaded (saved with «Salva»).
+        self.ssh_keys = None if self.new else SshKeysPanel(store, self.account)
 
         save = QPushButton(icon("mdi6.check", "white"), "Crea account" if self.new else "Salva")
         save.setProperty("primary", True)
@@ -131,6 +134,10 @@ class AccountDialog(_Centered):
         layout.setSpacing(12)
         layout.addWidget(intro)
         layout.addWidget(person)
+        if self.ssh_keys is not None:
+            keys, keys_form = _card("Chiavi SSH")
+            keys_form.addRow(self.ssh_keys)
+            layout.addWidget(keys)
         layout.addWidget(git_note)
         layout.addLayout(buttons)
         self.first_name.setFocus()
@@ -154,6 +161,121 @@ class AccountDialog(_Centered):
             return
         (self.store.add if self.new else self.store.replace)(a)
         self.accept()
+
+
+class SshKeysPanel(QWidget):
+    """Utente › Modifica account: the SSH keys of the account, one per Git server reached with SSH (set in Progetto ›
+    Impostazioni › Repository Git): where the private key is saved (its folder opened), its public key copied, a new
+    one generated or an existing one loaded. The changes go into `account`, saved with it."""
+
+    def __init__(self, store, account, parent=None):
+        super().__init__(parent)
+        self.store, self.account = store, account
+        self.rows = QVBoxLayout(self)
+        self.rows.setContentsMargins(0, 0, 0, 0)
+        self.rows.setSpacing(10)
+        self.fill()
+
+    def entries(self):
+        """[(server, path of the private key)]: the servers reached with SSH; "" the key of the servers not set yet
+        (kept by the first versions), if any."""
+        found = [(h, self.account.git_access(h).ssh_key) for h in sorted(self.account.git)
+                 if self.account.git_access(h).auth == SSH]
+        if self.account.ssh_key:
+            found.append(("", self.account.ssh_key))
+        return found
+
+    def fill(self):
+        while self.rows.count():
+            item = self.rows.takeAt(0)
+            if item.widget() is not None:
+                item.widget().deleteLater()
+        entries = self.entries()
+        if not entries:
+            folder = getattr(self.store, "folder", None)
+            where = f"; le chiavi generate sono salvate in {self.store.keys_folder}" if folder else ""
+            note = QLabel("Nessun server usa una chiave SSH. L'accesso SSH a un server si sceglie in Progetto › "
+                          f"Impostazioni › Repository Git{where}.", objectName="muted")
+            note.setWordWrap(True)
+            self.rows.addWidget(note)
+            return
+        for host, path in entries:
+            self.rows.addWidget(self._row(host, path))
+
+    def _row(self, host, path):
+        box = QWidget()
+        layout = QVBoxLayout(box)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(4)
+        layout.addWidget(QLabel(f"<b>{host}</b>" if host else "<b>Server non ancora configurati</b>"))
+        line = QHBoxLayout()
+        where = QLineEdit(path, readOnly=True, objectName="readonly")
+        where.setToolTip("Dove è salvata la chiave privata")
+        line.addWidget(where, 1)
+        missing = not Path(path).is_file()
+        buttons = (("mdi6.folder-open-outline", "Apri la cartella della chiave", lambda: self.open_folder(path)),
+                   ("mdi6.content-copy", "Copia la chiave pubblica, da aggiungere al server Git",
+                    lambda: self.copy_public(path)),
+                   ("mdi6.key-plus", "Genera una nuova chiave", lambda: self.generate(host)),
+                   ("mdi6.folder-key-outline", "Usa una chiave esistente…", lambda: self.load(host)))
+        for name, tip, action in buttons:
+            button = QPushButton(icon(name), "")
+            button.setToolTip(tip)
+            button.setAccessibleName(tip)
+            button.setAutoDefault(False)
+            button.clicked.connect(lambda _=False, a=action: a())
+            button.setEnabled(not missing or name in ("mdi6.key-plus", "mdi6.folder-key-outline"))
+            line.addWidget(button)
+        layout.addLayout(line)
+        if missing:
+            missing_note = QLabel("File non trovato: genera una nuova chiave o scegline una esistente.")
+            missing_note.setStyleSheet("color: #B42318;")
+            layout.addWidget(missing_note)
+        return box
+
+    def set_key(self, host, path):
+        if host:
+            access = self.account.git_access(host)
+            access.ssh_key = path
+            self.account.set_git_access(host, access)
+        else:
+            self.account.ssh_key = path
+        self.fill()
+
+    def open_folder(self, path):
+        QDesktopServices.openUrl(QUrl.fromLocalFile(str(Path(path).parent)))
+
+    def copy_public(self, path):
+        key = accounts.public_key(path)
+        if key:
+            QApplication.clipboard().setText(key)
+        else:
+            QMessageBox.warning(self, "Chiave SSH", "Chiave pubblica non leggibile.")
+
+    def generate(self, host):
+        where = f"il server {host}" if host else "i server non ancora configurati"
+        if QMessageBox.question(self, "Chiave SSH", f"Generare una nuova chiave SSH per {where}? La nuova chiave "
+                                "pubblica andrà aggiunta al server Git (con «Salva» l'account la usa).") \
+                != QMessageBox.Yes:
+            return None
+        path = accounts.generate_ssh_key(self.account, self.store.keys_folder, host)
+        self.set_key(host, path)
+        QApplication.clipboard().setText(accounts.public_key(path))
+        QMessageBox.information(self, "Chiave SSH", f"Nuova chiave salvata in:\n{path}\n\nLa chiave pubblica è stata "
+                                "copiata negli appunti: aggiungila al tuo profilo sul server Git (chiavi SSH).")
+        return path
+
+    def load(self, host, path=None):
+        if path is None:
+            path, _ = QFileDialog.getOpenFileName(self, "Chiave privata SSH", str(Path.home() / ".ssh"))
+            if not path:
+                return None
+        problem = accounts.check_ssh_key(path)
+        if problem:
+            QMessageBox.warning(self, "Chiave SSH", problem)
+            return None
+        self.set_key(host, path)
+        return path
 
 
 class GitAccessPanel(QWidget):
@@ -248,7 +370,7 @@ class GitAccessPanel(QWidget):
                 self, "Chiave SSH", "Sostituire la chiave attuale con una nuova? La nuova chiave pubblica andrà "
                 "aggiunta di nuovo al server Git.") != QMessageBox.Yes:
             return
-        self.ssh_path.setText(accounts.generate_ssh_key(self.account, self.store.keys_folder))
+        self.ssh_path.setText(accounts.generate_ssh_key(self.account, self.store.keys_folder, self.host))
         self.changed.emit()
 
     def _load_key(self):

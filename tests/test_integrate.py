@@ -214,6 +214,12 @@ def test_the_window_of_the_integration_previews_the_result_and_can_be_cancelled(
     dialog.worker.wait(20000)
     app.processEvents()
     assert dialog.apply_button.text() == "Integra" and dialog.close_button.text() == "Annulla integrazione"
+    # The versions received: one per row (title, author, date), newest first, under their count.
+    incoming = dialog.receive.incoming
+    rows = [dialog.version_list.topLevelItem(i) for i in range(dialog.version_list.topLevelItemCount())]
+    assert incoming and [r.text(0) for r in rows] == [v.title for v in incoming]
+    assert all(r.text(1) and r.text(2) for r in rows) and not dialog.version_list.isHidden()
+    assert dialog.versions.text() == f"{len(incoming)} {'versione ricevuta' if len(incoming) == 1 else 'versioni ricevute'}"
     # Merged by itself: Radio (from the branch) is in the preview; only the team of the domain is left to choose.
     assert dialog.conflicts.rowCount() == 1 and "team" in dialog.conflicts.item(0, 0).text().lower()
     names = lambda d: {e.get("name") for e in merged_domains(d)}

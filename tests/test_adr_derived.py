@@ -165,3 +165,26 @@ def test_a_derived_requirement_belongs_to_the_domain_of_its_clause_unless_an_adr
     assert derived_owner_domain(p.model, d2_) == e["d1"].uuid
     assert shown(e["d2"])[1] == [clause.uuid, d1_.uuid]
     assert d2_.uuid in shown(e["d1"])[1]
+
+
+def test_the_right_click_of_the_tree_creates_the_adr(app, tmp_path):
+    from arcadia_tool.ui import main_window as mw
+
+    p, e = build(tmp_path)
+    window = mw.MainWindow()
+    window._set_project(p)
+    tree = window.tree
+    actions = tree.context_menu_for(tree._items[e["derived"].uuid]).actions()
+    texts = [a.text() for a in actions]
+    label = f"Nuova ADR: {ADR_DERIVED}"
+    assert texts.index(label) == texts.index("Nuovo: Requisito derivato") + 1  # right under «Nuovo»
+    assert label not in [a.text() for a in tree.context_menu_for(tree._items[e["sf"].uuid]).actions()]
+    next(a for a in actions if a.text() == label).trigger()
+    adrs = p.model.of_kind("adr")
+    assert len(adrs) == 1
+    adr = adrs[0]
+    assert adr.get("adr_type") == ADR_DERIVED and adr.get("status") == "Proposta"
+    assert adr.get("derived_items") == [e["derived"].uuid]
+    assert adr.get("title")
+    window._set_project(None)
+    window.close()

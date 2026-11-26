@@ -497,7 +497,7 @@ class MainWindow(QMainWindow):
         self.statusBar().showMessage(f"Verifica del modello: {summary(self.checks.counts())}", 6000)
 
     def generate_sheets(self):
-        """Progetto › Genera › Schede Arcadia: the artefacts SA and the ADR of the settings of the project, in Excel,
+        """Progetto › Genera › Schede Arcadia: the artefacts SA and the ADR of the settings of the user, in Excel,
         filled in from the model as it is now (the edits in progress in the sheets included); without valid
         settings, says why and offers to open them."""
         from arcadia_tool.ui.documentation import generate_from_settings
@@ -506,19 +506,19 @@ class MainWindow(QMainWindow):
             return None
         self._flush_editors()
         written = generate_from_settings(self, self.project, self.user.full_name if self.user else "",
-                                         open_settings=self.sheets_settings)
+                                         open_settings=self.sheets_settings, user=self.user)
         if written:
             self.statusBar().showMessage(f"Schede Arcadia generate: {len(written)} file", 6000)
         return written
 
     def sheets_settings(self):
-        """Progetto › Genera › Impostazioni…: what «Schede Arcadia» generates and where, saved with the project."""
+        """Progetto › Genera › Impostazioni…: what «Schede Arcadia» generates and where, for the user on this PC."""
         from arcadia_tool.ui.documentation import DocumentationDialog
 
         if not self.project:
             return None
         self._flush_editors()
-        dialog = DocumentationDialog(self.project, self.user.full_name if self.user else "", self)
+        dialog = DocumentationDialog(self.project, self.user.full_name if self.user else "", self, user=self.user)
         dialog.exec()
         if dialog.written:
             self.statusBar().showMessage(f"Schede Arcadia generate: {len(dialog.written)} file", 6000)
@@ -928,7 +928,7 @@ class MainWindow(QMainWindow):
                 self.statusBar().showMessage(f"Progetto scaricato in {dialog.path}", 6000)
 
     def open_project(self, path, confirmed=False, restore=None, ask_update=True):
-        """ask_update: opened by the user (not again after a change of its files): see offer_receive. The
+        """ask_update: opened by the user (not again after a change of its files): see check_for_updates. The
         notifications unread are not alerted: the red dot of the bell and the count in the status bar tell them."""
         if not confirmed and not self._confirm_discard():
             return
@@ -937,7 +937,7 @@ class MainWindow(QMainWindow):
         if loading.exec() and self._denied is None:
             self.offer_recovery(restore)
             if ask_update:
-                self.offer_receive("Progetto aperto")
+                self.check_for_updates("Progetto aperto")
         elif self._denied is not None:
             show_access_denied(self, self._denied, self.user)
         elif loading.error:
@@ -1905,8 +1905,19 @@ class MainWindow(QMainWindow):
 
     # --- versions (the only places where a diff is computed) ------------------------------------
 
+    def publish_denied(self):
+        """On the main branch, a user who may not change it (see Project.main_denied): an error, which names those
+        who may and asks them to do it. True if denied: nothing is published."""
+        denied = self.project.main_denied(self.user) if self.project else None
+        if denied:
+            QMessageBox.critical(self, "Pubblicazione non consentita", "Non hai il permesso di pubblicare sul ramo "
+                                 f"principale «{self.project.current_branch()}».\n\n{denied}")
+        return bool(denied)
+
     def publish(self):
         if not self.project or not self._resolve_unsaved_pages():
+            return
+        if self.publish_denied():
             return
         dialog = PublishDialog(self.project, self, user=self.user)
         if dialog.exec():
@@ -1938,15 +1949,63 @@ class MainWindow(QMainWindow):
             self.statusBar().showMessage(f"Versioni inviate al ramo «{self.project.push_branch()}»", 5000)
         elif dialog.receive_requested:  # the remote has versions of the others: received first
             self.receive_versions()
+        elif dialog.resolution:  # the remote refused them (no permission on the branch)
+            self.resolve_refused(dialog.resolution)
         return bool(dialog.sent)
 
+    def resolve_refused(self, choice):
+        """The versions not sent that the remote refused (see Project.push_refused): "move" to a new branch, then
+        offered to send; "discard": the branch goes back as on the remote. Returns True if done."""
+        if choice == "move":
+            if not self._move_unsent_to_branch(None):
+                return False
+            if QMessageBox.question(self, "Sposta su un nuovo ramo", f"Le tue versioni sono ora sul ramo "
+                                    f"«{self.project.push_branch()}». Inviarlo ora al repository?") == QMessageBox.Yes:
+                self.send_versions()
+            return True
+        count, branch = len(self.project.unsent_versions()), self.project.push_branch()
+        if QMessageBox.question(
+                self, "Scarta le versioni non inviate",
+                f"Il ramo «{branch}» torna come nel repository: {count} "
+                f"{'versione non inviata va persa' if count == 1 else 'versioni non inviate vanno perse'}, e con "
+                "loro le modifiche non pubblicate. Continuare?", QMessageBox.Yes | QMessageBox.No,
+                QMessageBox.No) != QMessageBox.Yes:
+            return False
+        try:
+            self.project.discard_unsent()
+        except Exception as exc:
+            QMessageBox.warning(self, "Scarta le versioni non inviate", str(exc))
+            return False
+        path = self.project.path
+        self._set_project(None)  # its files changed
+        self.open_project(str(path), confirmed=True, ask_update=False)
+        self.statusBar().showMessage(f"Ramo «{branch}» riportato come nel repository", 8000)
+        return True
+
+    def refused_choice(self, branch, count, reason):
+        """Before receiving on a branch whose versions the remote refused: "move", "discard", "receive" (anyway) or
+        None (cancelled)."""
+        box = QMessageBox(QMessageBox.Warning, "Ricevi dal repository",
+                          f"Sul ramo «{branch}» ci sono {count} "
+                          f"{'versione' if count == 1 else 'versioni'} di questo PC che il repository ha rifiutato "
+                          "all'ultimo invio (probabilmente non hai il permesso di inviare su questo ramo). Finché "
+                          "restano, a ogni ricezione risultano come tue versioni da unire e inviare.", parent=self)
+        box.setInformativeText(f"Risposta del repository: {reason}\n\nSpostale su un nuovo ramo da inviare (chi ha "
+                               "il permesso lo integrerà), scartale, oppure ricevi comunque.")
+        buttons = {box.addButton("Sposta su un nuovo ramo…", QMessageBox.AcceptRole): "move",
+                   box.addButton("Scarta le versioni…", QMessageBox.DestructiveRole): "discard",
+                   box.addButton("Ricevi comunque", QMessageBox.ActionRole): "receive"}
+        box.addButton("Annulla", QMessageBox.RejectRole)
+        box.exec()
+        return buttons.get(box.clickedButton())
+
     def _move_unsent_to_branch(self, denied):
-        """A team member with versions not sent on the main branch: moved to a new branch (to send), if they want.
-        Returns True if moved."""
+        """A team member with versions not sent on the main branch: moved to a new branch (to send), if they want
+        (denied: why they may not send them, asked first; None: already chosen). Returns True if moved."""
         from PySide6.QtWidgets import QInputDialog
         from arcadia_tool.ui.branches import suggested_name
-        if QMessageBox.question(self, "Invia al repository", f"{denied}\n\nSpostare le tue versioni non inviate su "
-                                "un nuovo ramo, da inviare al repository?") != QMessageBox.Yes:
+        if denied and QMessageBox.question(self, "Invia al repository", f"{denied}\n\nSpostare le tue versioni non "
+                                           "inviate su un nuovo ramo, da inviare al repository?") != QMessageBox.Yes:
             return False
         name, ok = QInputDialog.getText(self, "Sposta su un nuovo ramo", "Nome del nuovo ramo:",
                                         text=suggested_name(self.project, self.user))
@@ -1961,8 +2020,9 @@ class MainWindow(QMainWindow):
         return True
 
     def receive_from_repository(self):
-        """Versioni › Ricevi dal repository: the branches of this PC to update chosen first (the one in use, some of
-        them, all of them); the others take the versions of the remote, then the one in use receives as always."""
+        """Versioni › Ricevi dal repository: the branches of the remote downloaded, then those to update chosen (the one
+        in use, some of those of this PC and of the remote, all of them); the others take the versions of the remote
+        (those only there are downloaded to this PC), then the one in use receives as always."""
         if not self.project:
             return
         if not self.project.remote():
@@ -1971,39 +2031,49 @@ class MainWindow(QMainWindow):
             return
         from arcadia_tool.ui.receive_choice import ReceiveChoiceDialog
 
+        # The branches of the remote downloaded first: all of them offered, also those not yet on this PC.
+        credentials = git_credentials(self.user, self.project.remote())
+        try:
+            heads = run_busy(self, "Lettura dei rami del repository…",
+                             lambda _report: self.project.fetch_branches(**credentials))
+        except Exception as exc:
+            QMessageBox.warning(self, "Ricevi dal repository", f"Repository non raggiungibile: {exc}")
+            return
         current = self.project.current_branch()
-        names = sorted(set(self.project.repository.local_heads()) | {current}, key=lambda n: (n != current, n.lower()))
-        dialog = ReceiveChoiceDialog(names, current, self)
+        local = self.project.repository.local_heads()
+        names = sorted(self.project.receivable_branches(), key=lambda n: (n != current, n.lower()))
+        dialog = ReceiveChoiceDialog(names, current, [n for n in names if n not in local and n != current], self)
         if not dialog.exec():
             return
         chosen = dialog.branches()
         others = [n for n in chosen if n != current]
         report = None
         if others:
-            credentials = git_credentials(self.user, self.project.remote())
             try:
-                report = run_busy(self, "Ricezione dei rami dal repository…",
-                                  lambda _report: self.project.update_local_branches(others, **credentials))
+                def work(report):
+                    def progress(done, total, name):
+                        report(f"Aggiornamento del ramo «{name}» ({done} di {total})…")
+                    return self.project.update_local_branches(others, heads, progress, **credentials)
+                report = run_busy(self, f"Aggiornamento di {len(others)} {'ramo' if len(others) == 1 else 'rami'}…",
+                                  work)
             except Exception as exc:
                 QMessageBox.warning(self, "Ricevi dal repository", f"Operazione non riuscita: {exc}")
                 return
+        if report:  # before the branch in use, whose window follows
+            self._branches_report(report, current if current in chosen else None)
         if current in chosen:
             self.receive_versions()
-        if report:
-            self._branches_report(report)
 
-    def _branches_report(self, report):
-        """What the branches of this PC not in use received (see Project.update_local_branches)."""
-        P = Project
-        texts = {P.BRANCH_UPDATED: lambda n: f"ricevute {n} {'versione' if n == 1 else 'versioni'}",
-                 P.BRANCH_UP_TO_DATE: lambda n: "già aggiornato",
-                 P.BRANCH_AHEAD: lambda n: f"già aggiornato; {n} {'versione' if n == 1 else 'versioni'} di questo PC "
-                                           "da inviare",
-                 P.BRANCH_DIVERGED: lambda n: f"{n} {'versione' if n == 1 else 'versioni'} nel repository da unire "
-                                              "alle tue: passa al ramo e ricevi",
-                 P.BRANCH_NOT_ON_REMOTE: lambda n: "non è nel repository"}
-        lines = "\n".join(f"• {name}: {texts[state](count)}" for name, state, count in report)
-        QMessageBox.information(self, "Ricevi dal repository", f"Altri rami di questo PC:\n\n{lines}")
+    def _branches_report(self, report, current=None):
+        """What the branches not in use received (see Project.update_local_branches); `current`: the branch in use,
+        received next."""
+        from arcadia_tool.ui.receive_choice import branches_report
+        lines = branches_report(report)
+        count = len(report)
+        head = f"Aggiornamento di {count} {'ramo' if count == 1 else 'rami'} completato:"
+        tail = (f"\n\nOra si ricevono le versioni del ramo in uso «{current}», unendole alle tue."
+                if current else "")
+        QMessageBox.information(self, "Ricevi dal repository", f"{head}\n\n{lines}{tail}")
 
     def receive_versions(self):
         """Versioni › Ricevi dal repository: the versions of the others on the working branch, merged with those
@@ -2018,6 +2088,18 @@ class MainWindow(QMainWindow):
             return
         if self.project.is_modified:
             self.save()
+        reason, branch = self.project.push_refused(), self.project.push_branch()
+        if reason:
+            unsent = self.project.unsent_versions()
+            if not unsent:
+                self.project.set_push_refused(branch, "")  # gone meanwhile (e.g. sent by someone allowed)
+            else:
+                choice = self.refused_choice(branch, len(unsent), reason)
+                if choice is None:
+                    return
+                if choice != "receive":
+                    self.resolve_refused(choice)
+                    return
         self._keeping_local = False
         if not self._ready_to_receive():
             return
@@ -2059,22 +2141,49 @@ class MainWindow(QMainWindow):
                 "ora al repository?") == QMessageBox.Yes:
             self.send_versions()
 
-    def offer_receive(self, event):
-        """On opening the project and on moving to another branch: the model may lack what the others sent to the
-        repository since; the user is told, and asked whether to receive it now. True if received."""
+    def check_for_updates(self, event):
+        """On opening the project and on moving to another branch: whether the repository has versions of the branch
+        in use sent by others and not received here, read in the background while the user works (see
+        ui.update_check); if so, they are offered to receive (_updates_checked). Returns the check started, or None."""
+        from arcadia_tool.ui.update_check import UpdateCheck
+
         if not self.project or not self.project.remote():
-            return False
-        branch = self.project.current_branch()
+            return None
+        url, branch = self.project.remote(), self.project.push_branch()
+        check = UpdateCheck(url, git_credentials(self.user, url), str(self.project.path), branch, event)
+        check.done.connect(self._updates_checked)
+        check.failed.connect(self._updates_checked)
+        self.update_check = check
+        self.statusBar().showMessage(f"Verifica degli aggiornamenti del ramo «{branch}» nel repository…", 5000)
+        check.start()
+        return check
+
+    def _updates_checked(self, check):
+        """The check of check_for_updates ended: if the project and its branch are still those, and the repository has
+        new versions, the user is asked to receive them (once no other window is open); otherwise just said."""
+        from arcadia_tool.ui.update_check import news
+
+        if not self.project or str(self.project.path) != check.path or self.project.push_branch() != check.branch:
+            return  # another project or branch meanwhile: its own check tells
+        if check.error:
+            self.statusBar().showMessage(f"Verifica degli aggiornamenti non riuscita: {check.error}", 10000)
+            return
+        count = news(self.project, check.heads)
+        if count is None:
+            self.statusBar().showMessage(f"Ramo «{check.branch}»: nessun aggiornamento nel repository", 6000)
+            return
+        if QApplication.activeModalWidget() is not None:  # not over another window: asked when it closes
+            QTimer.singleShot(2000, lambda: self._updates_checked(check))
+            return
+        what = (f"{count} {'nuova versione' if count == 1 else 'nuove versioni'}" if count else "nuove versioni")
         if QMessageBox.question(
-                self, "Aggiorna il modello",
-                f"{event} sul ramo «{branch}».\n\nIl modello potrebbe non essere aggiornato: nel repository ci possono "
-                "essere versioni inviate da altri dopo l'ultima ricezione su questo PC.\n\nRicevere ora le ultime "
-                "versioni dal repository?") != QMessageBox.Yes:
-            self.statusBar().showMessage(f"Ramo «{branch}»: il modello potrebbe non essere aggiornato (Versioni › "
-                                         "Ricevi dal repository)", 10000)
-            return False
+                self, "Aggiornamenti disponibili",
+                f"{check.reason} sul ramo «{check.branch}».\n\nNel repository ci sono {what} inviate da altri dopo "
+                "l'ultima ricezione su questo PC.\n\nRiceverle ora?") != QMessageBox.Yes:
+            self.statusBar().showMessage(f"Ramo «{check.branch}»: {what} da ricevere (Versioni › Ricevi dal "
+                                         "repository)", 10000)
+            return
         self.receive_versions()
-        return True
 
     def _ready_to_receive(self):
         """Before receiving: the changes saved and not published on the working branch are published (a version,
@@ -2087,6 +2196,8 @@ class MainWindow(QMainWindow):
             self._keeping_local = True
             return True
         if box.choice == UnpublishedDialog.PUBLISH:
+            if self.publish_denied():  # not on the main branch, for who may not change it
+                return False
             dialog = PublishDialog(self.project, self, user=self.user)  # sent with the merge, after receiving
             if dialog.exec() and dialog.sha:
                 self.statusBar().showMessage(f"Pubblicata la versione {dialog.sha[:8]}", 5000)
@@ -2246,13 +2357,10 @@ class MainWindow(QMainWindow):
         self.statusBar().showMessage(f"Ramo «{name}» integrato in «{into}»", 8000)
         if propagating:
             return dialog
-        # A selective integration leaves the rest of the branch still to integrate: it is not to delete.
-        dialog.branch_deleted = not dialog.selective and self._offer_to_delete_branch(name)
-        pending = self.project.unsent_versions() or self.project.branches_to_delete()
-        if pending and self.project.remote() and QMessageBox.question(
-                self, "Integra ramo", "Inviare ora al repository " + (
-                    "l'integrazione" if self.project.unsent_versions() else "la cancellazione del ramo") + "?") \
-                == QMessageBox.Yes:
+        # The branch integrated is not offered for deletion: the user deletes it, if wanted, from the window «Rami».
+        dialog.branch_deleted = False
+        if self.project.unsent_versions() and self.project.remote() and QMessageBox.question(
+                self, "Integra ramo", "Inviare ora al repository l'integrazione?") == QMessageBox.Yes:
             self.send_versions()
         return dialog
 
@@ -2330,34 +2438,14 @@ class MainWindow(QMainWindow):
         self._set_project(None)  # its files changed
         self.open_project(str(path), confirmed=True, ask_update=False)
 
-    def _offer_to_delete_branch(self, name):
-        """After «Integra»: the branch integrated, deleted if the user wants (here at once; on the repository with
-        the next send). Not the main branch: it goes on. Returns True if deleted."""
-        if name in (self.project.main_branch(), self.project.current_branch()):
-            return False
-        remote = name in self.project.repository.remote_heads()
-        where = (" su questo PC e, al prossimo invio, anche dal repository (se nel frattempo nessuno vi ha inviato "
-                 "nuove versioni)") if remote else " su questo PC"
-        if QMessageBox.question(
-                self, "Integra ramo", f"Il ramo «{name}» è integrato in «{self.project.current_branch()}». "
-                f"Cancellarlo?\n\nViene cancellato{where}. Le sue versioni restano nella storia del ramo in uso.",
-                QMessageBox.Yes | QMessageBox.No, QMessageBox.No) != QMessageBox.Yes:
-            return False
-        try:
-            self.project.delete_integrated_branch(name)
-        except Exception as exc:
-            QMessageBox.warning(self, "Integra ramo", str(exc))
-            return False
-        self.statusBar().showMessage(f"Ramo «{name}» cancellato" + (": dal repository al prossimo invio"
-                                                                     if remote else ""), 8000)
-        self._refresh_state()
-        return True
-
     def branch_request(self, request):
         """("switch", name), ("create", name, sha, send) or ("checkout", name, sha, move_branch): the project moves
         to that branch (the model to that version) and is opened again. The changes not yet published are
         published first, or discarded, if the user wants. ("integrate", name, sha[, into]): see integrate_branch;
-        into: the branch to integrate into, the project moves to it first."""
+        into: the branch to integrate into, the project moves to it first. ("receive",): Ricevi dal repository on the
+        branch in use."""
+        if request[0] == "receive":  # «Aggiorna» of the branch in use, in the window «Rami»
+            return self.receive_versions()
         if request[0] == "integrate":
             if len(request) > 3 and request[3] != self.project.current_branch():
                 self.branch_request(("switch", request[3]))
@@ -2398,7 +2486,7 @@ class MainWindow(QMainWindow):
         else:
             self.statusBar().showMessage(f"Ora lavori sul ramo «{name}»", 6000)
         if moved:
-            self.offer_receive("Passato")
+            self.check_for_updates("Passato")
             return
         if send:
             dialog = PushDialog(self.project, git_credentials(self.user, self.project.remote()), self)
