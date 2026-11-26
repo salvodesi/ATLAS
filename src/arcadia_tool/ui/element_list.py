@@ -27,7 +27,7 @@ ADR_LISTS = (("Tutte", None, "Tutte le ADR"),
 LIST_COLUMNS = {
     "domain": ("id", "name", "team", "referent", "status"),
     "system_function": ("id", "name", "domain", "srs_count", "derived_count", "status"),
-    "clarification": ("id", "recipient", "status"),
+    "clarification": ("id", "recipient", "clause", "status"),  # the SRS clause the request is about
     "adr": ("id", "title", "adr_type", "adr_domains", "proposer", "proposer_member", "status", "da_decision"),
     "derived_requirement": ("id", "name", "parent", "system_function", "domain"),
     # SA-3: one row per SRS item traced (a record has no ID of its own: the number of its item comes first).
@@ -57,7 +57,7 @@ NAMES = {
     "system_function": ("funzione", "funzioni", "Nuova funzione", "Nessuna funzione di sistema",
                         "Cerca per ID, nome, dominio o stato", "Nuova funzione di sistema"),
     "clarification": ("richiesta", "richieste", "Nuova richiesta", "Nessuna richiesta di chiarimento",
-                      "Cerca per ID, destinatario o stato", "Nuova richiesta di chiarimento"),
+                      "Cerca per ID, destinatario, clausola o stato", "Nuova richiesta di chiarimento"),
     "adr": ("ADR", "ADR", "Nuova ADR", "Nessuna decisione architetturale",
             "Cerca per ID, titolo, tipo, team, membro o stato", "Nuova decisione architetturale (ADR)"),
     "derived_requirement": ("requisito derivato", "requisiti derivati", "Nuovo requisito derivato",

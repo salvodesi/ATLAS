@@ -160,7 +160,17 @@ def test_buttons_of_a_row_run_the_actions(app, tmp_path, monkeypatch):
     text_box = reader.delegate._layout(e["clause"], rect)[-2][0]
     first = reader.delegate._badge_places(text_box, badges)[0][0]
     tip = reader.delegate.badge_tip(index, first.center())  # the mouse on the badge
-    assert tip.startswith("SF-DF01-01") and "direttamente" in tip
+    assert tip.startswith("SF-DF01-01") and "direttamente" in tip and "Clic per aprirla" in tip
+    # A click on the badge of a function: its sheet (also of one inherited from the section), not the clause.
+    places = reader.delegate._badge_places(text_box, badges)
+    assert reader.delegate.link_at(index, places[0][0].center()) == e["sf"].uuid
+    assert reader.delegate.link_at(index, places[1][0].center()) == e["sf2"].uuid
+    sheets = []
+    reader.open_element.connect(sheets.append)
+    _click(reader.view, places[0][0].center())
+    assert sheets == [e["sf"].uuid] and e["clause"].uuid not in opened  # the function opened, the clause not
+    reader.open_element.disconnect(sheets.append)
+    opened.clear()
 
     class Domains:  # «Domini…» of the section row, answered
         def __init__(self, project, item, parent=None):

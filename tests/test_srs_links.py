@@ -90,9 +90,9 @@ def test_the_window_of_the_links_and_the_catalogue(app, tmp_path, monkeypatch):
     monkeypatch.setattr(LinksDialog, "exec", run)
     reader.run_action(e["a"].uuid, "links")
     assert links_of(e["a"]) == [(INCLUDES, e["b"].uuid), (REFERS, e["c"].uuid)]
-    badges = [(text, style) for text, style, _tip in reader._link_badges(e["a"])]
+    badges = [(text, style) for text, style, *_tip in reader._link_badges(e["a"])]
     assert ("→ 3.12.2.3", "link") in badges and ("→ 3.12.2.4", "link") in badges
-    assert ("← 3.8.4.1", "link") in [(t, s) for t, s, _tip in reader._link_badges(e["b"])]
+    assert ("← 3.8.4.1", "link") in [(t, s) for t, s, *_tip in reader._link_badges(e["b"])]
     # Removed in the window: no longer linked.
     monkeypatch.setattr(LinksDialog, "exec", lambda d: d.table.removeRow(0) or True)
     reader.run_action(e["a"].uuid, "links")
@@ -182,6 +182,6 @@ def test_collega_from_the_right_click_of_the_catalogue_and_of_the_tree(app, tmp_
     monkeypatch.setattr(LinksDialog, "exec", lambda d: d._row(INCLUDES, e["b"].uuid) or True)
     tree.links_requested.emit(e["a"].uuid)
     assert links_of(e["a"]) == [(INCLUDES, e["b"].uuid)]
-    assert ("← 3.8.4.1", "link") in [(t, s) for t, s, _tip in reader._link_badges(e["b"])]
+    assert ("← 3.8.4.1", "link") in [(t, s) for t, s, *_tip in reader._link_badges(e["b"])]
     window._set_project(None)
     window.close()

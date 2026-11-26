@@ -160,8 +160,12 @@ ADR_STATUS_COLORS = {PROPOSED_STATUS: ("#B45309", "#FEF3C7"), "In revisione DA":
                      "Commenti DA": ("#0E7490", "#E0F5F9"), "Respinta": ("#B42318", "#FEE4E2"),
                      "Superata": ("#5B6B7C", "#F1F3F6"),
                      "Revisionato DA": ("#7C3AED", "#F3EEFF"), None: ("#5B6B7C", "#F1F3F6")}
+# The requests for clarification (X-2) about an item: a badge too, «CQ-01 - Aperta», coloured as their state.
+CQ_STATUS_COLORS = {"Aperta": ("#0F766E", "#CCFBF1"), "Chiusa": ("#5B6B7C", "#F1F3F6")}
 ADR_BADGE_MAX = 230  # the widest an ADR badge makes the column of the categories
 OPEN_ADR = "open_adr"  # the action of a click on the badge of an ADR (its uuid in place of the item)
+# The action of a click on a badge that names an element (e.g. a derived requirement): its uuid in place of the item.
+OPEN_ELEMENT = "open_element"
 
 
 TEAM = "team"  # «Evidenzia»: the clauses of the team of the user in sections of other teams
@@ -170,7 +174,17 @@ FILTER_STATES = tuple(state for state in NOT_APPROVED_STATES if state != "Respin
 
 
 def adr_badge_text(adr):
+    """The text of the badge of an ADR («ADR-012 - Proposta») or of a request for clarification («CQ-01 - Aperta»)."""
+    if adr.kind == "clarification":
+        return f"{adr.get('id') or 'CQ'} - {adr.get('status') or 'Aperta'}"
     return f"{adr.get('id') or 'ADR'} - {adr_state(adr) or adr.get('status') or PROPOSED_STATUS}"
+
+
+def badge_colors(element):
+    """(text and border, background) of the badge of an ADR or of a request for clarification, as its state."""
+    if element.kind == "clarification":
+        return CQ_STATUS_COLORS.get(element.get("status") or "Aperta", CQ_STATUS_COLORS["Chiusa"])
+    return ADR_STATUS_COLORS.get(adr_state(element), ADR_STATUS_COLORS[None])
 
 
 BADGE_TIPS = {True: "Dominio principale della sezione (A4)", False: "Dominio che contribuisce alla sezione (A4)",
@@ -345,11 +359,13 @@ class ItemDelegate(QStyledItemDelegate):
         left = rect.x() + MARGIN_X + INDENT.get(element.get("item_type"), 0)
         top = rect.y() + (HEADING_PAD_TOP if heading else PAD_TOP)
         right = rect.right() - MARGIN_X
-        adrs = (self.adr_badges(element) or []) if self.adr_badges and not heading else []
+        # The ADR not approved about the item, also about a section (3.2.1) or a chapter: badges on the right.
+        adrs = (self.adr_badges(element) or []) if self.adr_badges else []
         adr_widths = [self.metrics["chip"].horizontalAdvance(adr_badge_text(a)) + 18 for a in adrs]
         chips_width = min(max([CHIPS_WIDTH, *adr_widths]), ADR_BADGE_MAX)  # an ADR badge may widen the column
-        if heading:
-            body_left, chips_left = left, None
+        if heading:  # no number column nor categories: the ADR badges only, if any
+            body_left = left
+            chips_left = right - min(max(adr_widths), ADR_BADGE_MAX) if adrs else None
         else:
             body_left, chips_left = left + NUMBER_WIDTH, right - chips_width
         body_width = max((chips_left - 12 if chips_left else right) - body_left, 120)
@@ -385,6 +401,8 @@ class ItemDelegate(QStyledItemDelegate):
         chips = None
         if chips_left is not None:
             rows, chip_h = self._chip_rows(element.get("category"), CHIPS_WIDTH)
+            if heading:
+                rows = []  # a heading has no categories (not even «nessuna»)
             # The ADR not yet approved about the item: one badge each, under its categories, right-aligned.
             y_adr, adr_places = top + len(rows) * (chip_h + CHIP_GAP), []
             for adr, w in zip(adrs, adr_widths):
@@ -453,9 +471,28 @@ class ItemDelegate(QStyledItemDelegate):
         chips = self._layout(element, self.view.visualRect(index))[3]
         return next((adr for box, adr in (chips[4] if chips else ()) if box.contains(pos)), None)
 
+    def link_at(self, index, pos):
+        """The badge of a clause under a point of the viewport that names an element to open (e.g. a derived
+        requirement: its uuid), or None."""
+        element = index.data(ELEMENT_ROLE)
+        if element is None or not self.link_badges or row_kind(element) not in ("clause", "item"):
+            return None
+        *_, actions, _ = self._layout(element, self.view.visualRect(index))
+        if actions is None or actions[3]:  # no line of badges (a section shows its domains right of its title)
+            return None
+        for chip, badge, _hidden in self._badge_places(actions[0], self.link_badges(element)):
+            if badge is not None and chip.contains(pos):
+                return badge[3] if len(badge) > 3 else None
+        return None
+
     def badge_tip(self, index, pos):
         """What the badge under a point of the viewport means (e.g. how a function is mapped), or None."""
         adr = self.adr_at(index, pos)
+        if adr is not None and adr.kind == "clarification":
+            problem = " ".join((adr.get("problem") or "").split())
+            problem = problem if len(problem) <= 200 else problem[:200].rstrip() + "…"
+            return (f"{adr_badge_text(adr)}: richiesta di chiarimento sulla voce\n{problem}\n"
+                    "Clic per aprirla.").replace("\n\n", "\n")
         if adr is not None:
             return (f"{adr_badge_text(adr)}: {adr.get('title') or ''}\n{adr.get('adr_type') or ''}\n"
                     "Decisione architetturale non approvata sulla voce: clic per aprirla.")
@@ -506,6 +543,11 @@ class ItemDelegate(QStyledItemDelegate):
                 if event.type() == QEvent.MouseButtonRelease and event.button() == Qt.LeftButton:
                     self.action_clicked.emit(adr.uuid, OPEN_ADR)
                 return True
+            target = self.link_at(index, event.position().toPoint())
+            if target is not None:  # a click on the badge of a derived requirement: its sheet, not the item's
+                if event.type() == QEvent.MouseButtonRelease and event.button() == Qt.LeftButton:
+                    self.action_clicked.emit(target, OPEN_ELEMENT)
+                return True
             name = self.button_at(index, event.position().toPoint())
             if name is not None:
                 if event.type() == QEvent.MouseButtonRelease and event.button() == Qt.LeftButton:
@@ -538,7 +580,7 @@ class ItemDelegate(QStyledItemDelegate):
         elif option.state & QStyle.State_MouseOver:
             painter.fillRect(rect, QColor("#F6F8FB"))
         left, top, placed, chips, actions, _ = self._layout(element, rect)
-        if chips is not None:
+        if chips is not None and element.get("item_type") not in HEADINGS:  # a heading has its number in its title
             ident = element.get("id") or ""
             number_box = QRect(left, top, NUMBER_WIDTH - 10, rect.height())
             painter.setFont(self.fonts["bold"])
@@ -570,7 +612,7 @@ class ItemDelegate(QStyledItemDelegate):
             painter.setFont(self.fonts["chip"])
             painter.setRenderHint(QPainter.Antialiasing)
             for box, adr in adr_places:  # «ADR-012 - Proposta», coloured as its status
-                fg, bg = ADR_STATUS_COLORS.get(adr_state(adr), ADR_STATUS_COLORS[None])
+                fg, bg = badge_colors(adr)
                 painter.setPen(QColor(fg))
                 painter.setBrush(QColor(bg))
                 painter.drawRoundedRect(box.adjusted(0, 0, -1, -1), 8, 8)
@@ -749,7 +791,9 @@ class SrsReader(QWidget):
         self.delegate.domain_badges = self._domain_badges
         self.delegate.link_badges = self._link_badges
         self.delegate.analysis = self._analysis
-        self.delegate.adr_badges = lambda element: self._links.get("adrs", {}).get(element.uuid, [])
+        # The ADR not approved about the item, then its requests for clarification (X-2).
+        self.delegate.adr_badges = lambda element: (self._links.get("adrs", {}).get(element.uuid, [])
+                                                    + self._links.get("cqs", {}).get(element.uuid, []))
         self.delegate.team_clauses = set()  # see _team_clauses
         self.delegate.action_clicked.connect(self.run_action)
         self.view.setItemDelegate(self.delegate)
@@ -1136,10 +1180,14 @@ class SrsReader(QWidget):
             if adr_state(adr) is not None:  # not approved
                 for item in adr_srs_items(self.project.model, adr):
                     adrs.setdefault(item.uuid, []).append(adr)
+        cqs = {}  # the requests for clarification (X-2) about each item, by their ID
+        for cq in sorted(self.project.model.of_kind("clarification"), key=lambda c: c.get("id") or ""):
+            if cq.get("clause"):
+                cqs.setdefault(cq.get("clause"), []).append(cq)
         self._links = {"functions": functions, "derived": derived, "incoming": incoming,
-                       "mixed": mixed_points(self.project.model), "adrs": adrs}
-        # The rows whose badges of ADR changed (the ADR are changed in place: compared by what the badges say).
-        shown = {u: [adr_badge_text(a) for a in listed] for u, listed in adrs.items()}
+                       "mixed": mixed_points(self.project.model), "adrs": adrs, "cqs": cqs}
+        # The rows whose badges of ADR or CQ changed (changed in place: compared by what the badges say).
+        shown = {u: [adr_badge_text(a) for a in adrs.get(u, []) + cqs.get(u, [])] for u in set(adrs) | set(cqs)}
         before, self._adr_shown = getattr(self, "_adr_shown", {}), shown
         changed = [u for u in set(before) | set(shown) if before.get(u) != shown.get(u)]
         combo = getattr(self, "adr_view", None)
@@ -1232,10 +1280,14 @@ class SrsReader(QWidget):
                  for t, u in links_of(element)]
         links += [(f"← {source.get('id') or '?'}", "link", f"{INVERSE[t]} {source.get('id') or '?'}.")
                   for t, source in self._links.get("incoming", {}).get(element.uuid, [])]
-        return (self._own_domain_badges(element) + [(named(f), "function", f"Mappata direttamente alla clausola {ident}.{role(f)}") for f, _p in direct]
+        # A function: its sheet with a click (the uuid, 4th), as a derived requirement.
+        return (self._own_domain_badges(element)
+                + [(named(f), "function", f"Mappata direttamente alla clausola {ident}.{role(f)}\nClic per aprirla.",
+                    f.uuid) for f, _p in direct]
                 + [(named(f), "inherited", f"Mappata alla {where(p)}, che contiene la voce {ident}: la voce la eredita."
-                    f"{role(f)}") for f, p in inherited]
-                + [(d.get("id") or "?", "derived", f"Requisito derivato (SA-4) dalla voce {ident}.") for d in derived]
+                    f"{role(f)}\nClic per aprirla.", f.uuid) for f, p in inherited]
+                + [(d.get("id") or "?", "derived", f"Requisito derivato (SA-4) dalla voce {ident}: clic per "
+                    "aprirlo.", d.uuid) for d in derived]
                 + links)
 
     def _own_domain_badges(self, element):
@@ -1299,7 +1351,7 @@ class SrsReader(QWidget):
         item = self.project.model.get(uuid)
         if item is None:
             return
-        if name == OPEN_ADR:  # a click on the badge of an ADR of the row: its sheet
+        if name in (OPEN_ADR, OPEN_ELEMENT):  # a click on the badge of an ADR or of a derived requirement: its sheet
             self.open_element.emit(uuid)
             return
         if name == ACTIONS:  # «Azioni ▾»: the quick actions, under the mouse
@@ -1363,7 +1415,7 @@ class SrsReader(QWidget):
     def element_changed(self, element):
         """An item was edited elsewhere (e.g. in the editor): re-measure and repaint it. A function, a derived
         requirement or a domain changed: the rows that show it are repainted."""
-        if element.kind in ("system_function", "derived_requirement", "domain", "adr"):  # an ADR: its badges
+        if element.kind in ("system_function", "derived_requirement", "domain", "adr", "clarification"):  # badges
             self._rebuild_links()
             if element.kind == "adr" and self.adr_view.currentData() is not None:
                 self.refresh()  # «Filtra voci per stato ADR»: an item may come or go

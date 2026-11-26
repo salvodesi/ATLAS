@@ -54,7 +54,9 @@ def buttons(page, row):
 def test_double_click_on_x2_opens_the_table_of_the_requests(app, tmp_path):
     p = Project.create(tmp_path / "p", "Prova")
     da, t2 = teams(p)
-    second = p.new_element("clarification", problem="Classificazione mancante", recipient=t2.uuid, status="Aperta")
+    clause = p.new_element("requirement", id="3.8.1.1", item_type="Requisito", text="Una clausola")
+    second = p.new_element("clarification", problem="Classificazione mancante", recipient=t2.uuid, status="Aperta",
+                           clause=clause.uuid)
     first = p.new_element("clarification", problem="Testo ambiguo", recipient=da.uuid, status="Chiusa")
     first.set("id", "CQ-01")
     second.set("id", "CQ-02")
@@ -67,13 +69,13 @@ def test_double_click_on_x2_opens_the_table_of_the_requests(app, tmp_path):
     assert window.pages.currentWidget() is page and not kind_item.isExpanded()  # a tab, not the branch
     table = page.table
     headers = [table.horizontalHeaderItem(c).text() for c in range(table.columnCount())]
-    assert headers == ["ID", "Destinatario della richiesta", "Stato", ""]
-    rows = [[table.item(r, c).text() for c in range(3)] for r in range(table.rowCount())]
-    assert rows == [["CQ-01", f"{da.get('id')} Architettura (Design Authority)", "Chiusa"],
-                    ["CQ-02", f"{t2.get('id')} Odometria", "Aperta"]]
+    assert headers == ["ID", "Destinatario della richiesta", "Clausola", "Stato", ""]  # the clause before the state
+    rows = [[table.item(r, c).text() for c in range(4)] for r in range(table.rowCount())]
+    assert rows == [["CQ-01", f"{da.get('id')} Architettura (Design Authority)", "", "Chiusa"],
+                    ["CQ-02", f"{t2.get('id')} Odometria", "3.8.1.1", "Aperta"]]
     assert "Testo ambiguo" in table.item(0, 0).toolTip()
     # The buttons are never cut: their column is as wide as they are.
-    assert table.columnWidth(3) >= table.cellWidget(0, 3).sizeHint().width()
+    assert table.columnWidth(4) >= table.cellWidget(0, 4).sizeHint().width()
 
     buttons(page, 1)["Apri"].click()  # the sheet of the request in its tab
     assert window.pages.currentWidget() is window.editors[second.uuid]
@@ -83,9 +85,12 @@ def test_double_click_on_x2_opens_the_table_of_the_requests(app, tmp_path):
     first.set("status", "Aperta")  # changed in its sheet: the table follows
     p.update(first)
     window._element_changed(first)
-    assert table.item(0, 2).text() == "Aperta"
+    assert table.item(0, 3).text() == "Aperta"
     page.search.setText("odometria")
     assert table.isRowHidden(0) and not table.isRowHidden(1) and page.count.text() == "1 di 2"
+    page.search.setText("3.8.1.1")  # by the number of its clause too
+    assert table.isRowHidden(0) and not table.isRowHidden(1)
+    page.search.setText("")
 
     window.tree._double_clicked(kind_item, 0)  # opened again: the same tab
     assert list(window.list_pages.values()) == [page]

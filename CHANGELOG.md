@@ -6,6 +6,24 @@ l'altra.
 
 ## [Non rilasciato]
 
+## [0.19.1] - 2026-11-26
+
+### Aggiunto
+- **Clausola nell'elenco delle richieste di chiarimento (X-2).** L'elenco delle CQ ha una colonna «Clausola», prima
+  dello stato, con il numero della voce SRS oggetto della richiesta; si può anche cercare per quel numero.
+- **Badge delle richieste di chiarimento nelle Voci SRS.** Le CQ su una voce compaiono sulla sua riga, sotto le
+  categorie e dopo le ADR, come badge «CQ-01 - Aperta» (verde acqua se aperta, grigio se chiusa); il suggerimento
+  riporta il problema e il clic apre la richiesta.
+
+### Corretto
+- **Clic sull'etichetta di un requisito derivato nelle Voci SRS.** Apre la scheda del requisito derivato indicato
+  dall'etichetta (viola, es. «DR-012»), non più la voce SRS da cui deriva.
+- **Clic sull'etichetta di una funzione di sistema nelle Voci SRS.** Le etichette delle funzioni (mappate alla clausola
+  o ereditate dalla sezione) aprono la scheda della funzione, invece della voce SRS.
+- **Badge delle ADR sulle sezioni.** Le ADR non approvate che riguardano una sezione (es. 3.2.1), e non una clausola,
+  mostrano ora il loro badge («ADR-012 - Proposta») a destra della riga della sezione, cliccabile come quelli delle
+  clausole.
+
 ## [0.19.0] - 2026-11-26
 
 ### Aggiunto
@@ -1611,7 +1629,8 @@ Prima versione pubblicata su GitLab.
 - Nome ATLAS (Arcadia Traceability, Logical Architecture Software), icona e logo.
 - Installer Windows e archivio Linux. La pipeline GitLab esegue i test e compila la versione Linux.
 
-[Non rilasciato]: https://github.com/salvodesi/ATLAS/compare/v0.19.0...main
+[Non rilasciato]: https://github.com/salvodesi/ATLAS/compare/v0.19.1...main
+[0.19.1]: https://github.com/salvodesi/ATLAS/compare/v0.19.0...v0.19.1
 [0.19.0]: https://github.com/salvodesi/ATLAS/compare/v0.18.2...v0.19.0
 [0.18.2]: https://github.com/salvodesi/ATLAS/compare/v0.18.1...v0.18.2
 [0.18.1]: https://github.com/salvodesi/ATLAS/compare/v0.18.0...v0.18.1

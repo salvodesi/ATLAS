@@ -556,3 +556,97 @@ def test_the_categories_are_a_list_with_ticks_between_requisiti_and_the_state_of
     assert pick.currentText() == "Nessuna"
     window._set_project(None)
     window.close()
+
+
+def test_a_click_on_a_derived_requirement_opens_it_and_a_section_shows_its_adr(app, tmp_path):
+    from PySide6.QtCore import QEvent, QPointF, Qt
+    from PySide6.QtGui import QMouseEvent
+    from arcadia_tool.model.schema import ADR_SECTION
+
+    p, e = build(tmp_path)
+    adr = p.new_element("adr", id="ADR-030", title="Sezione", adr_type=ADR_SECTION, status="Proposta",
+                        realloc_item=e["sec"].uuid)
+    window = MainWindow()
+    window.resize(1400, 900)
+    window.show()
+    window._set_project(p)
+    window.go_to_srs_item(e["r2"].uuid)
+    app.processEvents()
+    reader, delegate = window.reader, window.reader.delegate
+    opened = []
+    reader.open_element.connect(opened.append)
+
+    def click(point):
+        for kind in (QEvent.MouseButtonPress, QEvent.MouseButtonRelease):
+            event = QMouseEvent(kind, QPointF(point), QPointF(reader.view.viewport().mapToGlobal(point)),
+                                Qt.LeftButton, Qt.LeftButton, Qt.NoModifier)
+            QApplication.sendEvent(reader.view.viewport(), event)
+        app.processEvents()
+    # The purple badge of the derived requirement of 3.14.4.2: its sheet, not the one of the clause.
+    index = reader.view.currentIndex()
+    rect = reader.view.visualRect(index)
+    text_box = delegate._layout(e["r2"], rect)[-2][0]
+    badges = reader._link_badges(e["r2"])
+    n = next(i for i, b in enumerate(badges) if b[1] == "derived")
+    chip = delegate._badge_places(text_box, badges)[n][0]
+    assert delegate.link_at(index, chip.center()) == e["derived"].uuid
+    click(chip.center())
+    assert opened == [e["derived"].uuid]
+    assert "clic per aprirlo" in delegate.badge_tip(index, chip.center())
+    # The ADR about a section (3.14.4): its badge on the row of the section, right-aligned, clickable.
+    assert [x.uuid for x in delegate.adr_badges(e["sec"])] == [adr.uuid]
+    section_index = reader.model.index(next(r for r in range(reader.model.rowCount())
+                                            if reader.model.index(r, 0).data(srs_reader.ELEMENT_ROLE) is e["sec"]), 0)
+    reader.view.scrollTo(section_index)
+    app.processEvents()
+    section_rect = reader.view.visualRect(section_index)
+    chips = delegate._layout(e["sec"], section_rect)[3]
+    assert chips is not None and chips[2] == []  # no categories on a heading: the ADR only
+    box, shown = chips[4][0]
+    assert shown is adr and box.right() <= section_rect.right()
+    assert delegate.adr_at(section_index, box.center()) is adr
+    click(box.center())
+    assert opened[-1] == adr.uuid
+    assert not reader.grab().isNull()  # drawn
+    window._set_project(None)
+    window.close()
+
+
+def test_the_requests_for_clarification_about_an_item_are_badges_of_its_row(app, tmp_path):
+    from arcadia_tool.model.schema import ADR_OTHER
+
+    p, e = build(tmp_path)
+    adr = p.new_element("adr", id="ADR-003", title="Altro", adr_type=ADR_OTHER, status="Proposta",
+                        srs_items=[e["r2"].uuid])
+    second = p.new_element("clarification", id="CQ-02", clause=e["r2"].uuid, status="Chiusa", problem="Già chiarita")
+    first = p.new_element("clarification", id="CQ-01", clause=e["r2"].uuid, status="Aperta",
+                          problem="Il testo non dice quando")
+    window = MainWindow()
+    window.resize(1400, 900)
+    window.show()
+    window._set_project(p)
+    window.go_to_srs_item(e["r2"].uuid)
+    app.processEvents()
+    reader, delegate = window.reader, window.reader.delegate
+    texts = lambda key: [srs_reader.adr_badge_text(x) for x in delegate.adr_badges(e[key])]
+    assert texts("r2") == ["ADR-003 - Proposta", "CQ-01 - Aperta", "CQ-02 - Chiusa"]  # the ADR, then the CQ by ID
+    assert texts("r10") == []
+    assert srs_reader.badge_colors(first) == srs_reader.CQ_STATUS_COLORS["Aperta"]
+    assert srs_reader.badge_colors(second) == srs_reader.CQ_STATUS_COLORS["Chiusa"]
+    index = reader.view.currentIndex()
+    places = delegate._layout(e["r2"], reader.view.visualRect(index))[3][4]
+    assert [x for _box, x in places] == [adr, first, second]
+    tip = delegate.badge_tip(index, places[1][0].center())
+    assert tip.startswith("CQ-01 - Aperta: richiesta di chiarimento") and "Il testo non dice quando" in tip
+    opened = []
+    reader.open_element.connect(opened.append)
+    reader.run_action(first.uuid, srs_reader.OPEN_ADR)  # what a click on its badge does
+    assert opened == [first.uuid]
+    previous = first.copy()
+    first.set("status", "Chiusa")  # closed in its sheet: the badge follows
+    p.update(first, previous)
+    reader.element_changed(first)
+    assert texts("r2") == ["ADR-003 - Proposta", "CQ-01 - Chiusa", "CQ-02 - Chiusa"]
+    assert not reader.grab().isNull()  # drawn
+    window._set_project(None)
+    window.close()
